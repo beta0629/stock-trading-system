@@ -53,7 +53,6 @@ BROKER_TYPE = "KIS"  # 사용할 증권사 API (KIS: 한국투자증권)
 KIS_APP_KEY = os.getenv("KIS_APP_KEY")  # 한국투자증권 앱키
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")  # 한국투자증권 앱시크릿
 KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "50123456789")  # 계좌번호 (앞 8자리)
-KIS_PERSONALSECKEY = os.getenv("KIS_PERSONALSECKEY", "")  # 개인식별키 (모의투자 시에는 필요 없음)
 
 # 한국투자증권 모의투자 API 설정
 KIS_VIRTUAL_APP_KEY = os.getenv("KIS_VIRTUAL_APP_KEY")  # 모의투자 앱키

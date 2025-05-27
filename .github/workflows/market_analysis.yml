@@ -1,4 +1,4 @@
-name: Market Analysis and Mock Trading
+name: Market Analysis and Real Trading
 
 on:
   schedule:
@@ -31,20 +31,25 @@ jobs:
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     
-    - name: Run market analysis and mock trading
-      run: python test_mock_auto_trading.py
+    - name: Run real trading
+      run: python main.py
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
         KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
         KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
         KAKAO_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+        KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+        KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+        KIS_PERSONALSECKEY: ${{ secrets.KIS_PERSONALSECKEY }}
+        KIS_REAL_TRADING: "true"
     
-    - name: Display log files (instead of uploading as artifacts)
+    - name: Display log files
       run: |
-        echo "=== Mock Auto Trading Log ==="
-        if [ -f mock_auto_trading.log ]; then
-          tail -n 50 mock_auto_trading.log
+        echo "=== Trading Log ==="
+        if [ -f trading.log ]; then
+          tail -n 50 trading.log
         fi
         echo "=== Stock Analysis Log ==="
         if [ -f stock_analysis.log ]; then

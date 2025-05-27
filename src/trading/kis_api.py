@@ -57,7 +57,6 @@ class KISAPI(BrokerBase):
         self.access_token = None
         self.token_expired_at = None
         self.hashkey = None
-        self.personalseckey = config.KIS_PERSONALSECKEY if hasattr(config, 'KIS_PERSONALSECKEY') else None
         
         # TR ID 매핑 (실전투자/모의투자)
         self.tr_id_map = {
