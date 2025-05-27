@@ -38,10 +38,13 @@ jobs:
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
         KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
     
-    - name: Upload log files as artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: market-analysis-logs
-        path: |
-          mock_auto_trading.log
-          stock_analysis.log
+    - name: Display log files (instead of uploading as artifacts)
+      run: |
+        echo "=== Mock Auto Trading Log ==="
+        if [ -f mock_auto_trading.log ]; then
+          tail -n 50 mock_auto_trading.log
+        fi
+        echo "=== Stock Analysis Log ==="
+        if [ -f stock_analysis.log ]; then
+          tail -n 50 stock_analysis.log
+        fi

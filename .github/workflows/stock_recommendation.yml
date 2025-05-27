@@ -33,10 +33,13 @@ jobs:
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
         KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
     
-    - name: Upload log files as artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: stock-recommendation-logs
-        path: |
-          stock_recommendation_test.log
-          gpt_stock_analysis.log
+    - name: Display log files (instead of uploading as artifacts)
+      run: |
+        echo "=== Stock Recommendation Log ==="
+        if [ -f stock_recommendation_test.log ]; then
+          tail -n 50 stock_recommendation_test.log
+        fi
+        echo "=== GPT Stock Analysis Log ==="
+        if [ -f gpt_stock_analysis.log ]; then
+          tail -n 50 gpt_stock_analysis.log
+        fi
