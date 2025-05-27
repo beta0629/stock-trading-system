@@ -1,529 +1,582 @@
 """
-GPT-4 기반 트레이딩 전략 모듈
-
-이 모듈은 GPT-4 API를 활용하여 주식 매매 신호를 생성합니다.
-투자 결정을 내리기 위해 기술적 지표, 가격 데이터, 뉴스 정보 등을 종합적으로 분석합니다.
+GPT 모델을 활용한 고급 트레이딩 전략 구현
 """
-
-import json
 import logging
-import datetime
-import time
-from enum import Enum
 import pandas as pd
-import requests
-from openai import OpenAI
+import numpy as np
+from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
 
 # 로깅 설정
-logger = logging.getLogger('GPT_Trading')
-
-class SignalType(Enum):
-    """매매 신호 유형"""
-    BUY = "BUY"          # 매수 신호
-    SELL = "SELL"        # 매도 신호
-    HOLD = "HOLD"        # 관망 신호
-    UNKNOWN = "UNKNOWN"  # 불명확한 신호
-
-class StrengthLevel(Enum):
-    """신호 강도"""
-    STRONG = "STRONG"    # 강한 신호
-    MODERATE = "MODERATE"  # 중간 신호
-    WEAK = "WEAK"        # 약한 신호
+logger = logging.getLogger('GPTTradingStrategy')
 
 class GPTTradingStrategy:
-    """GPT-4 기반 트레이딩 전략 클래스"""
+    """GPT 모델을 활용한 고급 트레이딩 전략 클래스"""
     
-    def __init__(self, config, news_api=None):
+    def __init__(self, config, analyzer=None):
         """
         초기화 함수
         
         Args:
             config: 설정 모듈
-            news_api: 뉴스 API 객체 (선택적)
+            analyzer: ChatGPT 분석기 (없으면 새로 생성)
         """
         self.config = config
-        self.news_api = news_api
         
-        # OpenAI API 설정
-        self.api_key = config.OPENAI_API_KEY
-        self.model = getattr(config, 'OPENAI_MODEL', "gpt-4o")
-        self.client = OpenAI(api_key=self.api_key)
+        # ChatGPT 분석기 설정
+        self.analyzer = analyzer if analyzer else ChatGPTAnalyzer(config)
         
-        # 요청 관리 설정
-        self.last_request_time = 0
-        self.request_interval = getattr(config, 'OPENAI_REQUEST_INTERVAL', 1.0)
+        # 매매 신호 신뢰도 임계값
+        self.buy_confidence_threshold = getattr(config, 'GPT_BUY_CONFIDENCE_THRESHOLD', 0.7)
+        self.sell_confidence_threshold = getattr(config, 'GPT_SELL_CONFIDENCE_THRESHOLD', 0.6)
         
-        # 모델 프롬프트 설정
-        self.system_prompt = self._get_system_prompt()
+        # 기술적 지표와 GPT 분석의 가중치
+        self.technical_weight = getattr(config, 'TECHNICAL_WEIGHT', 0.6)
+        self.gpt_weight = getattr(config, 'GPT_WEIGHT', 0.4)
         
-        # 캐싱 설정
-        self.signal_cache = {}  # {종목코드: (타임스탬프, 신호)}
-        self.signal_cache_ttl = 1800  # 30분 캐시 유효시간
-        
-        logger.info(f"GPT-4 트레이딩 전략 초기화 완료 (모델: {self.model})")
-        
-    def _get_system_prompt(self):
-        """시스템 프롬프트 생성"""
-        return """당신은 주식 트레이딩 전략 전문가입니다. 
-        제공된 기술적 지표, 가격 데이터, 뉴스 및 시장 정보를 분석하여 명확한 매매 신호(BUY/SELL/HOLD)를 생성해야 합니다.
-        
-        매 답변은 다음 형식의 JSON으로 시작해야 합니다:
-        {
-          "signal": "BUY/SELL/HOLD",
-          "strength": "STRONG/MODERATE/WEAK",
-          "time_horizon": "SHORT/MEDIUM/LONG",
-          "risk_level": "LOW/MEDIUM/HIGH",
-          "confidence": 0-100,
-          "reasoning": "간략한 이유",
-          "key_factors": ["요인1", "요인2", "요인3"]
-        }
-        
-        그 후에 상세 분석을 추가로 제공하세요. 수익 목표와 손절 수준도 제안해주세요.
-        
-        매매 신호는 다음과 같이 해석됩니다:
-        - BUY: 현재 이 종목을 매수하는 것이 유리하다는 신호
-        - SELL: 현재 이 종목을 매도하는 것이 유리하다는 신호
-        - HOLD: 현재 이 종목에 대해 포지션을 유지하거나 신규 진입을 하지 않는 것이 좋다는 신호
-        
-        신호의 강도는 다음과 같이 해석됩니다:
-        - STRONG: 매우 확실한 신호로, 즉각적인 조치가 권장됨
-        - MODERATE: 중간 정도의 신호로, 다른 요소들도 함께 고려해야 함
-        - WEAK: 약한 신호로, 추가 확인이 필요함
-
-        시간 범위는 다음과 같습니다:
-        - SHORT: 수일 내의 단기 관점
-        - MEDIUM: 수주에서 수개월의 중기 관점
-        - LONG: 6개월 이상의 장기 관점
-        
-        모든 분석은 데이터에 기반해야 하며, 주관적 의견이나 추측은 피하고, 
-        도표상 명확한 패턴, 기술적 지표의 신호, 최근 뉴스의 영향 등 객관적 요소를 중심으로 분석하세요."""
-        
-    def _wait_for_rate_limit(self):
-        """API 요청 간격 제한 관리"""
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.request_interval:
-            time.sleep(self.request_interval - elapsed)
-        self.last_request_time = time.time()
-        
-    def _prepare_trading_data(self, df, symbol, market):
+        logger.info("GPT 트레이딩 전략 초기화 완료")
+    
+    def analyze_stock(self, df, symbol, market_context=None):
         """
-        트레이딩 분석을 위한 데이터 준비
+        종목 분석 및 매매 신호 생성
         
         Args:
             df: 주가 데이터 (DataFrame)
             symbol: 종목 코드
-            market: 시장 구분 ("KR" 또는 "US")
+            market_context: 시장 맥락 정보 (선택 사항)
             
         Returns:
-            dict: 분석을 위한 데이터
+            dict: 분석 결과 및 매매 신호
         """
-        # 최근 데이터 선택 (너무 많은 데이터는 토큰 제한 초과 가능성)
-        recent_df = df.tail(20).copy()
-        earlier_df = df.iloc[-40:-20].copy() if len(df) >= 40 else None
-        
-        # 주요 기술적 지표 추출
-        latest_row = recent_df.iloc[-1]
-        prev_row = recent_df.iloc[-2] if len(recent_df) > 1 else None
-        
-        # 추세 정보 계산
-        price_trend = "상승" if len(recent_df) > 1 and latest_row['Close'] > recent_df.iloc[-2]['Close'] else "하락"
-        
-        # 이동평균선 정보
-        ma_data = {}
-        sma_columns = [col for col in df.columns if 'SMA' in col or 'EMA' in col]
-        for col in sma_columns:
-            ma_data[col] = latest_row[col]
-        
-        # 볼륨 추세
-        volume_avg = recent_df['Volume'].mean()
-        volume_trend = "증가" if latest_row['Volume'] > volume_avg else "감소"
-        
-        # 뉴스 데이터 추가
-        news_data = []
-        if self.news_api:
-            try:
-                news = self.news_api.get_recent_news(symbol, market, limit=5)
-                if news:
-                    news_data = news
-            except Exception as e:
-                logger.warning(f"뉴스 데이터 가져오기 실패: {e}")
-        
-        # OHLCV 데이터
-        ohlcv_data = recent_df[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']].to_dict('records')
-        
-        # 기술적 지표 데이터
-        indicators = {}
-        tech_columns = [col for col in df.columns if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
-        for col in tech_columns:
-            if col in latest_row:
-                indicators[col] = latest_row[col]
-        
-        # 시장 정보
-        market_info = {
-            "KR": {
-                "name": "한국 주식시장",
-                "currency": "원",
-                "timezone": "Asia/Seoul"
-            },
-            "US": {
-                "name": "미국 주식시장",
-                "currency": "USD",
-                "timezone": "US/Eastern"
+        if df.empty:
+            logger.warning(f"{symbol}: 분석할 데이터가 없습니다.")
+            return {
+                "symbol": symbol,
+                "signal": "NONE",
+                "confidence": 0.0,
+                "reason": "분석할 데이터가 없습니다."
             }
-        }.get(market, {"name": "기타", "currency": "Unknown", "timezone": "UTC"})
-        
-        # 최종 데이터 구성
-        trading_data = {
-            "symbol": symbol,
-            "market": market,
-            "market_info": market_info,
-            "current_date": datetime.datetime.now().strftime("%Y-%m-%d"),
-            "latest_price": latest_row['Close'],
-            "price_change": (latest_row['Close'] - prev_row['Close']) / prev_row['Close'] * 100 if prev_row is not None else 0,
-            "price_trend": price_trend,
-            "volume_trend": volume_trend,
-            "recent_data": ohlcv_data,
-            "moving_averages": ma_data,
-            "indicators": indicators,
-            "news": news_data
-        }
-        
-        return trading_data
-
-    def get_trading_signal(self, df, symbol, market="KR"):
-        """
-        주식 매매 신호 생성
-        
-        Args:
-            df: 주가 데이터 (DataFrame)
-            symbol: 종목 코드
-            market: 시장 구분 ("KR" 또는 "US")
-            
-        Returns:
-            dict: 매매 신호 및 분석 결과
-        """
-        # 캐시 확인
-        current_time = time.time()
-        if symbol in self.signal_cache:
-            cache_time, cache_data = self.signal_cache[symbol]
-            if current_time - cache_time < self.signal_cache_ttl:
-                logger.info(f"{symbol} 캐시된 신호 반환 (생성시간: {datetime.datetime.fromtimestamp(cache_time).strftime('%Y-%m-%d %H:%M:%S')})")
-                return cache_data
         
         try:
-            # 데이터 준비
-            trading_data = self._prepare_trading_data(df, symbol, market)
+            # 기본 기술적 신호 계산
+            tech_signal, tech_confidence = self._calculate_technical_signals(df)
             
-            # 사용자 프롬프트 구성
-            user_prompt = f"""다음 주식 데이터를 분석하여 BUY/SELL/HOLD 신호와 신호 강도를 결정해주세요.
+            # GPT 분석 수행 (추세 및 리스크 분석)
+            gpt_analysis = self._perform_gpt_analysis(df, symbol, market_context)
+            gpt_signal, gpt_confidence = self._extract_gpt_signals(gpt_analysis)
             
-            종목: {symbol}
-            시장: {market}
-            최근 종가: {trading_data['latest_price']}
-            가격 변동(%): {trading_data['price_change']:.2f}%
-            
-            OHLCV 데이터 (최근 5일):
-            {pd.DataFrame(trading_data['recent_data']).tail(5).to_string()}
-            
-            기술적 지표:
-            {json.dumps(trading_data['indicators'], indent=2)}
-            
-            이동평균선:
-            {json.dumps(trading_data['moving_averages'], indent=2)}
-            
-            뉴스 정보:
-            {json.dumps(trading_data['news'], indent=2) if trading_data['news'] else "뉴스 정보 없음"}
-            
-            매매 신호(BUY/SELL/HOLD)와 강도(STRONG/MODERATE/WEAK), 그리고 상세 분석을 제공해주세요.
-            반드시 요청한 JSON 형식으로 응답을 시작해주세요.
-            """
-            
-            # API 요청 제한 관리
-            self._wait_for_rate_limit()
-            
-            # API 호출
-            logger.info(f"GPT API 호출: {symbol} 매매 신호 요청")
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=1000,
-                temperature=0.3,  # 결정적 응답을 위해 낮은 온도 설정
-                response_format={"type": "text"}  # 일반 텍스트 응답
+            # 최종 신호 결정 (가중 평균)
+            final_signal, final_confidence = self._combine_signals(
+                tech_signal, tech_confidence, 
+                gpt_signal, gpt_confidence
             )
             
-            # 응답 파싱
-            response_text = response.choices[0].message.content
-            logger.debug(f"GPT 응답: {response_text[:200]}...")
+            # 매매 수량 결정
+            quantity = self._calculate_position_size(df, final_confidence, symbol)
             
-            # JSON 응답 추출
-            try:
-                # JSON 부분 찾기
-                json_start = response_text.find('{')
-                json_end = response_text.find('}', json_start) + 1
+            result = {
+                "symbol": symbol,
+                "signal": final_signal,
+                "confidence": final_confidence,
+                "quantity": quantity,
+                "technical_signal": tech_signal,
+                "technical_confidence": tech_confidence,
+                "gpt_signal": gpt_signal,
+                "gpt_confidence": gpt_confidence,
+                "analysis_summary": gpt_analysis.get("analysis", "")[:200] + "...",  # 요약 정보만
+                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            logger.info(f"{symbol} 분석 완료: {final_signal} 신호 (신뢰도: {final_confidence:.2f})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"{symbol} 분석 중 오류 발생: {e}")
+            return {
+                "symbol": symbol,
+                "signal": "ERROR",
+                "confidence": 0.0,
+                "reason": f"분석 중 오류: {str(e)}"
+            }
+    
+    def _calculate_technical_signals(self, df):
+        """
+        기술적 지표 기반 매매 신호 계산
+        
+        Args:
+            df: 주가 데이터
+            
+        Returns:
+            tuple: (신호, 신뢰도)
+        """
+        # 필요한 기술적 지표가 있는지 확인
+        required_indicators = ['RSI', 'MACD', 'MACD_signal', 'SMA_short', 'SMA_long']
+        missing = [ind for ind in required_indicators if ind not in df.columns]
+        
+        if missing:
+            logger.warning(f"일부 기술적 지표가 없습니다: {missing}")
+            # 기본 지표만 사용해서 계속 진행
+        
+        # 최근 데이터
+        recent = df.iloc[-1]
+        
+        # 매매 신호 점수 계산 (0~100)
+        score = 50  # 중립 시작점
+        confidence_factors = []
+        
+        # 1. RSI 지표 분석
+        if 'RSI' in df.columns:
+            rsi = recent['RSI']
+            if rsi < 30:  # 과매도
+                score += 15
+                confidence_factors.append(('RSI', 0.7, 'BUY', f'RSI가 {rsi:.2f}로 과매도 상태'))
+            elif rsi > 70:  # 과매수
+                score -= 15
+                confidence_factors.append(('RSI', 0.7, 'SELL', f'RSI가 {rsi:.2f}로 과매수 상태'))
+            elif rsi < 45:
+                score += 5
+                confidence_factors.append(('RSI', 0.5, 'BUY', f'RSI가 {rsi:.2f}로 저점 구간에 접근'))
+            elif rsi > 55:
+                score -= 5
+                confidence_factors.append(('RSI', 0.5, 'SELL', f'RSI가 {rsi:.2f}로 고점 구간에 접근'))
+        
+        # 2. 이동평균선 분석
+        if 'SMA_short' in df.columns and 'SMA_long' in df.columns:
+            short_ma = df['SMA_short'].iloc[-1]
+            long_ma = df['SMA_long'].iloc[-1]
+            prev_short_ma = df['SMA_short'].iloc[-2]
+            prev_long_ma = df['SMA_long'].iloc[-2]
+            
+            # 골든 크로스 (단기선이 장기선을 상향 돌파)
+            if prev_short_ma < prev_long_ma and short_ma > long_ma:
+                score += 20
+                confidence_factors.append(('SMA', 0.8, 'BUY', '골든 크로스 발생'))
+            
+            # 데드 크로스 (단기선이 장기선을 하향 돌파)
+            elif prev_short_ma > prev_long_ma and short_ma < long_ma:
+                score -= 20
+                confidence_factors.append(('SMA', 0.8, 'SELL', '데드 크로스 발생'))
+            
+            # 추세 확인
+            elif short_ma > long_ma:  # 상승 추세
+                # 얼마나 크게 이격되어 있는지 확인
+                gap_percent = (short_ma / long_ma - 1) * 100
                 
-                if json_start >= 0 and json_end > json_start:
-                    signal_json = json.loads(response_text[json_start:json_end])
-                    
-                    # 필수 필드 확인 및 기본값 설정
-                    signal = signal_json.get('signal', 'HOLD').upper()
-                    strength = signal_json.get('strength', 'MODERATE').upper()
-                    
-                    # 유효한 값인지 확인
-                    if signal not in [s.value for s in SignalType]:
-                        signal = SignalType.HOLD.value
-                    if strength not in [s.value for s in StrengthLevel]:
-                        strength = StrengthLevel.MODERATE.value
-                        
-                    # 최종 신호 데이터 구성
-                    signal_data = {
-                        "signal": signal,
-                        "strength": strength,
-                        "time_horizon": signal_json.get('time_horizon', 'SHORT'),
-                        "risk_level": signal_json.get('risk_level', 'MEDIUM'),
-                        "confidence": signal_json.get('confidence', 50),
-                        "reasoning": signal_json.get('reasoning', '분석 정보 없음'),
-                        "key_factors": signal_json.get('key_factors', [])
-                    }
-                    
-                    # 분석 텍스트 추출 (JSON 이후 부분)
-                    analysis_text = response_text[json_end:].strip()
-                    
+                if gap_percent > 5:
+                    score -= 10  # 과도한 이격은 조정 가능성
+                    confidence_factors.append(('SMA', 0.6, 'SELL', f'이동평균선 과도 이격 ({gap_percent:.2f}%)'))
                 else:
-                    # JSON 파싱 실패 시 기본값 사용
-                    logger.warning(f"{symbol} JSON 파싱 실패, 기본값 사용")
-                    signal_data = {
-                        "signal": SignalType.HOLD.value,
-                        "strength": StrengthLevel.WEAK.value,
-                        "time_horizon": "SHORT",
-                        "risk_level": "MEDIUM",
-                        "confidence": 0,
-                        "reasoning": "분석 정보를 추출할 수 없습니다.",
-                        "key_factors": []
-                    }
-                    analysis_text = response_text
-                    
-            except Exception as e:
-                # JSON 파싱 오류 처리
-                logger.error(f"{symbol} JSON 파싱 오류: {e}")
-                signal_data = {
-                    "signal": SignalType.HOLD.value,
-                    "strength": StrengthLevel.WEAK.value,
-                    "time_horizon": "SHORT",
-                    "risk_level": "MEDIUM",
-                    "confidence": 0,
-                    "reasoning": f"분석 오류: {str(e)}",
-                    "key_factors": []
-                }
-                analysis_text = response_text
+                    score += 10  # 적정 상승 추세
+                    confidence_factors.append(('SMA', 0.6, 'BUY', '이동평균선 상승 추세 지속'))
             
-            # 결과 데이터 구성
-            result = {
-                "symbol": symbol,
-                "market": market,
-                "timestamp": datetime.datetime.now().isoformat(),
-                "signal_data": signal_data,
-                "analysis_text": analysis_text,
-                "data_used": trading_data
+            elif short_ma < long_ma:  # 하락 추세
+                # 얼마나 크게 이격되어 있는지 확인
+                gap_percent = (long_ma / short_ma - 1) * 100
+                
+                if gap_percent > 5:
+                    score += 10  # 과도한 이격은 반등 가능성
+                    confidence_factors.append(('SMA', 0.6, 'BUY', f'이동평균선 과도 이격 ({gap_percent:.2f}%)'))
+                else:
+                    score -= 10  # 적정 하락 추세
+                    confidence_factors.append(('SMA', 0.6, 'SELL', '이동평균선 하락 추세 지속'))
+        
+        # 3. MACD 분석
+        if 'MACD' in df.columns and 'MACD_signal' in df.columns:
+            macd = recent['MACD']
+            signal = recent['MACD_signal']
+            prev_macd = df['MACD'].iloc[-2]
+            prev_signal = df['MACD_signal'].iloc[-2]
+            
+            # MACD가 시그널 라인을 상향 돌파 (강한 매수 신호)
+            if prev_macd < prev_signal and macd > signal:
+                score += 15
+                confidence_factors.append(('MACD', 0.7, 'BUY', 'MACD 상향 돌파'))
+            
+            # MACD가 시그널 라인을 하향 돌파 (강한 매도 신호)
+            elif prev_macd > prev_signal and macd < signal:
+                score -= 15
+                confidence_factors.append(('MACD', 0.7, 'SELL', 'MACD 하향 돌파'))
+            
+            # MACD와 시그널 모두 상승 중 (상승 추세 지속)
+            elif macd > prev_macd and signal > prev_signal:
+                score += 5
+                confidence_factors.append(('MACD', 0.5, 'BUY', 'MACD 상승 추세'))
+            
+            # MACD와 시그널 모두 하락 중 (하락 추세 지속)
+            elif macd < prev_macd and signal < prev_signal:
+                score -= 5
+                confidence_factors.append(('MACD', 0.5, 'SELL', 'MACD 하락 추세'))
+        
+        # 4. 주가 움직임 분석 (최근 3일)
+        recent_changes = df['Close'].pct_change().iloc[-3:].values
+        
+        # 3일 연속 상승
+        if all(change > 0 for change in recent_changes):
+            # 상승폭이 크면 추가적인 매도 가능성
+            total_change = (df['Close'].iloc[-1] / df['Close'].iloc[-4] - 1) * 100
+            if total_change > 10:
+                score -= 10  # 단기 과열 조정 가능성
+                confidence_factors.append(('Price', 0.6, 'SELL', f'3일 연속 급등 (총 {total_change:.2f}%)'))
+            else:
+                score += 5  # 적정 상승 추세 지속
+                confidence_factors.append(('Price', 0.5, 'BUY', '상승 모멘텀 지속'))
+        
+        # 3일 연속 하락
+        elif all(change < 0 for change in recent_changes):
+            # 하락폭이 크면 추가적인 매수 가능성
+            total_change = (df['Close'].iloc[-1] / df['Close'].iloc[-4] - 1) * 100
+            if total_change < -10:
+                score += 10  # 과매도 반등 가능성
+                confidence_factors.append(('Price', 0.6, 'BUY', f'3일 연속 급락 (총 {total_change:.2f}%)'))
+            else:
+                score -= 5  # 하락 추세 지속
+                confidence_factors.append(('Price', 0.5, 'SELL', '하락 추세 지속'))
+        
+        # 점수를 신호와 신뢰도로 변환
+        if score > 70:
+            signal = "BUY"
+            confidence = min((score - 50) / 50, 0.9)  # 최대 0.9
+        elif score < 30:
+            signal = "SELL"
+            confidence = min((50 - score) / 50, 0.9)  # 최대 0.9
+        else:
+            signal = "HOLD"
+            # 중립에 가까울수록 신뢰도가 낮아짐
+            confidence = 1.0 - abs(50 - score) / 20
+            confidence = max(0.3, min(confidence, 0.7))  # 0.3 ~ 0.7 사이 값
+        
+        logger.info(f"기술적 분석 결과 - 점수: {score}, 신호: {signal}, 신뢰도: {confidence:.2f}")
+        
+        return signal, confidence
+    
+    def _perform_gpt_analysis(self, df, symbol, market_context=None):
+        """
+        GPT 모델을 사용한 분석 수행
+        
+        Args:
+            df: 주가 데이터
+            symbol: 종목 코드
+            market_context: 시장 맥락 정보 (선택 사항)
+            
+        Returns:
+            dict: 분석 결과
+        """
+        # 분석에 사용할 추가 정보
+        additional_info = {
+            "market_context": market_context or {},
+            "analysis_purpose": "trading_signal",
+            "analysis_timestamp": pd.Timestamp.now().isoformat()
+        }
+        
+        # 여러 분석 유형 결과 조합
+        trend_analysis = self.analyzer.analyze_stock(df, symbol, "trend", additional_info)
+        risk_analysis = self.analyzer.analyze_stock(df, symbol, "risk", additional_info)
+        
+        # 분석 결과 조합
+        combined_analysis = {
+            "symbol": symbol,
+            "trend_analysis": trend_analysis.get("analysis", "분석 없음"),
+            "risk_analysis": risk_analysis.get("analysis", "분석 없음"),
+            "timestamp": pd.Timestamp.now().isoformat()
+        }
+        
+        # 매매 신호 추출을 위한 특별 분석 요청
+        signal_data = {
+            "symbol": symbol,
+            "trend_summary": trend_analysis.get("analysis", "")[:300],
+            "risk_summary": risk_analysis.get("analysis", "")[:300],
+            "recent_price_data": df[['Close', 'Volume']].tail(5).to_dict(),
+            "technical_indicators": {
+                "rsi": df['RSI'].iloc[-1] if 'RSI' in df.columns else None,
+                "macd": df['MACD'].iloc[-1] if 'MACD' in df.columns else None,
+                "macd_signal": df['MACD_signal'].iloc[-1] if 'MACD_signal' in df.columns else None
             }
+        }
+        
+        signal_analysis = self.analyzer.analyze_signals(signal_data)
+        combined_analysis["signal_analysis"] = signal_analysis
+        combined_analysis["analysis"] = signal_analysis  # 호환성을 위해
+        
+        return combined_analysis
+    
+    def _extract_gpt_signals(self, gpt_analysis):
+        """
+        GPT 분석 결과에서 매매 신호 추출
+        
+        Args:
+            gpt_analysis: GPT 분석 결과
             
-            # 캐시에 저장
-            self.signal_cache[symbol] = (current_time, result)
+        Returns:
+            tuple: (신호, 신뢰도)
+        """
+        analysis_text = gpt_analysis.get("signal_analysis", "")
+        if not analysis_text or isinstance(analysis_text, dict):
+            return "HOLD", 0.5
             
-            logger.info(f"{symbol} 신호 생성 완료: {signal_data['signal']} ({signal_data['strength']})")
-            return result
+        analysis_text = analysis_text.lower()
+        
+        # 매수 관련 키워드
+        buy_keywords = ["매수", "상승", "강세", "bullish", "buy", "positive", "상향", "매집", "저평가"]
+        sell_keywords = ["매도", "하락", "약세", "bearish", "sell", "negative", "하향", "매도세", "고평가"]
+        
+        # 키워드 등장 횟수
+        buy_count = sum(analysis_text.count(keyword) for keyword in buy_keywords)
+        sell_count = sum(analysis_text.count(keyword) for keyword in sell_keywords)
+        
+        # 신뢰도 관련 단어
+        high_confidence = ["매우", "확실", "strongly", "clearly", "significant", "뚜렷", "명확"]
+        low_confidence = ["약간", "조금", "slight", "mild", "weak", "미약", "불확실"]
+        
+        # 신뢰도 조정
+        confidence_base = 0.7  # 기본 신뢰도
+        
+        # 높은 신뢰도 증거가 있으면 +0.2
+        if any(word in analysis_text for word in high_confidence):
+            confidence_base = 0.9
+        # 낮은 신뢰도 증거가 있으면 -0.2
+        elif any(word in analysis_text for word in low_confidence):
+            confidence_base = 0.5
             
-        except Exception as e:
-            logger.error(f"매매 신호 생성 중 오류 발생: {e}")
+        # 신호 결정
+        if buy_count > sell_count * 1.5:  # 매수 신호가 매도 신호보다 1.5배 이상
+            return "BUY", confidence_base
+        elif sell_count > buy_count * 1.5:  # 매도 신호가 매수 신호보다 1.5배 이상
+            return "SELL", confidence_base
+        else:  # 보류 또는 중립
+            return "HOLD", max(0.4, confidence_base - 0.3)  # 보류는 신뢰도 낮춤
+    
+    def _combine_signals(self, tech_signal, tech_confidence, gpt_signal, gpt_confidence):
+        """
+        기술적 신호와 GPT 신호 조합
+        
+        Args:
+            tech_signal: 기술적 지표 기반 신호
+            tech_confidence: 기술적 신호 신뢰도
+            gpt_signal: GPT 기반 신호
+            gpt_confidence: GPT 신호 신뢰도
             
-            # 오류 발생 시 기본 응답
+        Returns:
+            tuple: (최종 신호, 최종 신뢰도)
+        """
+        # 신호 일치 여부
+        signals_match = tech_signal == gpt_signal
+        
+        # 신호 가중 평균 계산
+        signal_scores = {
+            "BUY": 1.0,
+            "HOLD": 0.0,
+            "SELL": -1.0
+        }
+        
+        tech_score = signal_scores.get(tech_signal, 0.0) * tech_confidence * self.technical_weight
+        gpt_score = signal_scores.get(gpt_signal, 0.0) * gpt_confidence * self.gpt_weight
+        
+        combined_score = tech_score + gpt_score
+        
+        # 최종 신호 및 신뢰도 결정
+        if combined_score > 0.3:
+            signal = "BUY"
+            confidence = min(abs(combined_score) + (0.1 if signals_match else 0), 1.0)
+        elif combined_score < -0.3:
+            signal = "SELL"
+            confidence = min(abs(combined_score) + (0.1 if signals_match else 0), 1.0)
+        else:
+            signal = "HOLD"
+            confidence = max(0.4, abs(combined_score) * 2)  # HOLD 신호는 신뢰도 낮춤
+            
+        return signal, confidence
+    
+    def _calculate_position_size(self, df, confidence, symbol):
+        """
+        매매 수량 결정
+        
+        Args:
+            df: 주가 데이터
+            confidence: 신호 신뢰도
+            symbol: 종목 코드
+            
+        Returns:
+            int: 매매 수량
+        """
+        # 기본 볼륨 (신뢰도에 따라 조정)
+        base_quantity = max(1, int(confidence * 5))
+        
+        # 변동성 체크
+        if 'Close' in df.columns and len(df) > 20:
+            # 20일 변동성
+            volatility = df['Close'].pct_change().rolling(window=20).std().iloc[-1]
+            
+            # 변동성이 높으면 수량 감소
+            if volatility > 0.03:  # 3% 이상 변동성
+                base_quantity = max(1, int(base_quantity * 0.7))
+            # 변동성이 매우 낮으면 수량 증가
+            elif volatility < 0.01:  # 1% 미만 변동성
+                base_quantity = int(base_quantity * 1.2)
+        
+        # 최대 매매 수량 제한
+        max_quantity = 10
+        quantity = min(base_quantity, max_quantity)
+        
+        return quantity
+
+    def analyze_stop_levels(self, df, symbol, market_context=None):
+        """
+        종목별 적절한 손절매/익절 수준 분석
+        
+        Args:
+            df: 주가 데이터 (DataFrame)
+            symbol: 종목 코드
+            market_context: 시장 맥락 정보 (선택 사항)
+            
+        Returns:
+            dict: 손절매/익절 설정 값
+        """
+        if df.empty:
+            logger.warning(f"{symbol}: 손절/익절 수준을 분석할 데이터가 없습니다.")
             return {
-                "symbol": symbol,
-                "market": market,
-                "timestamp": datetime.datetime.now().isoformat(),
-                "signal_data": {
-                    "signal": SignalType.UNKNOWN.value,
-                    "strength": StrengthLevel.WEAK.value,
-                    "time_horizon": "SHORT",
-                    "risk_level": "HIGH",
-                    "confidence": 0,
-                    "reasoning": f"오류 발생: {str(e)}",
-                    "key_factors": []
-                },
-                "analysis_text": f"매매 신호를 생성하는 중 오류가 발생했습니다: {str(e)}",
-                "error": str(e)
+                "stop_loss_pct": 5.0,  # 기본값
+                "take_profit_pct": 10.0,  # 기본값
+                "use_trailing_stop": True,
+                "trailing_stop_distance": 3.0,  # 기본값
+                "confidence": 0.0
             }
-    
-    def get_signals_for_watchlist(self, watchlist, data_provider):
-        """
-        관심종목 리스트에 대한 매매 신호 일괄 생성
-        
-        Args:
-            watchlist: 관심종목 리스트 [{symbol, market}]
-            data_provider: 데이터 제공자 객체
             
-        Returns:
-            dict: {종목코드: 매매 신호} 형태의 결과
-        """
-        results = {}
-        
-        for item in watchlist:
-            symbol = item.get('symbol')
-            market = item.get('market', 'KR')
-            
-            try:
-                # 데이터 가져오기
-                df = data_provider.get_historical_data(symbol, market)
-                
-                if df is None or len(df) < 20:
-                    logger.warning(f"{symbol} 데이터 불충분. 건너뜁니다.")
-                    continue
-                    
-                # 매매 신호 생성
-                signal = self.get_trading_signal(df, symbol, market)
-                results[symbol] = signal
-                
-                # API 호출 간격 관리
-                time.sleep(0.5)  # 추가 요청을 위한 짧은 대기
-                
-            except Exception as e:
-                logger.error(f"{symbol} 신호 생성 중 오류 발생: {e}")
-                results[symbol] = {
-                    "symbol": symbol,
-                    "error": str(e),
-                    "signal_data": {
-                        "signal": SignalType.UNKNOWN.value,
-                        "strength": StrengthLevel.WEAK.value
-                    }
-                }
-                
-        return results
-    
-    def filter_strong_signals(self, signals_dict, signal_type=None, min_confidence=70):
-        """
-        강한 신호만 필터링
-        
-        Args:
-            signals_dict: {종목코드: 신호} 형태의 딕셔너리
-            signal_type: 필터링할 신호 유형 (None=모든 유형)
-            min_confidence: 최소 신뢰도 (기본 70%)
-            
-        Returns:
-            dict: 필터링된 신호 딕셔너리
-        """
-        filtered = {}
-        
-        for symbol, data in signals_dict.items():
-            signal_data = data.get('signal_data', {})
-            signal = signal_data.get('signal')
-            strength = signal_data.get('strength')
-            confidence = signal_data.get('confidence', 0)
-            
-            # 신호 유형 및 강도, 신뢰도 필터링
-            if (signal_type is None or signal == signal_type) and \
-               strength == StrengthLevel.STRONG.value and \
-               confidence >= min_confidence:
-                filtered[symbol] = data
-                
-        return filtered
-    
-    def evaluate_portfolio(self, portfolio_data):
-        """
-        포트폴리오 전체 평가 및 재조정 추천
-        
-        Args:
-            portfolio_data: 포트폴리오 데이터 (종목별 데이터 포함)
-            
-        Returns:
-            dict: 포트폴리오 평가 및 추천 사항
-        """
         try:
-            # API 요청 간격 관리
-            self._wait_for_rate_limit()
+            # 1. 기술적 지표 기반 변동성 분석
+            volatility = self._calculate_volatility(df)
             
-            # 포트폴리오 분석 프롬프트
-            system_prompt = """당신은 포트폴리오 관리 전문가입니다.
-            제공된 포트폴리오 데이터와 시장 상황을 분석하여 포트폴리오 평가 및 조정 방안을 제안하세요.
+            # 2. 종목 특성 분석을 위한 GPT 요청
+            gpt_analysis = self._analyze_risk_profile(df, symbol, market_context, volatility)
             
-            답변은 다음 형식의 JSON으로 시작해야 합니다:
-            {
-              "portfolio_health": "HEALTHY/CAUTION/WARNING",
-              "risk_assessment": "LOW/MEDIUM/HIGH",
-              "diversification": "GOOD/MODERATE/POOR",
-              "suggestions": [
-                {"action": "ADD/REDUCE/HOLD", "symbol": "종목코드", "reasoning": "이유"},
-                ...
-              ],
-              "market_outlook": "BULLISH/NEUTRAL/BEARISH"
-            }
+            # 3. 손절매/익절 수준 설정
+            stop_levels = self._determine_stop_levels(volatility, gpt_analysis)
             
-            그 후 상세 분석과 전략적 제안을 제공하세요."""
+            logger.info(f"{symbol} 손절/익절 수준 분석 완료: 손절 {stop_levels['stop_loss_pct']:.1f}%, "
+                       f"익절 {stop_levels['take_profit_pct']:.1f}%, "
+                       f"트레일링스탑 거리 {stop_levels['trailing_stop_distance']:.1f}%")
             
-            user_prompt = f"""다음 포트폴리오 데이터를 분석하고 평가해주세요. 현재 시장 상황에 적합한 조정 방안과 함께 상세한 분석을 제공해주세요.
-            
-{json.dumps(portfolio_data, ensure_ascii=False, default=str)}
-
-다음 측면에서 포트폴리오를 평가해주세요:
-1. 전반적인 건전성과 리스크 수준
-2. 다각화 정도와 분산 투자 상태
-3. 시장 상황에 맞는 자산 배분 적절성
-4. 종목별 유지/증가/감소 추천
-5. 단기 및 중장기 전망
-
-현재 시장 상황을 고려한 구체적인 조정 방안을 제안해주세요."""
-
-            # API 호출
-            logger.info("GPT-4 API 호출: 포트폴리오 평가 및 추천")
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=2000,
-                temperature=0.3
-            )
-            
-            # 응답 텍스트 파싱
-            response_text = response.choices[0].message.content
-            
-            # JSON 추출 시도
-            portfolio_assessment = self._extract_json_from_response(response_text)
-            
-            # 결과 구성
-            result = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "portfolio_assessment": portfolio_assessment if portfolio_assessment else {"error": "평가 데이터를 추출할 수 없습니다."},
-                "detailed_analysis": self._clean_response_text(response_text)
-            }
-            
-            logger.info("포트폴리오 평가 완료")
-            return result
+            return stop_levels
             
         except Exception as e:
-            logger.error(f"포트폴리오 평가 중 오류 발생: {e}")
+            logger.error(f"{symbol} 손절/익절 수준 분석 중 오류 발생: {e}")
             return {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "error": str(e),
-                "portfolio_assessment": {"error": f"분석 중 오류: {str(e)}"}
+                "stop_loss_pct": 5.0,  # 기본값
+                "take_profit_pct": 10.0,  # 기본값
+                "use_trailing_stop": True,
+                "trailing_stop_distance": 3.0,  # 기본값
+                "confidence": 0.0
             }
     
-    def backtest_strategy(self, strategy_description, historical_data, initial_capital=10000000):
+    def _calculate_volatility(self, df):
         """
-        전략 백테스팅 (아직 구현되지 않음)
+        주가 데이터의 변동성 계산
         
         Args:
-            strategy_description: 전략 설명
-            historical_data: 과거 가격 데이터
-            initial_capital: 초기 자본금
+            df: 주가 데이터
             
         Returns:
-            dict: 백테스팅 결과
+            dict: 변동성 관련 지표
         """
-        # TODO: 백테스팅 로직 구현
+        # 일일 변동률 계산
+        daily_returns = df['Close'].pct_change().dropna()
+        
+        # 표준 변동성 (20일)
+        std_20d = daily_returns.rolling(window=20).std().iloc[-1]
+        
+        # ATR (Average True Range) - 20일
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr_20d = true_range.rolling(window=20).mean().iloc[-1] / df['Close'].iloc[-1]
+        
+        # 최근 20일 내 최대 하락폭
+        rolling_max = df['Close'].rolling(window=20).max()
+        max_drawdown = ((df['Close'] - rolling_max) / rolling_max).rolling(window=20).min().iloc[-1]
+        
+        # 일일 변동폭 평균 (%) - 고가와 저가의 차이
+        avg_daily_range_pct = ((df['High'] - df['Low']) / df['Close']).rolling(window=20).mean().iloc[-1] * 100
+        
         return {
-            "status": "not_implemented",
-            "message": "백테스팅 기능이 아직 구현되지 않았습니다."
+            "std_20d": std_20d,
+            "atr_20d": atr_20d,
+            "max_drawdown_20d": max_drawdown,
+            "avg_daily_range_pct": avg_daily_range_pct
+        }
+    
+    def _analyze_risk_profile(self, df, symbol, market_context, volatility):
+        """
+        종목의 리스크 프로필 분석을 위한 GPT 요청
+        
+        Args:
+            df: 주가 데이터
+            symbol: 종목 코드
+            market_context: 시장 맥락 정보
+            volatility: 변동성 지표
+            
+        Returns:
+            dict: GPT 분석 결과
+        """
+        # 분석에 필요한 데이터 준비
+        recent_data = df.tail(5)[['Close', 'Volume']].to_dict()
+        
+        # 변동성 데이터 추가
+        analysis_data = {
+            "symbol": symbol,
+            "market_context": market_context or {},
+            "recent_data": recent_data,
+            "volatility": volatility,
+            "analysis_purpose": "stop_loss_take_profit",
+            "timestamp": pd.Timestamp.now().isoformat()
+        }
+        
+        # GPT에 분석 요청 - 손절/익절 최적화를 위한 특별한 프롬프트 사용
+        risk_analysis = self.analyzer.analyze_stop_levels(analysis_data)
+        
+        return risk_analysis
+    
+    def _determine_stop_levels(self, volatility, gpt_analysis):
+        """
+        최종 손절매/익절 수준 결정
+        
+        Args:
+            volatility: 변동성 지표
+            gpt_analysis: GPT 분석 결과
+            
+        Returns:
+            dict: 손절매/익절 설정 값
+        """
+        # 기본 설정값
+        default_stop_loss = 5.0
+        default_take_profit = 10.0
+        default_trailing_stop = 3.0
+        
+        # GPT 추천 값 (없으면 기본값 사용)
+        gpt_results = gpt_analysis.get("recommendations", {})
+        gpt_stop_loss = gpt_results.get("stop_loss_pct", default_stop_loss)
+        gpt_take_profit = gpt_results.get("take_profit_pct", default_take_profit)
+        gpt_trailing_stop = gpt_results.get("trailing_stop_distance", default_trailing_stop)
+        
+        # 변동성 기반 조정 - 변동성이 높을수록 손절/익절 폭을 넓게 설정
+        volatility_factor = max(0.8, min(1.5, 1 + volatility["std_20d"] * 10))
+        avg_daily_range = volatility["avg_daily_range_pct"]
+        
+        # 평균 일일 변동폭이 큰 종목은 더 넓은 손절/익절폭 필요
+        if avg_daily_range > 3.0:  # 일 3% 이상 변동이면
+            volatility_factor *= 1.2
+        
+        # 최종 손절/익절 수준 결정 (GPT와 변동성 고려)
+        stop_loss = max(2.0, min(15.0, gpt_stop_loss * volatility_factor))
+        take_profit = max(5.0, min(30.0, gpt_take_profit * volatility_factor))
+        trailing_stop = max(1.0, min(10.0, gpt_trailing_stop * volatility_factor))
+        
+        # 손절폭이 익절폭보다 크지 않도록 조정
+        if stop_loss > take_profit * 0.8:
+            stop_loss = take_profit * 0.7
+            
+        return {
+            "stop_loss_pct": round(stop_loss, 1),
+            "take_profit_pct": round(take_profit, 1),
+            "use_trailing_stop": True,
+            "trailing_stop_distance": round(trailing_stop, 1),
+            "confidence": 0.8
         }

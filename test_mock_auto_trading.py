@@ -8,11 +8,14 @@ import sys
 import time
 import random
 import datetime
+import os  # os 모듈 추가
 import pandas as pd
 import numpy as np
 import pytz
 import schedule
 from src.notification.kakao_sender import KakaoSender
+from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
+from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
 import config
 
 # 로깅 설정
@@ -159,63 +162,118 @@ class MockStockData:
         return df
 
 class MockAutoTrader:
-    """모의 자동매매 클래스"""
+    """모의 자동 매매 실행 클래스"""
     
     def __init__(self, config):
         """
         초기화 함수
         
         Args:
-            config: 설정 객체
+            config: 설정 모듈
         """
         self.config = config
-        self.mock_stock_data = MockStockData()
-        self.kakao_sender = KakaoSender(config)
-        self.account_balance = 50000000  # 5천만원 초기 자본금
         
-        # 거래 이력
+        # 로거 설정
+        self.logger = self._setup_logger()
+        
+        # 모의 주식 데이터 생성기
+        self.mock_stock_data = MockStockData()
+        
+        # 텔레그램 메시지 발송 (선택 사항)
+        self.use_telegram = getattr(config, 'USE_TELEGRAM', False)
+        self.telegram = None
+        if self.use_telegram:
+            try:
+                from src.notification.telegram_sender import TelegramSender
+                self.telegram = TelegramSender(config)
+            except ImportError:
+                logger.warning("텔레그램 모듈을 불러올 수 없습니다.")
+        
+        # 카카오톡 메시지 발송 (선택 사항)
+        self.use_kakao = getattr(config, 'USE_KAKAO', False)
+        self.kakao = None
+        if self.use_kakao:
+            try:
+                from src.notification.kakao_sender import KakaoSender
+                self.kakao = KakaoSender(config)
+                logger.info("카카오톡 알림 기능 활성화")
+                self.kakao_sender = self.kakao
+            except ImportError:
+                logger.warning("카카오톡 모듈을 불러올 수 없습니다.")
+        
+        # GPT 분석 사용 여부
+        self.use_gpt_analysis = getattr(config, 'USE_GPT_ANALYSIS', False)
+        
+        # GPT 트레이딩 전략 설정
+        if self.use_gpt_analysis:
+            try:
+                from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
+                from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
+                
+                # ChatGPT 분석기 초기화
+                self.gpt_analyzer = ChatGPTAnalyzer(config)
+                
+                # GPT 트레이딩 전략 초기화
+                self.gpt_strategy = GPTTradingStrategy(config, self.gpt_analyzer)
+                
+                logger.info("GPT 분석 및 트레이딩 전략이 활성화되었습니다.")
+            except ImportError as e:
+                logger.error(f"GPT 모듈을 불러올 수 없습니다: {e}")
+                self.use_gpt_analysis = False
+            except Exception as e:
+                logger.error(f"GPT 초기화 중 오류 발생: {e}")
+                self.use_gpt_analysis = False
+        
+        # 최근 매매 신호 저장 딕셔너리
+        self.recent_signals = {}
+        
+        # 거래 내역
         self.trading_history = []
-        # 보유 종목
+        
+        # 보유 종목 정보 (종목코드: {수량, 평균단가, 시장})
         self.holdings = {}
         
-        # 시장별 종목 목록 (한국/미국)
-        self.kr_symbols = []
-        self.us_symbols = []
+        # 한국/미국 종목 리스트
+        self.kr_symbols = getattr(config, 'KR_STOCKS', [])
+        self.us_symbols = getattr(config, 'US_STOCKS', [])
         
-        # GPT가 선정한 종목이 있으면 사용, 없으면 기본 종목 사용
-        if hasattr(self.config, 'KR_STOCKS') and self.config.KR_STOCKS:
-            self.kr_symbols = self.config.KR_STOCKS
-        else:
-            self.kr_symbols = [
-                "005930",  # 삼성전자
-                "000660",  # SK하이닉스
-                "035420",  # NAVER
-                "051910",  # LG화학
-                "035720",  # 카카오
-            ]
-            
-        if hasattr(self.config, 'US_STOCKS') and self.config.US_STOCKS:
-            self.us_symbols = self.config.US_STOCKS
-        else:
-            self.us_symbols = [
-                "AAPL",    # 애플
-                "MSFT",    # 마이크로소프트
-                "GOOGL",   # 알파벳
-                "AMZN",    # 아마존
-                "TSLA",    # 테슬라
-            ]
+        # 모의 자본금
+        self.initial_capital = getattr(config, 'MOCK_INITIAL_CAPITAL', 10000000)  # 기본 1000만원
+        self.account_balance = self.initial_capital
         
-        # 시스템 실행 상태
+        # 실행 상태
         self.is_running = False
         
-        logger.info("모의 자동매매 클래스 초기화 완료")
-        logger.info(f"시작 계좌 잔고: {self.account_balance:,}원")
-        logger.info(f"한국 종목 목록: {', '.join(self.kr_symbols)}")
-        logger.info(f"미국 종목 목록: {', '.join(self.us_symbols)}")
+        # 손절매/익절 설정
+        self.stop_loss_pct = getattr(config, 'STOP_LOSS_PCT', 5)  # 기본 손절매 비율 5%
+        self.take_profit_pct = getattr(config, 'TAKE_PROFIT_PCT', 10)  # 기본 익절 비율 10%
+        self.use_trailing_stop = getattr(config, 'USE_TRAILING_STOP', False)  # 트레일링 스탑 사용 여부
+        self.trailing_stop_distance = getattr(config, 'TRAILING_STOP_DISTANCE', 3)  # 트레일링 스탑 거리(%)
+        
+        # 트레일링 스탑 기록용 딕셔너리
+        self.trailing_stops = {}  # {symbol: {'highest_price': 가격, 'stop_price': 가격}}
+        
+        # 성과 기록
+        self.performance = {
+            'start_date': datetime.datetime.now(),
+            'start_capital': self.initial_capital,
+            'current_capital': self.account_balance,
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'total_profit': 0,
+            'total_loss': 0
+        }
+        
+        logger.info(f"모의 자동매매 시스템 초기화 완료 (시작 자본금: {self.initial_capital:,}원)")
     
+    def _setup_logger(self):
+        """로거 설정"""
+        return logging.getLogger('MockAutoTrader')
+
     def generate_trading_signal(self, symbol, market="KR"):
         """
-        랜덤 매매 신호 생성
+        GPT 분석 기반 매매 신호 생성
         
         Args:
             symbol: 종목 코드
@@ -224,12 +282,10 @@ class MockAutoTrader:
         Returns:
             dict: 매매 신호 데이터
         """
-        # 매수/매도 신호 랜덤 생성
-        signal_type = random.choice(["BUY", "SELL"])
-        
         # 현재가 가져오기
         current_price = self.mock_stock_data.get_current_price(symbol)
         if current_price is None:
+            logger.warning(f"{symbol}: 가격 데이터를 가져올 수 없습니다.")
             return None
         
         # 종목명 가져오기
@@ -238,47 +294,173 @@ class MockAutoTrader:
         # 시장에 따라 통화 설정
         currency = "원" if market == "KR" else "달러"
         
-        # 신호 강도 랜덤 생성
-        strength = random.choice(["WEAK", "MEDIUM", "STRONG"])
+        # 모의 주식 데이터 생성 (30일치)
+        stock_df = self.mock_stock_data.generate_mock_data(symbol, days=30)
         
-        # 신호 이유 생성
-        reasons_by_type = {
+        if stock_df.empty:
+            logger.warning(f"{symbol}: 주가 데이터를 생성할 수 없습니다.")
+            return None
+            
+        # 기술적 지표 계산
+        try:
+            # RSI 계산 (14일)
+            delta = stock_df['Close'].diff()
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            avg_gain = gain.rolling(window=14).mean()
+            avg_loss = loss.rolling(window=14).mean()
+            rs = avg_gain / avg_loss.replace(0, 0.001)  # 0으로 나누기 방지
+            stock_df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # 이동평균 계산
+            stock_df['SMA_short'] = stock_df['Close'].rolling(window=5).mean()  # 5일 이동평균
+            stock_df['SMA_long'] = stock_df['Close'].rolling(window=20).mean()  # 20일 이동평균
+            
+            # MACD 계산
+            stock_df['EMA_12'] = stock_df['Close'].ewm(span=12, adjust=False).mean()
+            stock_df['EMA_26'] = stock_df['Close'].ewm(span=26, adjust=False).mean()
+            stock_df['MACD'] = stock_df['EMA_12'] - stock_df['EMA_26']
+            stock_df['MACD_signal'] = stock_df['MACD'].ewm(span=9, adjust=False).mean()
+            
+        except Exception as e:
+            logger.error(f"{symbol} 기술적 지표 계산 중 오류: {e}")
+            # 기본 지표라도 있는 상태로 계속 진행
+        
+        # GPT 분석 사용 여부에 따라 신호 생성 방식 변경
+        if self.use_gpt_analysis:
+            try:
+                # 시장 맥락 정보 (현재 시간, 시장 정보 등)
+                market_context = {
+                    "market": market,
+                    "current_time": datetime.datetime.now().isoformat(),
+                    "is_market_open": self.is_market_open(market),
+                    "current_price": current_price,
+                    "currency": currency
+                }
+                
+                logger.info(f"{symbol}({stock_name}): GPT 트레이딩 전략 분석 시작")
+                
+                # GPT 트레이딩 전략 분석
+                analysis_result = self.gpt_strategy.analyze_stock(stock_df, symbol, market_context)
+                
+                # 분석 결과에서 신호 추출
+                signal_type = analysis_result.get("signal", "NONE")
+                confidence = analysis_result.get("confidence", 0.0)
+                quantity = analysis_result.get("quantity", 0)
+                
+                # 매매 신호 강도 결정
+                if confidence >= 0.8:
+                    strength = "STRONG"
+                elif confidence >= 0.6:
+                    strength = "MEDIUM"
+                else:
+                    strength = "WEAK"
+                
+                # 매매 이유 생성
+                technical_signal = analysis_result.get("technical_signal", "NONE")
+                gpt_signal = analysis_result.get("gpt_signal", "NONE")
+                analysis_summary = analysis_result.get("analysis_summary", "")
+                
+                # 이유 요약 생성
+                if len(analysis_summary) > 200:
+                    analysis_summary = analysis_summary[:197] + "..."
+                
+                reason = f"[기술적 신호: {technical_signal}, GPT 신호: {gpt_signal}, 신뢰도: {confidence:.2f}] {analysis_summary}"
+                
+                logger.info(f"{symbol}({stock_name}): GPT 분석 결과 - {signal_type} 신호, 신뢰도: {confidence:.2f}")
+                
+                # "NONE" 또는 "HOLD" 신호는 처리하지 않음
+                if signal_type in ["NONE", "HOLD", "ERROR"]:
+                    logger.info(f"{symbol}({stock_name}): 매매 신호 없음 (NONE/HOLD/ERROR)")
+                    return None
+                
+                # 매매 신호 데이터 생성
+                signal = {
+                    'symbol': symbol,
+                    'name': stock_name,
+                    'price': current_price,
+                    'market': market,
+                    'currency': currency,
+                    'timestamp': datetime.datetime.now(),
+                    'signals': [{
+                        'type': signal_type,
+                        'strength': strength,
+                        'reason': reason,
+                        'confidence': confidence,
+                        'date': datetime.datetime.now().strftime('%Y-%m-%d')
+                    }]
+                }
+                
+                return signal
+                
+            except Exception as e:
+                logger.error(f"{symbol} GPT 분석 중 오류 발생: {e}")
+                # GPT 분석 실패 시 기존 방식으로 계속 진행
+        
+        # GPT 분석 사용하지 않거나, 오류 발생시 기존 랜덤 방식으로 생성
+        # 랜덤 신호 생성 (백업 방식)
+        signal_type = random.choice(["BUY", "SELL", "HOLD", "HOLD", "HOLD"])  # HOLD에 가중치 부여
+        strength = random.choice(["STRONG", "MEDIUM", "WEAK"])
+        
+        # 랜덤 신뢰도 (0.1 ~ 0.9, 소수점 둘째자리까지)
+        confidence = round(random.uniform(0.2, 0.8), 2)
+        
+        # 신호 강도에 따라 신뢰도 조정
+        if strength == "STRONG":
+            confidence = min(0.9, confidence + 0.15)
+        elif strength == "WEAK":
+            confidence = max(0.1, confidence - 0.15)
+            
+        # 랜덤 이유 생성
+        reasons = {
             "BUY": [
-                f"{stock_name}의 기술적 지표가 매수 신호를 보입니다",
-                f"{stock_name}의 상대강도지수(RSI)가 과매도 구간에서 반등했습니다",
-                f"{stock_name}의 이동평균선이 골든크로스를 형성했습니다",
-                f"{stock_name}의 볼린저밴드 하단에 접근했습니다",
-                f"{stock_name}의 MACD가 시그널 라인을 상향 돌파했습니다"
+                f"RSI(14) = {random.randint(10, 40)}로 과매도 상태",
+                f"20일 이동평균선 상향 돌파 확인",
+                f"MACD 골든크로스 신호",
+                f"최근 {random.randint(2, 5)}일 연속 상승 추세",
+                f"거래량 {random.randint(150, 300)}% 급증"
             ],
             "SELL": [
-                f"{stock_name}의 기술적 지표가 매도 신호를 보입니다",
-                f"{stock_name}의 상대강도지수(RSI)가 과매수 구간에 진입했습니다",
-                f"{stock_name}의 이동평균선이 데드크로스를 형성했습니다",
-                f"{stock_name}의 볼린저밴드 상단에 접근했습니다",
-                f"{stock_name}의 MACD가 시그널 라인을 하향 돌파했습니다"
+                f"RSI(14) = {random.randint(60, 90)}로 과매수 상태",
+                f"20일 이동평균선 하향 돌파",
+                f"MACD 데드크로스 신호",
+                f"최근 {random.randint(2, 5)}일 연속 하락 추세",
+                f"거래량 {random.randint(40, 80)}% 감소"
+            ],
+            "HOLD": [
+                "뚜렷한 추세가 보이지 않음",
+                "기술적 지표 혼조세",
+                "추가 확인 필요",
+                f"RSI(14) = {random.randint(40, 60)}로 중립 구간",
+                "시장 관망 필요"
             ]
         }
         
-        reason = random.choice(reasons_by_type[signal_type])
+        reason = random.choice(reasons.get(signal_type, ["추가 분석 필요"]))
         
-        # 지금 시간
-        timestamp = datetime.datetime.now()
+        # "HOLD" 신호는 처리하지 않음 (신호 없음으로 취급)
+        if signal_type == "HOLD":
+            logger.info(f"{symbol}({stock_name}): 랜덤 분석 결과 - 매매 신호 없음 (HOLD)")
+            return None
         
+        # 매매 신호 데이터 생성
         signal = {
             'symbol': symbol,
             'name': stock_name,
             'price': current_price,
             'market': market,
             'currency': currency,
-            'timestamp': timestamp,
+            'timestamp': datetime.datetime.now(),
             'signals': [{
                 'type': signal_type,
                 'strength': strength,
                 'reason': reason,
-                'date': timestamp.strftime('%Y-%m-%d')
+                'confidence': confidence,
+                'date': datetime.datetime.now().strftime('%Y-%m-%d')
             }]
         }
         
+        logger.info(f"{symbol}({stock_name}): 랜덤 분석 결과 - {signal_type} 신호, 신뢰도: {confidence:.2f}")
         return signal
     
     def execute_trade(self, signal):
@@ -308,6 +490,11 @@ class MockAutoTrader:
         current_holdings = self.holdings.get(symbol, {'quantity': 0, 'avg_price': 0, 'market': market})
         holding_quantity = current_holdings['quantity']
         
+        # 매도 신호일 경우, 보유 수량이 없으면 처리하지 않음
+        if signal_type == "SELL" and holding_quantity <= 0:
+            logger.info(f"{symbol}({stock_name}) 매도 신호가 있으나 보유수량이 없습니다. 처리를 건너뜁니다.")
+            return False
+        
         # 매매 수량 결정
         trade_amount = 0
         
@@ -320,21 +507,32 @@ class MockAutoTrader:
             # 최대 매수 수량 계산
             buy_quantity = int(trade_amount / price)
             
+            # 매수 수량 검증 - 0 이하인 경우 처리 안함
             if buy_quantity <= 0:
-                logger.info(f"{symbol} 매수 신호가 있으나 수량이 0보다 작거나 같습니다")
+                logger.info(f"{symbol}({stock_name}) 매수 신호가 있으나 계산된 수량이 0보다 작거나 같습니다. 처리를 건너뜁니다.")
                 return False
                 
             # 계좌 잔고 확인
-            if self.account_balance < buy_quantity * price:
-                logger.info(f"{symbol} 매수 신호가 있으나 계좌 잔고가 부족합니다")
-                return False
+            required_amount = buy_quantity * price
+            if self.account_balance < required_amount:
+                logger.info(f"{symbol}({stock_name}) 매수 신호가 있으나 필요금액({required_amount:,}원)이 계좌 잔고({self.account_balance:,}원)보다 많습니다.")
+                
+                # 가능한 최대 수량으로 조정
+                adjusted_quantity = int(self.account_balance / price)
+                if adjusted_quantity > 0:
+                    logger.info(f"{symbol}({stock_name}) 매수 수량을 {buy_quantity}주에서 {adjusted_quantity}주로 조정합니다.")
+                    buy_quantity = adjusted_quantity
+                else:
+                    logger.info(f"{symbol}({stock_name}) 매수 가능한 수량이 없습니다. 처리를 건너뜁니다.")
+                    return False
                 
             # 매수 실행
-            self.account_balance -= buy_quantity * price
+            purchase_amount = buy_quantity * price
+            self.account_balance -= purchase_amount
             
             # 보유종목 업데이트
             total_quantity = holding_quantity + buy_quantity
-            total_amount = (holding_quantity * current_holdings['avg_price']) + (buy_quantity * price)
+            total_amount = (holding_quantity * current_holdings['avg_price']) + purchase_amount
             new_avg_price = total_amount / total_quantity if total_quantity > 0 else 0
             
             self.holdings[symbol] = {
@@ -352,29 +550,38 @@ class MockAutoTrader:
                 'type': 'BUY',
                 'price': price,
                 'quantity': buy_quantity,
-                'amount': buy_quantity * price
+                'amount': purchase_amount
             })
             
             currency = "원" if market == "KR" else "달러"
-            logger.info(f"{symbol}({stock_name}) {buy_quantity}주 매수 완료 - 단가: {price:,}{currency}, 총액: {buy_quantity * price:,}{currency}")
+            logger.info(f"{symbol}({stock_name}) {buy_quantity}주 매수 완료 - 단가: {price:,}{currency}, 총액: {purchase_amount:,}{currency}")
             return True
             
         elif signal_type == "SELL":
-            # 보유 종목이 있는지 확인
-            if holding_quantity <= 0:
-                logger.info(f"{symbol} 매도 신호가 있으나 보유수량이 없습니다")
-                return False
-                
+            # 이미 보유 종목이 있는지 확인은 위에서 했음
+            
             # 매도할 수량 결정 (강도에 따라)
             strength_factor = {"WEAK": 0.2, "MEDIUM": 0.5, "STRONG": 0.8}
             sell_quantity = int(holding_quantity * strength_factor[strength])
             
+            # 매도 수량 검증 - 최소 1주 이상
             if sell_quantity <= 0:
-                logger.info(f"{symbol} 매도 신호가 있으나 매도 수량이 0보다 작거나 같습니다")
-                return False
+                # 최소 1주는 매도하도록 조정
+                if holding_quantity > 0:
+                    sell_quantity = 1
+                    logger.info(f"{symbol}({stock_name}) 매도 수량이 0이하로 계산되어 최소 1주로 조정합니다.")
+                else:
+                    logger.info(f"{symbol}({stock_name}) 매도 신호가 있으나 매도 수량이 0보다 작거나 같습니다.")
+                    return False
+                
+            # 보유량보다 많이 매도하지 않도록 조정
+            if sell_quantity > holding_quantity:
+                sell_quantity = holding_quantity
+                logger.info(f"{symbol}({stock_name}) 매도 수량이 보유 수량보다 많아 {holding_quantity}주로 조정합니다.")
                 
             # 매도 실행
-            self.account_balance += sell_quantity * price
+            sell_amount = sell_quantity * price
+            self.account_balance += sell_amount
             
             # 보유종목 업데이트
             new_quantity = holding_quantity - sell_quantity
@@ -393,11 +600,11 @@ class MockAutoTrader:
                 'type': 'SELL',
                 'price': price,
                 'quantity': sell_quantity,
-                'amount': sell_quantity * price
+                'amount': sell_amount
             })
             
             currency = "원" if market == "KR" else "달러"
-            logger.info(f"{symbol}({stock_name}) {sell_quantity}주 매도 완료 - 단가: {price:,}{currency}, 총액: {sell_quantity * price:,}{currency}")
+            logger.info(f"{symbol}({stock_name}) {sell_quantity}주 매도 완료 - 단가: {price:,}{currency}, 총액: {sell_amount:,}{currency}")
             return True
             
         return False
@@ -635,7 +842,7 @@ class MockAutoTrader:
                     summary += f"  【 미국 시장 총 보유가치: ${total_us_value:,.2f} (약 {total_us_value_krw:,}원) 】\n\n"
                 
                 # 총 보유자산
-                total_holdings_value = sum(holding['quantity'] * self.mock_stock_data.get_current_price(symbol) 
+                total_assets = self.account_balance + sum(holding['quantity'] * self.mock_stock_data.get_current_price(symbol) 
                                          for symbol, holding in self.holdings.items() if holding['quantity'] > 0 and holding.get('market') == 'KR')
                 
                 # 미국 주식 가치 원화 환산
@@ -643,7 +850,6 @@ class MockAutoTrader:
                 us_holdings_value_krw = sum(holding['quantity'] * self.mock_stock_data.get_current_price(symbol) * exchange_rate
                                           for symbol, holding in self.holdings.items() if holding['quantity'] > 0 and holding.get('market') == 'US')
                 
-                total_assets = self.account_balance + total_holdings_value + us_holdings_value_krw
                 total_profit = total_assets - initial_balance
                 total_profit_percent = (total_profit / initial_balance) * 100
                 
@@ -671,35 +877,238 @@ class MockAutoTrader:
         Returns:
             bool: 시장 오픈 여부
         """
-        # 현재 한국 시간
-        now_kr = datetime.datetime.now(pytz.timezone('Asia/Seoul'))
-        current_weekday = now_kr.weekday()  # 0=월요일, 1=화요일, ..., 6=일요일
+        # 강제 오픈 모드 설정 (환경 변수나 설정으로 제어 가능)
+        force_open = getattr(self.config, 'FORCE_MARKET_OPEN', False)
+        if force_open:
+            logger.info(f"강제 시장 오픈 모드 활성화: {market} 시장")
+            return True
+            
+        # GitHub Actions 환경에서는 강제로 시장을 열림 처리
+        is_ci_env = os.environ.get('CI') == 'true'
+        if is_ci_env:
+            logger.info(f"CI 환경 감지: {market} 시장 열림 상태로 간주합니다.")
+            return True
         
-        # 주말이면 시장 닫힘
+        # 한국 시간 (KST) 기준으로 계산
+        now_kst = datetime.datetime.now(pytz.timezone('Asia/Seoul'))
+        current_weekday = now_kst.weekday()  # 0=월요일, 1=화요일, ..., 6=일요일
+        
+        # 주말 체크 (토/일)
         if current_weekday >= 5:  # 토요일(5) 또는 일요일(6)
+            logger.info(f"주말({['월', '화', '수', '목', '금', '토', '일'][current_weekday]}요일)이므로 {market} 시장 닫힘")
             return False
         
-        if market == "KR":
-            # 한국 시장 시간 (9:00 ~ 15:30)
-            market_open = datetime.time(hour=9, minute=0)
-            market_close = datetime.time(hour=15, minute=30)
+        # 공휴일 체크 (간단한 구현, 실제로는 공휴일 목록을 참조해야 함)
+        # TODO: 공휴일 목록을 별도로 관리하여 체크하는 로직 추가
             
-            current_time = now_kr.time()
-            return market_open <= current_time <= market_close
+        # 시장별 시간 체크
+        if market == "KR":
+            # 설정에서 시장 시간 가져오기
+            market_open_str = getattr(self.config, 'KR_MARKET_OPEN_TIME', "09:00")
+            market_close_str = getattr(self.config, 'KR_MARKET_CLOSE_TIME', "15:30")
+            
+            # 한국 시장 시간 (9:00 ~ 15:30)
+            open_hour, open_minute = map(int, market_open_str.split(':'))
+            close_hour, close_minute = map(int, market_close_str.split(':'))
+            
+            market_open = datetime.time(hour=open_hour, minute=open_minute)
+            market_close = datetime.time(hour=close_hour, minute=close_minute)
+            
+            current_time = now_kst.time()
+            is_open = market_open <= current_time <= market_close
+            
+            logger.info(f"한국 시장 시간 확인: 현재 {current_time.strftime('%H:%M')}, 개장 {market_open_str}~{market_close_str}, 결과: {'열림' if is_open else '닫힘'}")
+            return is_open
             
         elif market == "US":
-            # 미국 동부 시간 (EST)
-            now_us = datetime.datetime.now(pytz.timezone('US/Eastern'))
+            # 설정에서 시장 시간 가져오기
+            market_open_str = getattr(self.config, 'US_MARKET_OPEN_TIME', "09:30")
+            market_close_str = getattr(self.config, 'US_MARKET_CLOSE_TIME', "16:00")
+            
+            # 미국 동부 시간 (EST/EDT) 계산
+            now_us_eastern = datetime.datetime.now(pytz.timezone('US/Eastern'))
             
             # 미국 시장 시간 (9:30 ~ 16:00 EST)
-            market_open = datetime.time(hour=9, minute=30)
-            market_close = datetime.time(hour=16, minute=0)
+            open_hour, open_minute = map(int, market_open_str.split(':'))
+            close_hour, close_minute = map(int, market_close_str.split(':'))
             
-            current_time = now_us.time()
-            return market_open <= current_time <= market_close
+            market_open = datetime.time(hour=open_hour, minute=open_minute)
+            market_close = datetime.time(hour=close_hour, minute=close_minute)
+            
+            current_time = now_us_eastern.time()
+            is_open = market_open <= current_time <= market_close
+            
+            logger.info(f"미국 시장 시간 확인: 현재(ET) {current_time.strftime('%H:%M')}, 개장 {market_open_str}~{market_close_str}, 결과: {'열림' if is_open else '닫힘'}")
+            return is_open
         
         return False
     
+    def check_stop_loss_take_profit(self):
+        """
+        보유 종목에 대한 손절매/익절 조건 확인 및 처리
+        GPT 분석 기반으로 종목별 맞춤 손절/익절 수준 적용
+        """
+        if not self.holdings:
+            return
+            
+        logger.info("손절매/익절 조건 확인 시작")
+        
+        for symbol, holding in list(self.holdings.items()):
+            if holding['quantity'] <= 0:
+                continue
+                
+            market = holding.get('market', 'KR')
+            avg_price = holding.get('avg_price', 0)
+            quantity = holding.get('quantity', 0)
+            
+            # 현재 가격 조회
+            current_price = self.mock_stock_data.get_current_price(symbol)
+            if current_price is None:
+                logger.warning(f"{symbol}: 현재 가격을 조회할 수 없습니다.")
+                continue
+                
+            # 수익률 계산
+            profit_pct = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
+            profit_amount = (current_price - avg_price) * quantity
+            
+            stock_name = self.mock_stock_data.get_stock_name(symbol)
+            currency = "원" if market == "KR" else "달러"
+            
+            # 모의 주식 데이터 생성 (GPT 분석용)
+            stock_df = self.mock_stock_data.generate_mock_data(symbol, days=30)
+            if stock_df.empty:
+                logger.warning(f"{symbol}의 데이터를 생성할 수 없어 기본 손절/익절 값을 사용합니다.")
+                stop_loss = self.stop_loss_pct
+                take_profit = self.take_profit_pct
+                trailing_stop_distance = self.trailing_stop_distance
+            else:
+                # 시장 맥락 정보
+                market_context = {
+                    "market": market,
+                    "current_time": datetime.datetime.now().isoformat(),
+                    "is_market_open": self.is_market_open(market),
+                    "current_price": current_price,
+                    "currency": currency,
+                    "profit_pct": profit_pct
+                }
+                
+                # 이 종목에 대한 맞춤형 손절/익절 전략이 필요한 경우 (보유 종목)
+                if self.use_gpt_analysis and hasattr(self, 'gpt_strategy'):
+                    try:
+                        # GPT 기반 손절/익절 수준 분석
+                        logger.info(f"{symbol}({stock_name}): GPT 기반 손절/익절 수준 분석 시작")
+                        stop_levels = self.gpt_strategy.analyze_stop_levels(stock_df, symbol, market_context)
+                        
+                        # 분석 결과에서 값 추출
+                        stop_loss = stop_levels.get("stop_loss_pct", self.stop_loss_pct)
+                        take_profit = stop_levels.get("take_profit_pct", self.take_profit_pct)
+                        trailing_stop_distance = stop_levels.get("trailing_stop_distance", self.trailing_stop_distance)
+                        
+                        # 설정값 로그 출력
+                        logger.info(f"{symbol}({stock_name}) 맞춤 손절/익절: 손절 {stop_loss:.1f}%, 익절 {take_profit:.1f}%, "
+                                   f"트레일링스탑 {trailing_stop_distance:.1f}%")
+                    except Exception as e:
+                        # GPT 분석 실패 시 기본값 사용
+                        logger.error(f"{symbol}({stock_name}) GPT 손절/익절 분석 실패: {e}")
+                        stop_loss = self.stop_loss_pct
+                        take_profit = self.take_profit_pct
+                        trailing_stop_distance = self.trailing_stop_distance
+                else:
+                    # GPT 분석을 사용하지 않을 경우 기본값 사용
+                    stop_loss = self.stop_loss_pct
+                    take_profit = self.take_profit_pct
+                    trailing_stop_distance = self.trailing_stop_distance
+            
+            # 트레일링 스탑 업데이트 (가격이 상승한 경우)
+            if self.use_trailing_stop:
+                if symbol not in self.trailing_stops:
+                    # 처음 기록하는 경우 초기 설정
+                    self.trailing_stops[symbol] = {
+                        'highest_price': current_price,
+                        'stop_price': current_price * (1 - trailing_stop_distance / 100)
+                    }
+                else:
+                    # 가격이 이전 최고가보다 상승한 경우 트레일링 스탑 업데이트
+                    if current_price > self.trailing_stops[symbol]['highest_price']:
+                        self.trailing_stops[symbol]['highest_price'] = current_price
+                        self.trailing_stops[symbol]['stop_price'] = current_price * (1 - trailing_stop_distance / 100)
+                        logger.info(f"{symbol}({stock_name}): 트레일링 스탑 갱신 - 최고가: {current_price:,.0f}{currency}, "
+                                   f"스탑가: {self.trailing_stops[symbol]['stop_price']:,.0f}{currency}")
+            
+            # 손절매 조건 확인
+            stop_triggered = False
+            if profit_pct <= -stop_loss:
+                reason = f"손절매 조건 충족 (수익률: {profit_pct:.2f}%, 기준: -{stop_loss:.1f}%)"
+                stop_triggered = True
+                
+            elif self.use_trailing_stop and symbol in self.trailing_stops and current_price <= self.trailing_stops[symbol]['stop_price']:
+                highest_price = self.trailing_stops[symbol]['highest_price']
+                drop_pct = ((current_price / highest_price) - 1) * 100
+                reason = f"트레일링 스탑 조건 충족 (최고가: {highest_price:,.0f}{currency} 대비 {drop_pct:.2f}%, 기준: -{trailing_stop_distance:.1f}%)"
+                stop_triggered = True
+                
+            if stop_triggered:
+                logger.info(f"{symbol}({stock_name}) {reason} - 매도 실행")
+                
+                # 모든 보유 수량 매도 신호 생성
+                sell_signal = {
+                    'symbol': symbol,
+                    'name': stock_name,
+                    'price': current_price,
+                    'market': market,
+                    'currency': currency,
+                    'timestamp': datetime.datetime.now(),
+                    'signals': [{
+                        'type': 'SELL',
+                        'strength': 'STRONG',
+                        'reason': reason,
+                        'confidence': 0.9,
+                        'date': datetime.datetime.now().strftime('%Y-%m-%d')
+                    }]
+                }
+                
+                # 매도 실행
+                if self.execute_trade(sell_signal):
+                    self.send_trade_notification(sell_signal, True)
+                    
+                    # 트레일링 스탑 정보 삭제
+                    if self.use_trailing_stop and symbol in self.trailing_stops:
+                        del self.trailing_stops[symbol]
+                        
+                    continue
+            
+            # 익절 조건 확인
+            if profit_pct >= take_profit:
+                reason = f"익절 조건 충족 (수익률: +{profit_pct:.2f}%, 기준: +{take_profit:.1f}%)"
+                logger.info(f"{symbol}({stock_name}) {reason} - 매도 실행")
+                
+                # 모든 보유 수량 매도 신호 생성
+                sell_signal = {
+                    'symbol': symbol,
+                    'name': stock_name,
+                    'price': current_price,
+                    'market': market,
+                    'currency': currency,
+                    'timestamp': datetime.datetime.now(),
+                    'signals': [{
+                        'type': 'SELL',
+                        'strength': 'STRONG',
+                        'reason': reason,
+                        'confidence': 0.9,
+                        'date': datetime.datetime.now().strftime('%Y-%m-%d')
+                    }]
+                }
+                
+                # 매도 실행
+                if self.execute_trade(sell_signal):
+                    self.send_trade_notification(sell_signal, True)
+                    
+                    # 트레일링 스탑 정보 삭제
+                    if self.use_trailing_stop and symbol in self.trailing_stops:
+                        del self.trailing_stops[symbol]
+        
+        logger.info("손절매/익절 조건 확인 완료")
+
     def check_market_status(self):
         """
         시장 상태 확인 및 필요한 작업 수행
@@ -709,6 +1118,10 @@ class MockAutoTrader:
         
         current_time_kr = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"시장 상태 확인 ({current_time_kr}) - 한국: {'열림' if kr_open else '닫힘'}, 미국: {'열림' if us_open else '닫힘'}")
+        
+        # 손절매/익절 확인 (시장이 열렸을 때만)
+        if kr_open or us_open:
+            self.check_stop_loss_take_profit()
         
         # 한국 시장이 열려있으면 한국 종목 거래
         if kr_open:
@@ -732,7 +1145,7 @@ class MockAutoTrader:
         
         try:
             # 시스템 시작 메시지
-            start_message = "🚀 24시간 모의 자동매매 시스템이 시작되었습니다.\n"
+            start_message = "🚀 24시간 모의자동매매 시스템이 시작되었습니다.\n"
             start_message += f"• 시작 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             start_message += f"• 초기 계좌 잔고: {self.account_balance:,}원\n"
             start_message += f"• 한국 종목: {', '.join([f'{symbol}({self.mock_stock_data.get_stock_name(symbol)})' for symbol in self.kr_symbols])}\n"

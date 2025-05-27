@@ -1,0 +1,59 @@
+name: 자동 모의매매 시스템
+
+on:
+  schedule:
+    # 매일 아침 8시 50분(KST)에 실행 (UTC 기준 23:50)
+    - cron: '50 23 * * *'
+  workflow_dispatch: # 수동 실행 가능하도록 설정
+
+jobs:
+  run-auto-trading:
+    runs-on: ubuntu-latest
+    
+    env:
+      TZ: Asia/Seoul  # 시간대를 한국 시간(KST)으로 설정
+      KAKAO_API_KEY: ${{ secrets.KAKAO_API_KEY }}
+      KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+      KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CI: true  # CI 환경 표시
+      FORCE_MARKET_OPEN: "true"  # GitHub Actions에서 강제로 시장 열림 처리
+      USE_GPT_ANALYSIS: "true"  # GPT 분석 활성화
+
+    steps:
+      - name: 체크아웃 코드
+        uses: actions/checkout@v3
+
+      - name: Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 시스템 정보 출력
+        run: |
+          echo "현재 시간 (KST): `TZ='Asia/Seoul' date`"
+          echo "현재 시간 (UTC): `date`"
+          echo "Python 버전: `python --version`"
+          echo "작업 디렉토리: `pwd`"
+          ls -la
+
+      - name: 모의 자동매매 실행
+        run: |
+          python test_mock_auto_trading.py
+        # 최대 4시간 동안 실행 (한국 시장 종료시까지)
+        timeout-minutes: 240
+
+      - name: 실행 로그 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: trading-logs
+          path: |
+            mock_auto_trading.log
+          retention-days: 14

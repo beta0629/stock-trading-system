@@ -179,6 +179,60 @@ class ChatGPTAnalyzer:
                 "analysis": "분석 중 오류가 발생했습니다."
             }
     
+    def analyze_signals(self, signal_data):
+        """
+        매매 신호 분석
+        
+        Args:
+            signal_data: 매매 신호 데이터 (dict)
+            
+        Returns:
+            str: 분석 결과
+        """
+        if not self.client:
+            logger.error("OpenAI API 키가 설정되지 않아 신호 분석을 할 수 없습니다.")
+            return "ChatGPT 분석을 사용할 수 없습니다."
+            
+        try:
+            # 프롬프트 구성
+            system_prompt = """당신은 주식 시장 전문 트레이더입니다. 제공된 기술적 지표와 시장 분석 정보를 바탕으로 매매 신호를 분석해주세요.
+            명확한 매수/매도/홀드 판단과 그 근거를 제시하세요. 분석은 객관적 사실에 기반해야 합니다.
+            최종적으로 종목의 '매수', '매도', '홀드' 중 하나의 결론과 그 신뢰도를 함께 제시하세요."""
+            
+            user_prompt = f"""다음 종목({signal_data.get('symbol', '알 수 없음')})의 매매 신호를 분석해주세요.
+            
+            【 종목 정보 】
+            {json.dumps(signal_data, ensure_ascii=False, indent=2)}
+            
+            위 데이터를 분석하여 명확한 매매 신호(매수/매도/홀드)와 그 이유를 제시해주세요.
+            또한 그 신호의 신뢰도(0.0~1.0)도 함께 알려주세요.
+            응답의 마지막에는 결론(매수/매도/홀드)과 신뢰도를 명확하게 표시해주세요.
+            """
+            
+            # API 호출 제한 관리
+            self._wait_for_rate_limit()
+            
+            # API 호출
+            logger.info(f"매매 신호 분석 API 호출: {signal_data.get('symbol', '알 수 없음')}")
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature
+            )
+            
+            # 응답 처리
+            analysis_text = response.choices[0].message.content
+            logger.info(f"매매 신호 분석 완료: {signal_data.get('symbol', '알 수 없음')}")
+            return analysis_text
+            
+        except Exception as e:
+            logger.error(f"매매 신호 분석 중 오류 발생: {e}")
+            return f"분석 중 오류가 발생했습니다: {str(e)}"
+            
     def _get_prompt_template(self, analysis_type):
         """
         분석 유형에 따른 프롬프트 템플릿 반환
@@ -195,20 +249,23 @@ class ChatGPTAnalyzer:
                 "user": "다음 주식 데이터를 분석해주세요. 최근 추세, 기술적 지표의 신호, 주요 지지선과 저항선을 포함한 종합적인 분석을 제공해주세요.\n\n{data}"
             },
             "risk": {
-                "system": "당신은 리스크 분석 전문가입니다. 제공된 데이터를 바탕으로 현재 주가의 위험 요소와 잠재적인 하락 가능성을 분석합니다. 보수적인 관점에서 리스크를 평가하세요.",
-                "user": "다음 주식 데이터의 리스크를 분석해주세요. 현재 가격 수준의 위험도, 변동성 분석, 손실 가능성 및 리스크 대비 수익 잠재력을 평가해주세요.\n\n{data}"
+                "system": "당신은 주식 시장 위험 분석 전문가입니다. 주어진 데이터에서 위험 요소와 잠재적인 위기 징후를 파악하는 데 특화되어 있습니다. 객관적인 위험 분석만 제공하세요.",
+                "user": "다음 주식 데이터의 위험 요소를 분석해주세요. 변동성, 하락 위험, 시장 평균 대비 성과, 그리고 잠재적인 위험 신호를 포함한 분석을 제공해주세요.\n\n{data}"
             },
             "trend": {
-                "system": "당신은 추세 분석 전문가입니다. 제공된 데이터를 바탕으로 주가의 현재 추세와 향후 추세 전환 가능성을 분석합니다. 모멘텀과 추세 강도에 집중하세요.",
-                "user": "다음 주식 데이터의 추세를 분석해주세요. 현재 추세의 강도, 지속 가능성, 잠재적인 추세 전환 신호를 포함한 분석을 제공해주세요.\n\n{data}"
+                "system": "당신은 주식 시장 추세 분석 전문가입니다. 제공된 데이터에서 단기 및 중장기 추세를 파악하고 미래 방향성을 예측하는 데 전문성이 있습니다. 객관적인 추세 분석만 제공하세요.",
+                "user": "다음 주식 데이터의 추세를 분석해주세요. 이동평균선, RSI, MACD 등의 지표를 활용하여 현재 추세와 향후 예상되는 추세 변화에 대한 분석을 제공해주세요.\n\n{data}"
             },
             "recommendation": {
-                "system": "당신은 투자 전략 컨설턴트입니다. 제공된 데이터를 바탕으로 투자자 관점에서의 전략적 제안을 제공합니다. 단, 직접적인 매수/매도 추천은 하지 말고, 투자자가 고려해야 할 요소들을 설명하세요.",
-                "user": "다음 주식 데이터를 바탕으로 투자자가 고려해야 할 전략적 관점을 제공해주세요. 단기 및 중장기 관점에서의 접근 방법, 주의해야 할 요소, 기술적 지표의 함의를 분석해주세요.\n\n{data}"
+                "system": "당신은 주식 시장 분석 전문가이지만, 특정 주식의 매수/매도 추천을 하지 않습니다. 투자 결정을 직접 조언하는 대신, 데이터에 기반한 객관적인 분석과 여러 시나리오를 제시해주세요.",
+                "user": "다음 주식 데이터를 분석하고, 가능한 여러 시나리오를 제시해주세요. 직접적인 매수/매도 추천 대신, 여러 관점에서의 분석과 고려해야 할 팩터들을 설명해주세요.\n\n{data}"
+            },
+            "trading_signal": {
+                "system": "당신은 주식 매매 신호 분석 AI입니다. 제공된 데이터를 바탕으로 매수/매도/홀드 신호와 그 신뢰도를 분석합니다. 기술적 지표, 추세, 리스크 요소를 종합적으로 고려하여 분석 결과를 제공하세요. JSON 형태가 아닌 텍스트 형태로 분석 결과를 제공하세요.",
+                "user": "다음 주식 데이터를 분석하여 매수/매도/홀드 신호와 그 신뢰도에 대한 분석을 제공해주세요. 기술적 지표, 추세, 위험 요소를 종합적으로 고려하세요. 분석 결과는 명확하게 '매수 신호', '매도 신호', '홀드 신호' 중 하나를 포함해야 하며, 신뢰도(높음/중간/낮음)도 표시해주세요.\n\n{data}"
             }
         }
         
-        # 기본값은 general
         return templates.get(analysis_type, templates["general"])
         
     def generate_daily_report(self, stock_data_dict, market="KR"):
@@ -284,35 +341,67 @@ class ChatGPTAnalyzer:
         except Exception as e:
             logger.error(f"일일 리포트 생성 중 오류 발생: {e}")
             return f"일일 리포트 생성 중 오류가 발생했습니다: {str(e)}"
-    
-    def analyze_signals(self, signals_data):
+        
+    def analyze_stop_levels(self, analysis_data):
         """
-        매매 신호 분석
+        개별 종목에 적합한 손절매/익절 수준 분석
         
         Args:
-            signals_data: 매매 신호 데이터
+            analysis_data: 분석 데이터 (dict)
             
         Returns:
-            str: 분석 결과
+            dict: 손절매/익절 분석 결과
         """
         if not self.client:
-            return "API가 설정되지 않아 분석할 수 없습니다."
-        
+            logger.error("OpenAI API 키가 설정되지 않아 손절/익절 수준을 분석할 수 없습니다.")
+            return {
+                "recommendations": {
+                    "stop_loss_pct": 5.0,  # 기본값
+                    "take_profit_pct": 10.0,  # 기본값
+                    "trailing_stop_distance": 3.0,  # 기본값
+                }
+            }
+            
         try:
+            # 프롬프트 구성
+            system_prompt = """당신은 주식 트레이딩 리스크 관리 전문가입니다. 
+            주어진 종목 데이터를 바탕으로 최적의 손절매(Stop-Loss), 익절(Take-Profit) 및 트레일링 스탑 수준을 분석하고 제안해야 합니다.
+            각 종목의 변동성, 일일 변동폭, 추세 강도 등을 고려하여 적절한 비율을 제시하세요.
+            응답은 반드시 정해진 JSON 포맷으로만 제공하세요."""
+            
+            user_prompt = f"""다음 종목({analysis_data.get('symbol', '알 수 없음')})의 최적 손절매/익절 수준을 분석해주세요.
+            
+            【 종목 및 시장 정보 】
+            {json.dumps(analysis_data, ensure_ascii=False, default=str)}
+            
+            위 데이터를 분석하여, 이 종목의 특성에 맞는 최적의 손절매/익절/트레일링스탑 비율을 제안해주세요.
+
+            다음과 같은 JSON 포맷으로 응답해주세요. 주관적인 설명은 제외하고 JSON 데이터만 반환하세요:
+            
+            ```json
+            {{
+                "recommendations": {{
+                    "stop_loss_pct": 5.0,
+                    "take_profit_pct": 10.0,
+                    "trailing_stop_distance": 3.0,
+                    "explanation": "이 종목에 대한 설정값 설명"
+                }},
+                "volatility_analysis": "변동성 분석 요약"
+            }}
+            ```
+
+            종목의 특성에 따라 값을 조정해주세요. 일반적으로:
+            - 변동성이 큰 종목: 손절폭 넓게(5-15%), 익절폭 넓게(10-30%), 트레일링 스탑 거리 넓게(3-8%)
+            - 변동성이 작은 종목: 손절폭 좁게(2-5%), 익절폭 좁게(5-10%), 트레일링 스탑 거리 좁게(1-3%)
+            
+            오직 JSON 데이터만 반환해주세요.
+            """
+            
             # API 호출 제한 관리
             self._wait_for_rate_limit()
             
-            # 신호 분석 프롬프트
-            system_prompt = """당신은 알고리즘 트레이딩 전문가입니다. 
-            제공된 매매 신호를 분석하여 전략적 함의와 고려해야 할 사항을 설명해주세요.
-            기술적 지표의 의미와 함께 신호의 신뢰성을 평가하세요."""
-            
-            user_prompt = f"""다음 매매 신호를 분석하여 그 의미와 신뢰성을 평가해주세요.
-            추가적으로 고려해야 할 요소들을 설명하고, 이 신호가 전체 시장 맥락에서 갖는 의미를 평가해주세요.
-            
-            {json.dumps(signals_data, ensure_ascii=False, default=str)}"""
-            
             # API 호출
+            logger.info(f"손절/익절 수준 분석 API 호출: {analysis_data.get('symbol', '알 수 없음')}")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -320,14 +409,45 @@ class ChatGPTAnalyzer:
                     {"role": "user", "content": user_prompt}
                 ],
                 max_tokens=self.max_tokens,
-                temperature=self.temperature
+                temperature=0.3  # 낮은 temperature로 일관된 결과 유도
             )
             
-            analysis = response.choices[0].message.content
-            logger.info(f"신호 분석 완료: {signals_data['symbol']}")
+            # 응답 처리
+            response_text = response.choices[0].message.content
             
-            return analysis
+            # JSON 부분만 추출
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                try:
+                    result = json.loads(json_str)
+                    logger.info(f"손절/익절 수준 분석 완료: {analysis_data.get('symbol', '알 수 없음')}")
+                    return result
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON 파싱 오류: {e}")
+            
+            # JSON 파싱 실패 시 기본값 반환
+            logger.warning(f"JSON 파싱 실패, 기본값 반환: {response_text[:100]}...")
+            return {
+                "recommendations": {
+                    "stop_loss_pct": 5.0,  # 기본값
+                    "take_profit_pct": 10.0,  # 기본값
+                    "trailing_stop_distance": 3.0,  # 기본값
+                    "explanation": "기본값 사용 (JSON 파싱 오류)"
+                },
+                "volatility_analysis": "분석 실패"
+            }
             
         except Exception as e:
-            logger.error(f"신호 분석 중 오류 발생: {e}")
-            return f"신호 분석 중 오류가 발생했습니다: {str(e)}"
+            logger.error(f"손절/익절 수준 분석 중 오류 발생: {e}")
+            return {
+                "recommendations": {
+                    "stop_loss_pct": 5.0,  # 기본값
+                    "take_profit_pct": 10.0,  # 기본값
+                    "trailing_stop_distance": 3.0,  # 기본값
+                    "explanation": f"오류 발생: {str(e)}"
+                },
+                "volatility_analysis": "분석 오류"
+            }
