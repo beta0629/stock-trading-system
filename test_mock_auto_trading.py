@@ -717,8 +717,11 @@ class MockAutoTrader:
                     trade_result = self.execute_trade(signal)
                     
                     # 거래가 성공한 경우 알림 전송
-                    if trade_result:
-                        self.send_trade_notification(signal, trade_result)
+                    if trade_result and self.kakao_sender and getattr(self.config, 'USE_KAKAO', False):
+                        try:
+                            self.send_trade_notification(signal, trade_result)
+                        except Exception as e:
+                            logger.warning(f"카카오톡 알림 전송 실패 (무시하고 계속 진행): {e}")
                 
                 # 대기
                 if i < iterations - 1:  # 마지막 반복이 아닌 경우에만 대기
@@ -731,8 +734,12 @@ class MockAutoTrader:
             logger.error(f"{market_name} 시장 모의 매매 세션 중 오류 발생: {e}")
             
             # 오류 알림
-            error_message = f"❌ {market_name} 시장 모의 자동매매 중 오류가 발생했습니다.\n오류 내용: {str(e)}"
-            self.kakao_sender.send_system_status(error_message)
+            if self.kakao_sender and getattr(self.config, 'USE_KAKAO', False):
+                try:
+                    error_message = f"❌ {market_name} 시장 모의 자동매매 중 오류가 발생했습니다.\n오류 내용: {str(e)}"
+                    self.kakao_sender.send_system_status(error_message)
+                except Exception as kakao_error:
+                    logger.warning(f"카카오톡 오류 알림 전송 실패 (무시하고 계속 진행): {kakao_error}")
             
             return False
     

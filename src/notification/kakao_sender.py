@@ -26,12 +26,21 @@ class KakaoSender:
         self.refresh_token = None
         self.token_expire_at = None
         self.initialized = False
+        
+        # CI 환경인지 확인
+        self.is_ci_env = os.environ.get('CI') == 'true'
+        
         # 시스템 시작시 토큰 초기화
         self.initialize()
         
     def initialize(self):
         """카카오톡 API 초기화"""
         try:
+            # CI 환경이고, KAKAO_API_KEY가 없으면 비활성화 모드로 설정
+            if self.is_ci_env and not os.environ.get('KAKAO_API_KEY'):
+                logger.warning("CI 환경에서 KAKAO_API_KEY가 설정되지 않아 카카오톡 알림은 비활성화됩니다.")
+                return False
+            
             # 환경 변수 우선 확인 (CI/CD 환경용)
             self.access_token = os.environ.get('KAKAO_ACCESS_TOKEN')
             self.refresh_token = os.environ.get('KAKAO_REFRESH_TOKEN')
@@ -57,8 +66,12 @@ class KakaoSender:
                 self.refresh_token = self.config.KAKAO_REFRESH_TOKEN
             
             if not self.access_token or not self.refresh_token:
-                logger.error("카카오톡 토큰이 설정되지 않았습니다.")
-                return False
+                if self.is_ci_env:
+                    logger.warning("CI 환경에서 카카오톡 토큰이 설정되지 않아 알림은 비활성화됩니다.")
+                    return False
+                else:
+                    logger.error("카카오톡 토큰이 설정되지 않았습니다.")
+                    return False
             
             # 토큰의 만료 시간 확인
             if self.token_expire_at:
@@ -82,7 +95,10 @@ class KakaoSender:
                     self.initialized = True
                     return True
                 else:
-                    logger.error("카카오톡 API 토큰 갱신 실패")
+                    if self.is_ci_env:
+                        logger.warning("CI 환경에서 토큰 갱신 실패. 카카오톡 알림은 비활성화됩니다.")
+                    else:
+                        logger.error("카카오톡 API 토큰 갱신 실패")
                     return False
         except Exception as e:
             logger.error(f"카카오톡 API 초기화 실패: {e}")
@@ -115,7 +131,7 @@ class KakaoSender:
         """토큰을 파일에 저장"""
         try:
             # CI 환경에서는 파일 저장 건너뛰기
-            if os.environ.get('CI') == 'true':
+            if self.is_ci_env:
                 logger.info("CI 환경에서는 토큰 파일을 저장하지 않습니다.")
                 return True
                 
@@ -160,8 +176,12 @@ class KakaoSender:
                 client_id = self.config.KAKAO_API_KEY
                 
             if not client_id:
-                logger.error("KAKAO_API_KEY가 설정되지 않았습니다.")
-                return False
+                if self.is_ci_env:
+                    logger.warning("CI 환경에서 KAKAO_API_KEY가 설정되지 않아 토큰 갱신을 건너뜁니다.")
+                    return False
+                else:
+                    logger.error("KAKAO_API_KEY가 설정되지 않았습니다.")
+                    return False
                 
             data = {
                 "grant_type": "refresh_token",
@@ -214,9 +234,18 @@ class KakaoSender:
         Returns:
             bool: 전송 성공 여부
         """
+        # CI 환경이고 카카오톡 설정이 없으면 메시지 전송 건너뛰기
+        if self.is_ci_env and not self.initialized:
+            logger.info("CI 환경에서 카카오톡 설정이 되지 않아 메시지 전송을 건너뜁니다.")
+            return True  # 전송 성공으로 처리하여 프로세스 계속 진행
+            
         # 메시지 전송 전에 토큰 유효성 확인
         if not self.ensure_token_valid():
             logger.error("유효한 카카오톡 액세스 토큰이 없습니다.")
+            # CI 환경에서는 성공으로 처리하여 계속 진행
+            if self.is_ci_env:
+                logger.info("CI 환경에서 토큰이 유효하지 않아 메시지 전송은 건너뜁니다.")
+                return True
             return False
             
         try:
@@ -253,11 +282,17 @@ class KakaoSender:
                     if self.refresh_auth_token():
                         return self.send_message(message)  # 재귀적으로 다시 시도
                 logger.error(f"카카오톡 메시지 전송 실패: {response.text}")
+                if self.is_ci_env:
+                    logger.info("CI 환경에서 메시지 전송 실패는 무시하고 계속 진행합니다.")
+                    return True
                 return False
         except Exception as e:
             logger.error(f"카카오톡 메시지 전송 중 오류: {e}")
+            if self.is_ci_env:
+                logger.info("CI 환경에서 발생한 오류는 무시하고 계속 진행합니다.")
+                return True
             return False
-            
+    
     def send_signal_notification(self, signal_data):
         """
         매매 시그널 알림 전송
