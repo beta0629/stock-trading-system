@@ -51,7 +51,7 @@ jobs:
 
       - name: 실행 로그 아티팩트 업로드
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trading-logs
           path: |
