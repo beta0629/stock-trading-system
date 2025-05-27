@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 180  # 최대 실행시간: 3시간
     
     env:
+      # 기본 설정
       MOCK_INITIAL_CAPITAL: "10000000"  # 모의 자본금 (1천만원)
       KR_MARKET_OPEN_TIME: "09:00"  # 한국 시장 시작 시간
       KR_MARKET_CLOSE_TIME: "15:30"  # 한국 시장 종료 시간
@@ -20,19 +21,19 @@ jobs:
       USE_GPT_ANALYSIS: "true"  # GPT 분석 활성화
       FORCE_MARKET_OPEN: "true"  # 테스트를 위해 시장 강제 오픈
       MAX_RUNTIME_MINUTES: "170"  # 실제 실행 시간 (자동 재시작 고려)
+      
       # OpenAI API 설정
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: "gpt-4o"
       OPENAI_MAX_TOKENS: "1000"
       OPENAI_TEMPERATURE: "0.7"
       OPENAI_REQUEST_INTERVAL: "1.0"
+      
       # 카카오톡 설정
       KAKAO_API_KEY: ${{ secrets.KAKAO_API_KEY }}
       KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
       KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-      # 텔레그램 설정
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
 
     steps:
       - name: 체크아웃 코드
@@ -49,17 +50,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 시스템 정보 출력
+      - name: 시스템 정보 출력 및 환경 변수 확인
         run: |
           echo "현재 시간 (KST): `TZ='Asia/Seoul' date`"
           echo "현재 시간 (UTC): `date`"
           echo "Python 버전: `python --version`"
           echo "작업 디렉토리: `pwd`"
           ls -la
+          
           # 환경 변수 설정 확인 (값은 가리고 키만 확인)
-          if [ -n "$OPENAI_API_KEY" ]; then echo "OPENAI_API_KEY가 설정되어 있습니다"; else echo "OPENAI_API_KEY가 설정되지 않았습니다"; fi
-          if [ -n "$KAKAO_API_KEY" ]; then echo "KAKAO_API_KEY가 설정되어 있습니다"; else echo "KAKAO_API_KEY가 설정되지 않았습니다"; fi
-          if [ -n "$KAKAO_ACCESS_TOKEN" ]; then echo "KAKAO_ACCESS_TOKEN이 설정되어 있습니다"; else echo "KAKAO_ACCESS_TOKEN이 설정되지 않았습니다"; fi
+          if [ -n "$OPENAI_API_KEY" ]; then echo "✅ OPENAI_API_KEY가 설정되어 있습니다"; else echo "❌ OPENAI_API_KEY가 설정되지 않았습니다"; fi
+          if [ -n "$KAKAO_API_KEY" ]; then echo "✅ KAKAO_API_KEY가 설정되어 있습니다"; else echo "❌ KAKAO_API_KEY가 설정되지 않았습니다"; fi
+          if [ -n "$KAKAO_ACCESS_TOKEN" ]; then echo "✅ KAKAO_ACCESS_TOKEN이 설정되어 있습니다"; else echo "❌ KAKAO_ACCESS_TOKEN이 설정되지 않았습니다"; fi
+          if [ -n "$KAKAO_REFRESH_TOKEN" ]; then echo "✅ KAKAO_REFRESH_TOKEN이 설정되어 있습니다"; else echo "❌ KAKAO_REFRESH_TOKEN이 설정되지 않았습니다"; fi
+          if [ -n "$KAKAO_REST_API_KEY" ]; then echo "✅ KAKAO_REST_API_KEY가 설정되어 있습니다"; else echo "❌ KAKAO_REST_API_KEY가 설정되지 않았습니다"; fi
 
       - name: 모의 자동매매 실행 (자동 재시작 기능 포함)
         env:
