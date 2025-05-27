@@ -264,7 +264,7 @@ class GPTTradingStrategy:
         additional_info = {
             "market_context": market_context or {},
             "analysis_purpose": "trading_signal",
-            "analysis_timestamp": pd.Timestamp.now().isoformat()
+            "analysis_timestamp": pd.Timestamp.now().isoformat()  # 문자열로 변환
         }
         
         # 여러 분석 유형 결과 조합
@@ -276,7 +276,7 @@ class GPTTradingStrategy:
             "symbol": symbol,
             "trend_analysis": trend_analysis.get("analysis", "분석 없음"),
             "risk_analysis": risk_analysis.get("analysis", "분석 없음"),
-            "timestamp": pd.Timestamp.now().isoformat()
+            "timestamp": pd.Timestamp.now().isoformat()  # 문자열로 변환
         }
         
         # 매매 신호 추출을 위한 특별 분석 요청
@@ -284,11 +284,12 @@ class GPTTradingStrategy:
             "symbol": symbol,
             "trend_summary": trend_analysis.get("analysis", "")[:300],
             "risk_summary": risk_analysis.get("analysis", "")[:300],
-            "recent_price_data": df[['Close', 'Volume']].tail(5).to_dict(),
+            # DataFrame을 records 형식으로 변환하여 JSON 직렬화 문제 방지
+            "recent_price_data": df[['Close', 'Volume']].tail(5).reset_index().to_dict('records'),
             "technical_indicators": {
-                "rsi": df['RSI'].iloc[-1] if 'RSI' in df.columns else None,
-                "macd": df['MACD'].iloc[-1] if 'MACD' in df.columns else None,
-                "macd_signal": df['MACD_signal'].iloc[-1] if 'MACD_signal' in df.columns else None
+                "rsi": float(df['RSI'].iloc[-1]) if 'RSI' in df.columns else None,
+                "macd": float(df['MACD'].iloc[-1]) if 'MACD' in df.columns else None,
+                "macd_signal": float(df['MACD_signal'].iloc[-1]) if 'MACD_signal' in df.columns else None
             }
         }
         
@@ -516,8 +517,8 @@ class GPTTradingStrategy:
         Returns:
             dict: GPT 분석 결과
         """
-        # 분석에 필요한 데이터 준비
-        recent_data = df.tail(5)[['Close', 'Volume']].to_dict()
+        # 분석에 필요한 데이터 준비 - records 형식으로 변환하여 Timestamp 인덱스 문제 해결
+        recent_data = df.tail(5)[['Close', 'Volume']].reset_index().to_dict('records')
         
         # 변동성 데이터 추가
         analysis_data = {

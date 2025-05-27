@@ -7,6 +7,7 @@ import json
 import time
 import datetime
 import pandas as pd
+import numpy as np
 import openai
 from dotenv import load_dotenv
 
@@ -15,6 +16,28 @@ load_dotenv()
 
 # 로깅 설정
 logger = logging.getLogger('ChatGPTAnalyzer')
+
+# JSON 변환을 위한 유틸리티 함수
+def json_default(obj):
+    """
+    JSON으로 직렬화할 수 없는 객체 처리 함수
+    
+    Args:
+        obj: 변환할 객체
+        
+    Returns:
+        JSON 직렬화 가능한 형태로 변환된 객체
+    """
+    if isinstance(obj, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return str(obj)
 
 class ChatGPTAnalyzer:
     """OpenAI ChatGPT API를 활용한 주식 분석 클래스"""
@@ -82,24 +105,27 @@ class ChatGPTAnalyzer:
         macd = df['MACD'].iloc[-1] if 'MACD' in df.columns else None
         macd_signal = df['MACD_signal'].iloc[-1] if 'MACD_signal' in df.columns else None
         
+        # DataFrame을 records 형식으로 변환하여 Timestamp 인덱스 문제 해결
+        recent_data = recent_df[['Open', 'High', 'Low', 'Close', 'Volume']].reset_index().to_dict('records')
+        
         analysis_data = {
             "symbol": symbol,
             "current_date": datetime.datetime.now().strftime("%Y-%m-%d"),
-            "recent_data": recent_df[['Open', 'High', 'Low', 'Close', 'Volume']].to_dict('records'),
+            "recent_data": recent_data,
             "statistics": {
-                "current_price": recent_close,
-                "20d_average_price": avg_price_20d,
-                "price_change_1d": price_change_1d,
-                "price_change_5d": price_change_5d,
-                "price_change_20d": price_change_20d,
-                "volume_vs_avg_ratio": volume_change_ratio
+                "current_price": float(recent_close),
+                "20d_average_price": float(avg_price_20d),
+                "price_change_1d": float(price_change_1d),
+                "price_change_5d": float(price_change_5d),
+                "price_change_20d": float(price_change_20d),
+                "volume_vs_avg_ratio": float(volume_change_ratio)
             },
             "indicators": {
-                "rsi": rsi,
-                "macd": macd,
-                "macd_signal": macd_signal,
-                "sma_short": df['SMA_short'].iloc[-1] if 'SMA_short' in df.columns else None,
-                "sma_long": df['SMA_long'].iloc[-1] if 'SMA_long' in df.columns else None
+                "rsi": float(rsi) if rsi is not None else None,
+                "macd": float(macd) if macd is not None else None,
+                "macd_signal": float(macd_signal) if macd_signal is not None else None,
+                "sma_short": float(df['SMA_short'].iloc[-1]) if 'SMA_short' in df.columns else None,
+                "sma_long": float(df['SMA_long'].iloc[-1]) if 'SMA_long' in df.columns else None
             }
         }
         
@@ -199,10 +225,11 @@ class ChatGPTAnalyzer:
             명확한 매수/매도/홀드 판단과 그 근거를 제시하세요. 분석은 객관적 사실에 기반해야 합니다.
             최종적으로 종목의 '매수', '매도', '홀드' 중 하나의 결론과 그 신뢰도를 함께 제시하세요."""
             
+            # JSON 직렬화 수정 - json_default 함수 사용
             user_prompt = f"""다음 종목({signal_data.get('symbol', '알 수 없음')})의 매매 신호를 분석해주세요.
             
             【 종목 정보 】
-            {json.dumps(signal_data, ensure_ascii=False, indent=2)}
+            {json.dumps(signal_data, ensure_ascii=False, indent=2, default=json_default)}
             
             위 데이터를 분석하여 명확한 매매 신호(매수/매도/홀드)와 그 이유를 제시해주세요.
             또한 그 신호의 신뢰도(0.0~1.0)도 함께 알려주세요.
@@ -232,7 +259,7 @@ class ChatGPTAnalyzer:
         except Exception as e:
             logger.error(f"매매 신호 분석 중 오류 발생: {e}")
             return f"분석 중 오류가 발생했습니다: {str(e)}"
-            
+    
     def _get_prompt_template(self, analysis_type):
         """
         분석 유형에 따른 프롬프트 템플릿 반환
@@ -369,10 +396,11 @@ class ChatGPTAnalyzer:
             각 종목의 변동성, 일일 변동폭, 추세 강도 등을 고려하여 적절한 비율을 제시하세요.
             응답은 반드시 정해진 JSON 포맷으로만 제공하세요."""
             
+            # JSON 직렬화 수정 - json_default 함수 사용
             user_prompt = f"""다음 종목({analysis_data.get('symbol', '알 수 없음')})의 최적 손절매/익절 수준을 분석해주세요.
             
             【 종목 및 시장 정보 】
-            {json.dumps(analysis_data, ensure_ascii=False, default=str)}
+            {json.dumps(analysis_data, ensure_ascii=False, default=json_default)}
             
             위 데이터를 분석하여, 이 종목의 특성에 맞는 최적의 손절매/익절/트레일링스탑 비율을 제안해주세요.
 
