@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  stock-analysis:
+    build: .
+    container_name: stock-analysis
+    restart: always
+    volumes:
+      - ./logs:/app/logs
+      - ./config.py:/app/config.py
+      - ./kakao_token.json:/app/kakao_token.json
+    environment:
+      - TZ=Asia/Seoul
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
