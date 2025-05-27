@@ -119,6 +119,7 @@ SELL_RATIO_WEAK = 0.1  # 약한 매도 신호 시 매도 비율 (10%)
 
 # 모의투자 기본 설정
 MOCK_INITIAL_CAPITAL = 50000000  # 모의투자 초기 자본금 (5천만원)
+MAX_RUNTIME_MINUTES = 180  # 모의 자동매매 최대 실행 시간 (분) - 기본 3시간
 
 # 손절/익절 설정
 STOP_LOSS_PCT = 5  # 손절매 비율 (기본 5%)

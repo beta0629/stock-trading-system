@@ -265,7 +265,11 @@ class MockAutoTrader:
             'total_loss': 0
         }
         
-        logger.info(f"모의 자동매매 시스템 초기화 완료 (시작 자본금: {self.initial_capital:,}원)")
+        # 타임아웃 설정
+        self.max_runtime_minutes = getattr(config, 'MAX_RUNTIME_MINUTES', 180)  # 기본 3시간(180분)
+        self.start_time = None  # 시작 시간 (실행 시 설정)
+        
+        logger.info(f"모의 자동매매 시스템 초기화 완료 (시작 자본금: {self.initial_capital:,}원, 최대 실행시간: {self.max_runtime_minutes}분)")
     
     def _setup_logger(self):
         """로거 설정"""
@@ -1199,15 +1203,19 @@ class MockAutoTrader:
         self.is_running = True
         
         try:
+            # 시스템 시작 시간 기록 (타임아웃 계산용)
+            self.start_time = datetime.datetime.now()
+            
             # 시스템 시작 메시지
             start_message = "🚀 24시간 모의자동매매 시스템이 시작되었습니다.\n"
             start_message += f"• 시작 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             start_message += f"• 초기 계좌 잔고: {self.account_balance:,}원\n"
+            start_message += f"• 최대 실행 시간: {self.max_runtime_minutes}분\n"
             start_message += f"• 한국 종목: {', '.join([f'{symbol}({self.mock_stock_data.get_stock_name(symbol)})' for symbol in self.kr_symbols])}\n"
             start_message += f"• 미국 종목: {', '.join([f'{symbol}({self.mock_stock_data.get_stock_name(symbol)})' for symbol in self.us_symbols])}\n"
             
             self.kakao_sender.send_system_status(start_message)
-            logger.info("모의 자동매매 시스템 시작")
+            logger.info(f"모의 자동매매 시스템 시작 (최대 실행시간: {self.max_runtime_minutes}분)")
             
             # 스케줄 설정
             # 주기적으로 시장 상태 확인 및 거래 실행 (5분 간격)
@@ -1224,6 +1232,14 @@ class MockAutoTrader:
             
             # 메인 루프
             while self.is_running:
+                # 최대 실행 시간 초과 여부 확인
+                elapsed_time = (datetime.datetime.now() - self.start_time).total_seconds() / 60  # 경과 시간 (분)
+                if elapsed_time >= self.max_runtime_minutes:
+                    logger.info(f"최대 실행 시간({self.max_runtime_minutes}분) 초과로 시스템을 종료합니다. (경과: {int(elapsed_time)}분)")
+                    timeout_message = f"⏱️ 최대 실행 시간({self.max_runtime_minutes}분)이 초과되어 시스템이 자동 종료됩니다."
+                    self.kakao_sender.send_system_status(timeout_message)
+                    break
+                
                 schedule.run_pending()
                 time.sleep(60)  # 1분 간격으로 스케줄 확인
                 
@@ -1234,7 +1250,12 @@ class MockAutoTrader:
         except Exception as e:
             logger.error(f"시스템 실행 중 오류 발생: {e}")
             self.stop()
-            
+        
+        # 정상/비정상 종료 상관없이 최종 정리
+        finally:
+            if self.is_running:
+                self.stop()
+
     def stop(self):
         """
         모의 자동매매 시스템 종료
