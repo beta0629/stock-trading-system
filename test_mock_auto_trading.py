@@ -498,6 +498,11 @@ class MockAutoTrader:
         # 매매 수량 결정
         trade_amount = 0
         
+        # 미국 주식 거래시 환율 적용
+        exchange_rate = 1300  # 기본 환율 설정 (달러당 1,300원)
+        if market == "US":
+            exchange_rate = getattr(self.config, 'USD_KRW_EXCHANGE_RATE', 1300)
+        
         if signal_type == "BUY":
             # 매수할 금액 결정 (강도에 따라)
             strength_factor = {"WEAK": 0.1, "MEDIUM": 0.2, "STRONG": 0.3}
@@ -506,6 +511,9 @@ class MockAutoTrader:
             
             # 최대 매수 수량 계산
             buy_quantity = int(trade_amount / price)
+            if market == "US":
+                # 미국 주식의 경우 달러 가격에 환율을 적용
+                buy_quantity = int(trade_amount / (price * exchange_rate))
             
             # 매수 수량 검증 - 0 이하인 경우 처리 안함
             if buy_quantity <= 0:
@@ -514,11 +522,19 @@ class MockAutoTrader:
                 
             # 계좌 잔고 확인
             required_amount = buy_quantity * price
+            if market == "US":
+                # 미국 주식의 경우 달러 금액에 환율을 적용하여 원화로 변환
+                required_amount = buy_quantity * price * exchange_rate
+                
             if self.account_balance < required_amount:
                 logger.info(f"{symbol}({stock_name}) 매수 신호가 있으나 필요금액({required_amount:,}원)이 계좌 잔고({self.account_balance:,}원)보다 많습니다.")
                 
                 # 가능한 최대 수량으로 조정
-                adjusted_quantity = int(self.account_balance / price)
+                if market == "KR":
+                    adjusted_quantity = int(self.account_balance / price)
+                else:
+                    adjusted_quantity = int(self.account_balance / (price * exchange_rate))
+                    
                 if adjusted_quantity > 0:
                     logger.info(f"{symbol}({stock_name}) 매수 수량을 {buy_quantity}주에서 {adjusted_quantity}주로 조정합니다.")
                     buy_quantity = adjusted_quantity
@@ -528,7 +544,14 @@ class MockAutoTrader:
                 
             # 매수 실행
             purchase_amount = buy_quantity * price
-            self.account_balance -= purchase_amount
+            
+            # 계좌 잔고 차감 (미국 주식은 환율 적용)
+            if market == "US":
+                purchase_amount_krw = purchase_amount * exchange_rate
+                self.account_balance -= purchase_amount_krw
+                logger.info(f"미국 주식 매수: ${purchase_amount:,.2f} (환율 {exchange_rate}원, 원화 환산: {purchase_amount_krw:,.0f}원)")
+            else:
+                self.account_balance -= purchase_amount
             
             # 보유종목 업데이트
             total_quantity = holding_quantity + buy_quantity
@@ -542,7 +565,7 @@ class MockAutoTrader:
             }
             
             # 거래 이력 추가
-            self.trading_history.append({
+            trade_history_entry = {
                 'timestamp': datetime.datetime.now(),
                 'symbol': symbol,
                 'name': stock_name,
@@ -551,10 +574,19 @@ class MockAutoTrader:
                 'price': price,
                 'quantity': buy_quantity,
                 'amount': purchase_amount
-            })
+            }
+            
+            # 미국 주식의 경우 원화 환산 금액 추가
+            if market == "US":
+                trade_history_entry['amount_krw'] = purchase_amount * exchange_rate
+                trade_history_entry['exchange_rate'] = exchange_rate
+                
+            self.trading_history.append(trade_history_entry)
             
             currency = "원" if market == "KR" else "달러"
             logger.info(f"{symbol}({stock_name}) {buy_quantity}주 매수 완료 - 단가: {price:,}{currency}, 총액: {purchase_amount:,}{currency}")
+            if market == "US":
+                logger.info(f"원화 환산: {purchase_amount * exchange_rate:,.0f}원 (환율: {exchange_rate}원)")
             return True
             
         elif signal_type == "SELL":
@@ -581,7 +613,14 @@ class MockAutoTrader:
                 
             # 매도 실행
             sell_amount = sell_quantity * price
-            self.account_balance += sell_amount
+            
+            # 계좌 잔고 증가 (미국 주식은 환율 적용)
+            if market == "US":
+                sell_amount_krw = sell_amount * exchange_rate
+                self.account_balance += sell_amount_krw
+                logger.info(f"미국 주식 매도: ${sell_amount:,.2f} (환율 {exchange_rate}원, 원화 환산: {sell_amount_krw:,.0f}원)")
+            else:
+                self.account_balance += sell_amount
             
             # 보유종목 업데이트
             new_quantity = holding_quantity - sell_quantity
@@ -592,7 +631,7 @@ class MockAutoTrader:
                 self.holdings[symbol]['avg_price'] = 0
             
             # 거래 이력 추가
-            self.trading_history.append({
+            trade_history_entry = {
                 'timestamp': datetime.datetime.now(),
                 'symbol': symbol,
                 'name': stock_name,
@@ -601,10 +640,19 @@ class MockAutoTrader:
                 'price': price,
                 'quantity': sell_quantity,
                 'amount': sell_amount
-            })
+            }
+            
+            # 미국 주식의 경우 원화 환산 금액 추가
+            if market == "US":
+                trade_history_entry['amount_krw'] = sell_amount * exchange_rate
+                trade_history_entry['exchange_rate'] = exchange_rate
+                
+            self.trading_history.append(trade_history_entry)
             
             currency = "원" if market == "KR" else "달러"
             logger.info(f"{symbol}({stock_name}) {sell_quantity}주 매도 완료 - 단가: {price:,}{currency}, 총액: {sell_amount:,}{currency}")
+            if market == "US":
+                logger.info(f"원화 환산: {sell_amount * exchange_rate:,.0f}원 (환율: {exchange_rate}원)")
             return True
             
         return False
