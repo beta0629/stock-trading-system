@@ -8,9 +8,9 @@
 import os
 import requests
 import json
-import datetime
 import logging
 from dotenv import load_dotenv
+from src.utils.time_utils import get_current_time
 
 # 로깅 설정
 logging.basicConfig(
@@ -74,7 +74,7 @@ def check_token_validity(token_data):
         created_at = token_data.get("created_at", 0)
         expires_in = token_data.get("expires_in", 86400)  # 기본 1일
         
-        current_time = datetime.datetime.now().timestamp()
+        current_time = get_current_time().timestamp()  # datetime.datetime.now().timestamp() 대신 time_utils 사용
         # 만료 10분 전에 갱신되도록 설정 (600초)
         return current_time < (created_at + expires_in - 600)
     
@@ -119,7 +119,7 @@ def refresh_token(use_real_trading=False):
     try:
         new_token_data = get_access_token(app_key, app_secret)
         # 토큰 생성 시간 추가
-        new_token_data["created_at"] = datetime.datetime.now().timestamp()
+        new_token_data["created_at"] = get_current_time().timestamp()  # datetime.datetime.now().timestamp() 대신 time_utils 사용
         save_token_to_file(new_token_data, token_file)
         return new_token_data
     except Exception as e:

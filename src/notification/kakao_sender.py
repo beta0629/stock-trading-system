@@ -6,7 +6,10 @@ import requests
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+# time_utils 모듈 import
+from ..utils.time_utils import get_current_time, get_current_time_str, parse_time, get_adjusted_time
 
 # 로깅 설정
 logger = logging.getLogger('KakaoSender')
@@ -75,12 +78,16 @@ class KakaoSender:
             
             # 토큰의 만료 시간 확인
             if self.token_expire_at:
-                expire_time = datetime.fromisoformat(self.token_expire_at)
-                if datetime.now() >= expire_time:
-                    logger.info("카카오톡 토큰이 만료되었습니다. 갱신을 시도합니다.")
-                    if not self.refresh_auth_token():
-                        logger.error("토큰 갱신 실패")
-                        return False
+                try:
+                    expire_time = parse_time(self.token_expire_at)
+                    current_time = get_current_time()
+                    if current_time >= expire_time:
+                        logger.info("카카오톡 토큰이 만료되었습니다. 갱신을 시도합니다.")
+                        if not self.refresh_auth_token():
+                            logger.error("토큰 갱신 실패")
+                            return False
+                except Exception as e:
+                    logger.error(f"토큰 만료 시간 확인 중 오류: {e}")
             
             # 토큰 유효성 테스트
             if self.test_token():
@@ -138,8 +145,8 @@ class KakaoSender:
             token_data = {
                 "access_token": self.access_token,
                 "refresh_token": self.refresh_token,
-                "expire_at": (datetime.now() + timedelta(days=29)).isoformat(),  # 토큰 기본 만료기간은 약 30일
-                "updated_at": datetime.now().isoformat()
+                "expire_at": get_adjusted_time(adjust_days=29).isoformat(),  # 약 30일 후 만료
+                "updated_at": get_current_time().isoformat()
             }
             
             token_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'kakao_token.json')
@@ -199,7 +206,7 @@ class KakaoSender:
                     self.refresh_token = token_data.get("refresh_token")
                 
                 # 토큰 만료 시간 설정 (약 30일)
-                self.token_expire_at = (datetime.now() + timedelta(days=29)).isoformat()
+                self.token_expire_at = get_adjusted_time(adjust_days=29).isoformat()
                     
                 # 토큰을 파일에 저장
                 self.save_tokens_to_file()
@@ -346,8 +353,102 @@ class KakaoSender:
         Args:
             status_message: 상태 메시지
         """
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = get_current_time_str(format_str="%Y-%m-%d %H:%M:%S")
         message = f"📊 시스템 상태\n시간: {current_time}\n\n{status_message}"
         
         # 메시지 전송
         return self.send_message(message)
+    
+    def _check_token(self):
+        """토큰이 유효한지 확인하고 필요시 갱신"""
+        # 토큰이 없거나 만료되었으면 갱신
+        if not self.token or not self.token_expire_at:
+            self._refresh_token()
+            return
+        
+        # datetime 사용 대신 parse_time 함수를 사용하여 시간 파싱
+        expire_time = parse_time(self.token_expire_at)
+        current_time = get_current_time()
+        if current_time >= expire_time:
+            self._refresh_token()
+    
+    def _save_token(self, token_json):
+        """API 응답으로부터 토큰 저장"""
+        token_data = token_json
+        
+        if isinstance(token_json, str):
+            token_data = json.loads(token_json)
+        
+        self.token = token_data.get('access_token')
+        # datetime.now() + timedelta 대신 get_adjusted_time 사용
+        self.token_expire_at = get_adjusted_time(adjust_days=29).isoformat()
+        
+        # 토큰 파일에 저장
+        with open(self.token_file, 'w') as f:
+            json.dump({
+                "access_token": self.token,
+                "expire_at": self.token_expire_at,
+                "updated_at": get_current_time().isoformat()
+            }, f, indent=4)
+    
+    def _refresh_token(self):
+        """카카오 토큰 갱신"""
+        if not os.path.exists(self.token_file):
+            self._request_new_token()
+            return
+            
+        try:
+            with open(self.token_file, 'r') as f:
+                token_data = json.load(f)
+                
+            self.refresh_token = token_data.get('refresh_token')
+            if not self.refresh_token:
+                self._request_new_token()
+                return
+                
+            url = "https://kauth.kakao.com/oauth/token"
+            data = {
+                "grant_type": "refresh_token",
+                "client_id": self.client_id,
+                "refresh_token": self.refresh_token
+            }
+            response = requests.post(url, data=data)
+            
+            if response.status_code != 200:
+                logger.error(f"토큰 갱신 실패: {response.text}")
+                self._request_new_token()
+                return
+                
+            token_dict = response.json()
+            self.token = token_dict.get('access_token')
+            
+            # datetime 대신 time_utils 함수 사용
+            self.token_expire_at = get_adjusted_time(adjust_days=29).isoformat()
+            
+            # 새로운 refresh_token이 포함되어 있으면 업데이트
+            if token_dict.get('refresh_token'):
+                self.refresh_token = token_dict.get('refresh_token')
+                
+            self._save_token(token_dict)
+            
+        except Exception as e:
+            logger.error(f"토큰 갱신 중 오류: {e}")
+            self._request_new_token()
+    
+    def _check_token_validity(self):
+        """토큰 유효성 검사 및 필요시 갱신"""
+        if not self.token or not self.token_expire_at:
+            self._load_token_from_file()
+            
+        if not self.token:
+            self._get_authorize_code()
+            return
+            
+        if self.token_expire_at:
+            # datetime.fromisoformat 대신 parse_time 사용
+            expire_time = parse_time(self.token_expire_at)
+            current_time = get_current_time()
+            
+            if current_time >= expire_time:
+                self._refresh_token()
+                return
