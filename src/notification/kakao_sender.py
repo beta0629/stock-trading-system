@@ -3,6 +3,8 @@
 """
 import logging
 import requests
+import os
+import json
 from datetime import datetime
 
 # 로깅 설정
@@ -27,9 +29,23 @@ class KakaoSender:
     def initialize(self):
         """카카오톡 API 초기화"""
         try:
-            # 환경 변수에서 토큰 로드
-            self.access_token = self.config.KAKAO_ACCESS_TOKEN
-            self.refresh_token = self.config.KAKAO_REFRESH_TOKEN
+            # 파일에서 토큰 로드 시도
+            token_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'kakao_token.json')
+            if os.path.exists(token_file):
+                try:
+                    with open(token_file, 'r') as f:
+                        token_data = json.load(f)
+                        self.access_token = token_data.get('access_token')
+                        self.refresh_token = token_data.get('refresh_token')
+                        logger.info("카카오톡 토큰 파일에서 로드 완료")
+                except Exception as e:
+                    logger.error(f"카카오톡 토큰 파일 로드 실패: {e}")
+            
+            # 환경 변수에서 토큰 로드 (파일에서 로드 실패시)
+            if not self.access_token:
+                self.access_token = self.config.KAKAO_ACCESS_TOKEN
+            if not self.refresh_token:
+                self.refresh_token = self.config.KAKAO_REFRESH_TOKEN
             
             if not self.access_token:
                 logger.error("카카오톡 액세스 토큰이 설정되지 않았습니다.")
@@ -69,6 +85,25 @@ class KakaoSender:
             logger.error(f"토큰 테스트 실패: {e}")
             return False
     
+    def save_tokens_to_file(self):
+        """토큰을 파일에 저장"""
+        try:
+            token_data = {
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            token_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'kakao_token.json')
+            with open(token_file, 'w') as f:
+                json.dump(token_data, f, indent=2)
+                
+            logger.info("카카오톡 토큰 파일 저장 완료")
+            return True
+        except Exception as e:
+            logger.error(f"카카오톡 토큰 파일 저장 실패: {e}")
+            return False
+    
     def refresh_auth_token(self):
         """
         인증 토큰 갱신
@@ -93,8 +128,8 @@ class KakaoSender:
                 if "refresh_token" in token_data:
                     self.refresh_token = token_data.get("refresh_token")
                     
-                # 토큰 정보 업데이트 필요 (.env 파일 또는 설정에 저장)
-                # 이 부분은 구현해야 함
+                # 토큰을 파일에 저장
+                self.save_tokens_to_file()
                 
                 logger.info("카카오톡 인증 토큰 갱신 완료")
                 return True
@@ -128,7 +163,6 @@ class KakaoSender:
             }
             
             # 메시지 템플릿 설정
-            import json
             template = {
                 "object_type": "text",
                 "text": message,
