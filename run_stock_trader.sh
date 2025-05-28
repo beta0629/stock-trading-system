@@ -9,6 +9,12 @@ cd "$(dirname "$0")"
 LOG_DIR="./logs"
 mkdir -p $LOG_DIR
 
+# 데이터베이스 디렉토리 생성 (없는 경우)
+DATA_DIR="./data"
+DB_BACKUP_DIR="$DATA_DIR/backup"
+mkdir -p $DATA_DIR
+mkdir -p $DB_BACKUP_DIR
+
 # 로그 파일 경로 설정
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="$LOG_DIR/trading_log_$TIMESTAMP.log"
@@ -43,13 +49,52 @@ $PYTHON_CMD -m pip install -r requirements.txt | tee -a $LOG_FILE
 echo "설정 파일 내용 확인:" | tee -a $LOG_FILE
 echo "AUTO_TRADING_ENABLED 설정:" | tee -a $LOG_FILE
 grep "AUTO_TRADING_ENABLED" config.py | tee -a $LOG_FILE
-echo "SIMULATION_MODE 설정:" | tee -a $LOG_FILE
-grep "SIMULATION_MODE" config.py | tee -a $LOG_FILE
+echo "GPT_AUTO_TRADING 설정:" | tee -a $LOG_FILE
+grep "GPT_AUTO_TRADING" config.py | tee -a $LOG_FILE
+echo "USE_DATABASE 설정:" | tee -a $LOG_FILE
+grep "USE_DATABASE" config.py | tee -a $LOG_FILE
 
 # 강제 시장 열림 설정
 # 이 부분이 추가됨: 시장 시간에 상관없이 거래 실행
 export FORCE_MARKET_OPEN=true
 echo "강제 시장 열림 모드 활성화 (FORCE_MARKET_OPEN=true)" | tee -a $LOG_FILE
+
+# 데이터베이스 사용 설정
+export USE_DATABASE=true
+export DB_TYPE="sqlite"
+export SQLITE_DB_PATH="$DATA_DIR/stock_trading.db"
+echo "데이터베이스 설정: USE_DATABASE=$USE_DATABASE, DB_TYPE=$DB_TYPE" | tee -a $LOG_FILE
+echo "SQLite DB 경로: $SQLITE_DB_PATH" | tee -a $LOG_FILE
+
+# DB 파일이 있는지 확인 (SQLite 경우)
+if [ "$DB_TYPE" == "sqlite" ]; then
+    if [ -f "$SQLITE_DB_PATH" ]; then
+        echo "기존 SQLite DB 파일이 존재합니다: $SQLITE_DB_PATH" | tee -a $LOG_FILE
+        
+        # DB 백업 생성 (하루에 한 번)
+        DB_BACKUP_FILE="$DB_BACKUP_DIR/stock_trading_backup_$(date +"%Y%m%d").db"
+        if [ ! -f "$DB_BACKUP_FILE" ]; then
+            echo "DB 백업 생성 중: $DB_BACKUP_FILE" | tee -a $LOG_FILE
+            cp "$SQLITE_DB_PATH" "$DB_BACKUP_FILE"
+        else
+            echo "오늘자 DB 백업이 이미 존재합니다: $DB_BACKUP_FILE" | tee -a $LOG_FILE
+        fi
+    else
+        echo "SQLite DB 파일이 존재하지 않습니다. 프로그램 실행 시 자동 생성됩니다." | tee -a $LOG_FILE
+    fi
+fi
+
+# API 테스트 실행
+echo "한국투자증권 API 테스트 중..." | tee -a $LOG_FILE
+$PYTHON_CMD -u test_kis_connection.py | tee -a $LOG_FILE
+
+# API 테스트 결과 확인
+API_TEST_EXIT=$?
+if [ $API_TEST_EXIT -ne 0 ]; then
+    echo "경고: API 연결 테스트에 실패했습니다. 프로그램이 계속 실행됩니다만, 거래가 실패할 수 있습니다." | tee -a $LOG_FILE
+else
+    echo "API 연결 테스트 성공!" | tee -a $LOG_FILE
+fi
 
 # 프로세스 관리를 위한 함수
 function cleanup {

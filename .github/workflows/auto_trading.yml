@@ -24,6 +24,11 @@ jobs:
       USE_TELEGRAM: "false"  # 텔레그램 비활성화
       CI: "true"  # CI 환경 표시
       
+      # 데이터베이스 설정
+      USE_DATABASE: "true"
+      DB_TYPE: "sqlite"
+      DB_AUTO_BACKUP: "true"
+      
       # OpenAI API 설정
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: "gpt-4o"
@@ -36,6 +41,14 @@ jobs:
       KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
       KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
       KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
+      
+      # 한국투자증권 API 설정
+      KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+      KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+      KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      KIS_VIRTUAL_APP_KEY: ${{ secrets.KIS_VIRTUAL_APP_KEY }}
+      KIS_VIRTUAL_APP_SECRET: ${{ secrets.KIS_VIRTUAL_APP_SECRET }}
+      KIS_VIRTUAL_ACCOUNT_NO: ${{ secrets.KIS_VIRTUAL_ACCOUNT_NO }}
 
     steps:
       - name: 체크아웃 코드
@@ -49,11 +62,12 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
           
-      - name: 캐시 디렉토리 생성
+      - name: 캐시 및 데이터 디렉토리 생성
         run: |
           mkdir -p cache
+          mkdir -p data/backup
           touch cache/.gitkeep
-          echo "캐시 디렉토리 생성 완료"
+          echo "캐시 및 데이터 디렉토리 생성 완료"
 
       - name: 의존성 설치
         run: |
@@ -80,6 +94,17 @@ jobs:
           if [ -n "$KAKAO_ACCESS_TOKEN" ]; then echo "✅ KAKAO_ACCESS_TOKEN이 설정되어 있습니다"; else echo "❌ KAKAO_ACCESS_TOKEN이 설정되지 않았습니다"; fi
           if [ -n "$KAKAO_REFRESH_TOKEN" ]; then echo "✅ KAKAO_REFRESH_TOKEN이 설정되어 있습니다"; else echo "❌ KAKAO_REFRESH_TOKEN이 설정되지 않았습니다"; fi
           if [ -n "$KAKAO_REST_API_KEY" ]; then echo "✅ KAKAO_REST_API_KEY가 설정되어 있습니다"; else echo "❌ KAKAO_REST_API_KEY가 설정되지 않았습니다"; fi
+          
+          # 한국투자증권 API 키 확인
+          if [ -n "$KIS_APP_KEY" ]; then echo "✅ KIS_APP_KEY가 설정되어 있습니다"; else echo "❌ KIS_APP_KEY가 설정되지 않았습니다"; fi
+          if [ -n "$KIS_APP_SECRET" ]; then echo "✅ KIS_APP_SECRET이 설정되어 있습니다"; else echo "❌ KIS_APP_SECRET이 설정되지 않았습니다"; fi
+          if [ -n "$KIS_VIRTUAL_APP_KEY" ]; then echo "✅ KIS_VIRTUAL_APP_KEY가 설정되어 있습니다"; else echo "❌ KIS_VIRTUAL_APP_KEY가 설정되지 않았습니다"; fi
+
+      - name: API 연결 테스트
+        run: |
+          echo "한국투자증권 API 연결 테스트 중..."
+          python test_kis_connection.py || echo "API 테스트 실패. 모의 거래에는 영향이 없을 수 있습니다."
+        continue-on-error: true  # API 실패해도 워크플로우 계속 진행
 
       - name: 모의 자동매매 실행 (자동 재시작 기능 포함)
         env:
@@ -87,6 +112,10 @@ jobs:
         run: |
           # 실행 전 기존 프로세스 정리
           pkill -f "python test_mock_auto_trading.py" 2>/dev/null || true
+          
+          # 데이터베이스 디렉토리 설정
+          export SQLITE_DB_PATH="./data/stock_trading.db"
+          echo "SQLite DB 경로: $SQLITE_DB_PATH"
           
           for attempt in $(seq 1 $RESTART_COUNT); do
             echo "자동매매 실행 시도 #$attempt/$RESTART_COUNT"
@@ -129,6 +158,14 @@ jobs:
               echo "로그 파일을 찾을 수 없습니다."
             fi
             
+            # 데이터베이스 정보 (존재하는 경우)
+            if [ -f "$SQLITE_DB_PATH" ]; then
+              echo "데이터베이스 존재 확인: $SQLITE_DB_PATH"
+              echo "데이터베이스 크기: $(stat -c %s "$SQLITE_DB_PATH") 바이트"
+            else
+              echo "데이터베이스 파일이 없습니다: $SQLITE_DB_PATH"
+            fi
+            
             # 실행 시간이 너무 짧으면(오류) 대기시간 증가
             if [ $duration -lt 60 ]; then
               echo "⚠️ 오류 감지: 실행이 너무 빨리 종료되었습니다. 45초 대기 후 재시작합니다."
@@ -152,10 +189,11 @@ jobs:
         if: always()  # 이전 단계가 실패해도 항상 실행
         uses: actions/upload-artifact@v4
         with:
-          name: trading-logs
+          name: trading-logs-and-data
           path: |
             mock_auto_trading*.log
             *.log
+            data/*.db
             
       - name: 시스템 상태 확인 및 정리
         if: always()  # 이전 단계가 실패해도 항상 실행
