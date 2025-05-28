@@ -26,6 +26,109 @@ def now(timezone=KST):
     """
     return get_current_time(timezone)
 
+def format_time(dt=None, format_string='%Y-%m-%d %H:%M:%S', timezone=KST):
+    """
+    datetime 객체를 포맷된 문자열로 변환
+    
+    Args:
+        dt: 변환할 datetime 객체 (기본값: 현재 시간)
+        format_string: 시간 포맷 (기본값: '%Y-%m-%d %H:%M:%S')
+        timezone: 시간대
+        
+    Returns:
+        str: 포맷된 시간 문자열
+    """
+    if dt is None:
+        dt = get_current_time(timezone)
+    
+    # 시간대 설정이 되어 있지 않으면 설정
+    if dt.tzinfo is None:
+        dt = timezone.localize(dt)
+    
+    return dt.strftime(format_string)
+
+def get_korean_datetime_format(dt=None, include_seconds=True):
+    """
+    한국식 시간 포맷 문자열 반환 (예: 2025년 5월 28일 14:30:25)
+    
+    Args:
+        dt: datetime 객체 (기본값: 현재 시간)
+        include_seconds: 초 포함 여부
+        
+    Returns:
+        str: 한국식 포맷의 시간 문자열
+    """
+    if dt is None:
+        dt = get_current_time(KST)
+        
+    if include_seconds:
+        format_str = '%Y년 %m월 %d일 %H:%M:%S'
+    else:
+        format_str = '%Y년 %m월 %d일 %H:%M'
+    
+    return dt.strftime(format_str)
+
+def get_market_schedule(date=None, market="KR", config=None):
+    """
+    특정 날짜의 시장 스케줄 정보 반환
+    
+    Args:
+        date: 날짜 (기본값: 오늘)
+        market: 시장 코드 ("KR" 또는 "US")
+        config: 설정 모듈
+        
+    Returns:
+        dict: 시장 스케줄 정보
+    """
+    if config is None:
+        import config as cfg
+        config = cfg
+    
+    if date is None:
+        date = get_current_time(KST if market == "KR" else EST).date()
+    elif isinstance(date, datetime.datetime):
+        date = date.date()
+        
+    # 요일 확인 (0=월요일, 6=일요일)
+    weekday = date.weekday()
+    is_weekend = weekday >= 5
+    
+    # 시장 기본 정보
+    if market == "KR":
+        timezone = KST
+        open_time_str = config.KR_MARKET_OPEN_TIME
+        close_time_str = config.KR_MARKET_CLOSE_TIME
+    else:  # "US"
+        timezone = EST
+        open_time_str = config.US_MARKET_OPEN_TIME
+        close_time_str = config.US_MARKET_CLOSE_TIME
+    
+    # 개장/마감 시간 생성
+    open_time = datetime.datetime.strptime(f"{date.strftime('%Y-%m-%d')} {open_time_str}", "%Y-%m-%d %H:%M")
+    close_time = datetime.datetime.strptime(f"{date.strftime('%Y-%m-%d')} {close_time_str}", "%Y-%m-%d %H:%M")
+    
+    # 시간대 정보 추가
+    open_time = timezone.localize(open_time)
+    close_time = timezone.localize(close_time)
+    
+    # 개장 여부 결정
+    is_open = not is_weekend
+    
+    # 강제 개장 설정 확인
+    force_open = getattr(config, 'FORCE_MARKET_OPEN', False)
+    if force_open:
+        is_open = True
+    
+    return {
+        'date': date,
+        'is_open': is_open,
+        'is_weekend': is_weekend,
+        'open_time': open_time if is_open else None,
+        'close_time': close_time if is_open else None,
+        'market': market,
+        'timezone': timezone
+    }
+
 def get_current_time(timezone=KST):
     """
     현재 시간을 지정된 시간대로 반환
