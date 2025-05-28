@@ -730,18 +730,53 @@ class StockAnalysisSystem:
         logger.info("AI 주식 분석 시스템 시작")
         
         # 자동 매매 시스템 시작
+        trade_status = "비활성화"
         if self.auto_trading_enabled and self.auto_trader:
             self.auto_trader.start_trading_session()
             trade_status = "활성화" if self.auto_trader.is_running else "비활성화"
             logger.info(f"자동 매매 시스템 상태: {trade_status}")
         
-        # 시스템 시작 메시지 전송
-        start_msg = "AI 주식 분석 시스템이 시작되었습니다."
-        if self.auto_trading_enabled:
-            start_msg += f"\n자동 매매 기능이 {trade_status} 되었습니다."
+        # 카카오톡 초기화 상태 확인
+        kakao_status = "활성화" if self.use_kakao and self.kakao_sender and self.kakao_sender.initialized else "비활성화"
+        logger.info(f"카카오톡 알림 상태: {kakao_status}")
         
-        # 통합 알림 전송 함수 사용
-        self.send_notification('status', start_msg)
+        # 시스템 시작 메시지 작성
+        start_time = get_current_time_str(format_str='%Y-%m-%d %H:%M:%S')
+        start_msg = f"🚀 AI 주식 분석 시스템 시작 ({start_time})\n\n"
+        start_msg += f"• 자동 매매 기능: {trade_status}\n"
+        start_msg += f"• 카카오톡 알림: {kakao_status}\n"
+        start_msg += f"• 분석 주기: 30분\n"
+        
+        # 카카오톡이 초기화되지 않았다면 강제 재초기화 시도
+        if self.use_kakao and self.kakao_sender and not self.kakao_sender.initialized:
+            logger.info("카카오톡 알림 서비스 재초기화 시도")
+            try:
+                reinit_success = self.kakao_sender.initialize()
+                if reinit_success:
+                    logger.info("카카오톡 재초기화 성공")
+                    start_msg += "• 카카오톡 재연결 성공\n"
+                else:
+                    logger.warning("카카오톡 재초기화 실패")
+                    start_msg += "• 카카오톡 재연결 실패\n"
+            except Exception as e:
+                logger.error(f"카카오톡 재초기화 중 오류: {e}")
+                start_msg += "• 카카오톡 재연결 오류\n"
+        
+        # 텔레그램으로 우선 시스템 시작 알림 전송
+        try:
+            self.telegram_sender.send_system_status(start_msg)
+            logger.info("텔레그램 시작 메시지 전송 성공")
+        except Exception as e:
+            logger.error(f"텔레그램 시작 메시지 전송 실패: {e}")
+        
+        # 카카오톡으로 별도 전송 시도 (조건이 충족될 경우)
+        if self.use_kakao and self.kakao_sender:
+            try:
+                # 직접 메시지 전송 시도
+                self.kakao_sender.send_message(start_msg)
+                logger.info("카카오톡 시작 메시지 전송 성공")
+            except Exception as e:
+                logger.error(f"카카오톡 시작 메시지 전송 실패: {e}")
         
         # 초기 데이터 수집
         self.stock_data.update_all_data()

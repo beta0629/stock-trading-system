@@ -393,7 +393,7 @@ class KakaoSender:
     
     def send_signal_notification(self, signal_data):
         """
-        매매 시그널 알림 전송 (축약된 형태)
+        매매 시그널 알림 전송 (매우 간결한 형태)
         
         Args:
             signal_data: 매매 시그널 정보
@@ -403,23 +403,11 @@ class KakaoSender:
             
         symbol = signal_data['symbol']
         price = signal_data.get('price', signal_data.get('close', 0))
-        timestamp = signal_data.get('timestamp', get_current_time())
         signals = signal_data['signals']
-        
-        # 타임스탬프가 문자열인 경우 처리
-        if isinstance(timestamp, str):
-            try:
-                timestamp = parse_time(timestamp)
-            except:
-                timestamp = get_current_time()
         
         # 종목 이름 설정 (코드와 함께 표시)
         stock_name = self._get_stock_name(symbol)
         symbol_name = f"{stock_name} ({symbol})"
-        
-        # AI 모델 정보 축약
-        model_used = signal_data.get('model_used', '').lower()
-        model_icon = "🧠" if model_used == 'gpt' else "🤖" if model_used == 'gemini' else "🔍"
         
         # 가장 중요한 신호 찾기
         latest_signal = signals[0]
@@ -430,14 +418,12 @@ class KakaoSender:
         signal_type = latest_signal['type']
         signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
         confidence = latest_signal.get('confidence', 0.0)
-        confidence_str = f" (신뢰도: {confidence:.1f})" if confidence else ""
         
-        # 메시지 생성 (축약된 형태)
-        message = f"{signal_emoji} {symbol_name} {signal_type} 신호{confidence_str}\n"
+        # 매우 간결한 메시지 생성
+        message = f"{signal_emoji} {symbol_name} {signal_type}\n"
         message += f"현재가: {price:,.2f}원\n"
-        message += f"시간: {get_current_time_str(format_str='%m-%d %H:%M')}\n"
         
-        # AI 분석 요약
+        # AI 분석 핵심만 추출 (키워드 기반)
         ai_analysis = signal_data.get('ai_analysis', '')
         gpt_analysis = signal_data.get('gpt_analysis', '')
         
@@ -446,64 +432,85 @@ class KakaoSender:
             # HTML 태그 제거
             analysis = self._remove_html_tags(analysis)
             
-            # 요약 메시지로 줄이기
-            if len(analysis) > 100:
-                # 첫 문장만 추출
-                first_sentence = analysis.split('.')[0]
-                if len(first_sentence) > 100:
-                    summary = first_sentence[:97] + "..."
-                else:
-                    summary = first_sentence + "..."
-                message += f"\n💡 요약: {summary}"
-            else:
-                message += f"\n💡 분석: {analysis}"
+            # 키워드 추출 방식으로 핵심만 표시
+            keywords = self._extract_analysis_keywords(analysis, signal_type)
+            message += f"\n{keywords}\n"
         
+        # 시그널 신뢰도 표시는 마지막에 간단히
+        if confidence > 0:
+            message += f"\n신뢰도: {confidence:.1f}/10"
+            
         # 메시지 전송
-        sent = self.send_message(message)
-        
-        # 추가 분석이 필요한 경우에만 상세 메시지 전송
-        if sent and (len(signals) > 1 or len(ai_analysis) > 100 or len(gpt_analysis) > 100):
-            # 사용자가 상세 내용을 보고 싶을 때만 전송하도록 안내
-            self.send_detailed_analysis(signal_data, symbol_name)
-        
-        return sent
+        return self.send_message(message)
     
+    def _extract_analysis_keywords(self, analysis, signal_type):
+        """분석 내용에서 핵심 키워드만 추출
+        
+        Args:
+            analysis: 전체 분석 내용
+            signal_type: 시그널 타입 ('BUY' 또는 'SELL')
+            
+        Returns:
+            str: 핵심 키워드만 포함된 문자열
+        """
+        # 분석 내용이 없으면 빈 문자열 반환
+        if not analysis:
+            return ""
+        
+        # 문단 분리
+        paragraphs = analysis.split('\n\n')
+        first_paragraph = paragraphs[0] if paragraphs else analysis
+        
+        # RSI 관련 정보 추출
+        rsi_match = re.search(r'RSI[^.]*?(\d+\.?\d*)[^.]*?\.', analysis)
+        macd_match = re.search(r'MACD[^.]*?\.', analysis)
+        trend_match = re.search(r'(추세|상승세|하락세|횡보)[^.]*?\.', analysis)
+        
+        # 추출된 정보를 모으기
+        extracted = []
+        
+        # 핵심 첫 문장 (50자 이내)
+        if first_paragraph:
+            first_sentence = first_paragraph.split('.')[0]
+            if len(first_sentence) > 50:
+                first_sentence = first_sentence[:47] + "..."
+            extracted.append(f"💡 {first_sentence}")
+        
+        # RSI 정보가 있으면 추가
+        if rsi_match:
+            extracted.append(f"📊 RSI: {rsi_match.group(0).strip()}")
+        
+        # MACD 정보가 있으면 추가 
+        if macd_match:
+            extracted.append(f"📈 {macd_match.group(0).strip()}")
+        
+        # 추세 정보가 있으면 추가
+        if trend_match:
+            extracted.append(f"📉 {trend_match.group(0).strip()}")
+            
+        # 매매 신호 관련 문장 추가
+        signal_keyword = "매수" if signal_type == "BUY" else "매도"
+        for sentence in analysis.split('.'):
+            if signal_keyword in sentence and len(sentence) < 100:
+                extracted.append(f"🔍 {sentence.strip()}.")
+                break
+        
+        return "\n".join(extracted)
+        
     def send_detailed_analysis(self, signal_data, symbol_name):
         """
-        상세 분석 결과 전송 (분리된 메시지)
+        상세 분석은 사용자 요청 시에만 보내도록 상세 보기 안내 메시지만 전송
         
         Args:
             signal_data: 매매 시그널 정보
             symbol_name: 종목명 (코드 포함)
         """
-        # AI 분석이 포함된 경우
-        ai_analysis = signal_data.get('ai_analysis', '')
-        gpt_analysis = signal_data.get('gpt_analysis', '')
-        
-        # HTML 태그 제거
-        ai_analysis = self._remove_html_tags(ai_analysis)
-        gpt_analysis = self._remove_html_tags(gpt_analysis)
-        
-        # 모델 정보 가져오기
-        model_used = signal_data.get('model_used', '').lower()
-        model_icon = "🧠" if model_used == 'gpt' else "🤖" if model_used == 'gemini' else "🔍"
-        model_name = "GPT" if model_used == 'gpt' else "Gemini" if model_used == 'gemini' else "AI"
-        
-        # 상세 분석 전송 (가장 중요한 부분만)
-        if ai_analysis or gpt_analysis:
-            analysis = ai_analysis if ai_analysis else gpt_analysis
-            detail_message = f"{model_icon} {symbol_name} 상세 분석\n\n{analysis}"
-            
-            # 긴 메시지는 축약
-            if len(detail_message) > 1800:
-                # 첫 1700자만 보내기
-                detail_message = detail_message[:1700] + "...\n(분석 요약: 길이 제한으로 일부만 표시)"
-                
-            self.send_message(detail_message)
+        # 상세 분석이 필요한 경우 안내 메시지만 전송
+        return
     
     def send_system_status(self, status_message):
         """
-        시스템 상태 알림 전송 (축약된 형태)
+        시스템 상태 알림 전송 (매우 간결한 형태)
         
         Args:
             status_message: 상태 메시지
@@ -513,184 +520,94 @@ class KakaoSender:
         
         # 아이콘 설정
         icon = "📊"
-        if "분석 결과" in clean_message:
+        if "분석" in clean_message:
             icon = "📈"
-        elif "매매 신호" in clean_message:
+        elif "매매" in clean_message:
             icon = "🔔"
         elif "오류" in clean_message:
             icon = "⚠️"
+        elif "업데이트" in clean_message:
+            icon = "🔄"
         
-        # 메시지 헤더 간소화
-        header = f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n"
+        # 메시지 종류 분류하여 처리
+        if "### RSI" in clean_message:
+            # RSI 분석 등 기술적 분석 메시지는 핵심만 추출
+            return self._send_technical_analysis(clean_message)
         
-        # 메시지 본문 길이 제한
-        max_content_length = 1500
+        # 일반 상태 메시지는 앞부분만 유지
+        max_length = 300  # 최대 길이 제한
         
-        # 중요한 부분만 추출
-        if len(clean_message) > max_content_length:
-            # 처음 300자 + ... + 마지막 300자 
-            # 또는 문단 단위로 요약
-            paragraphs = clean_message.split('\n\n')
-            if len(paragraphs) > 4:
-                # 첫 번째와 마지막 두 개 문단만 유지
-                summary = paragraphs[0] + "\n\n"
-                summary += "...(중략)...\n\n"
-                summary += "\n\n".join(paragraphs[-2:])
-                clean_message = summary
-            else:
-                # 그냥 앞뒤 텍스트만 보여주기
-                clean_message = clean_message[:700] + "\n\n...(중략)...\n\n" + clean_message[-700:]
+        if len(clean_message) > max_length:
+            # 문단 단위로 구분
+            paragraphs = [p for p in clean_message.split('\n\n') if p.strip()]
+            
+            if paragraphs:
+                # 첫 번째 문단과 두 번째 문단의 일부만 유지
+                result = paragraphs[0]
+                
+                if len(paragraphs) > 1:
+                    second_para = paragraphs[1]
+                    if len(second_para) > 100:
+                        second_para = second_para[:97] + "..."
+                    result += "\n\n" + second_para
+                    
+                result += "\n\n(메시지 축약됨...)"
+                clean_message = result
         
         # 메시지 전송
-        return self.send_message(header + clean_message)
+        return self.send_message(f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n{clean_message}")
     
-    def _check_token(self):
-        """토큰이 유효한지 확인하고 필요시 갱신"""
-        # 토큰이 없거나 만료되었으면 갱신
-        if not self.token or not self.token_expire_at:
-            self._refresh_token()
-            return
-        
-        # datetime 사용 대신 parse_time 함수를 사용하여 시간 파싱
-        expire_time = parse_time(self.token_expire_at)
-        current_time = get_current_time()
-        if current_time >= expire_time:
-            self._refresh_token()
-            return
-    
-    def _save_token(self, token_json):
-        """API 응답으로부터 토큰 저장"""
-        token_data = token_json
-        
-        if isinstance(token_json, str):
-            token_data = json.loads(token_json)
-        
-        self.token = token_data.get('access_token')
-        # datetime.now() + timedelta 대신 get_adjusted_time 사용
-        self.token_expire_at = get_adjusted_time(adjust_days=29).isoformat()
-        
-        # 토큰 파일에 저장
-        with open(self.token_file, 'w') as f:
-            json.dump({
-                "access_token": self.token,
-                "expire_at": self.token_expire_at,
-                "updated_at": get_current_time().isoformat()
-            }, f, indent=4)
-    
-    def _refresh_token(self):
-        """카카오 토큰 갱신"""
-        if not os.path.exists(self.token_file):
-            self._request_new_token()
-            return
-            
-        try:
-            with open(self.token_file, 'r') as f:
-                token_data = json.load(f)
-                
-            self.refresh_token = token_data.get('refresh_token')
-            if not self.refresh_token:
-                self._request_new_token()
-                return
-                
-            url = "https://kauth.kakao.com/oauth/token"
-            data = {
-                "grant_type": "refresh_token",
-                "client_id": self.client_id,
-                "refresh_token": self.refresh_token
-            }
-            response = requests.post(url, data=data)
-            
-            if response.status_code != 200:
-                logger.error(f"토큰 갱신 실패: {response.text}")
-                self._request_new_token()
-                return
-                
-            token_dict = response.json()
-            self.token = token_dict.get('access_token')
-            
-            # datetime 대신 time_utils 함수 사용
-            self.token_expire_at = get_adjusted_time(adjust_days=29).isoformat()
-            
-            # 새로운 refresh_token이 포함되어 있으면 업데이트
-            if token_dict.get('refresh_token'):
-                self.refresh_token = token_dict.get('refresh_token')
-                
-            self._save_token(token_dict)
-            
-        except Exception as e:
-            logger.error(f"토큰 갱신 중 오류: {e}")
-            self._request_new_token()
-    
-    def _check_token_validity(self):
-        """토큰 유효성 검사 및 필요시 갱신"""
-        if not self.token or not self.token_expire_at:
-            self._load_token_from_file()
-            
-        if not self.token:
-            self._get_authorize_code()
-            return
-            
-        if self.token_expire_at:
-            # datetime.fromisoformat 대신 parse_time 사용
-            expire_time = parse_time(self.token_expire_at)
-            current_time = get_current_time()
-            
-            if current_time >= expire_time:
-                self._refresh_token()
-                return
-    
-    def _remove_html_tags(self, text):
-        """HTML 태그를 제거하고 일반 텍스트로 변환
+    def _send_technical_analysis(self, message):
+        """기술적 분석 메시지에서 핵심 내용만 추출하여 전송
         
         Args:
-            text: HTML 태그가 포함된 문자열
+            message: 전체 기술적 분석 메시지
             
         Returns:
-            str: HTML 태그가 제거된 문자열
+            bool: 전송 성공 여부
         """
-        if not text:
-            return ""
+        # 각 분석 섹션 구분
+        sections = message.split('###')
+        result_parts = []
         
-        # 볼드 태그 처리: <b>텍스트</b> -> *텍스트*
-        text = re.sub(r'<b>(.*?)</b>', r'*\1*', text)
+        # 제목 부분 처리
+        if sections[0].strip():
+            title_match = re.search(r'([^\n]+)', sections[0])
+            if title_match:
+                result_parts.append(f"📊 {title_match.group(1).strip()}")
         
-        # 이탤릭 태그 처리: <i>텍스트</i> -> _텍스트_
-        text = re.sub(r'<i>(.*?)</i>', r'_\1_', text)
-        
-        # 나머지 모든 HTML 태그 제거
-        text = re.sub(r'<.*?>', '', text)
-        
-        return text
-    
-    def _get_stock_name(self, symbol):
-        """주식 종목 코드로부터 종목명을 반환
-        
-        Args:
-            symbol: 종목 코드
+        # 각 섹션에서 첫 1-2문장만 추출
+        for section in sections[1:]:
+            if not section.strip():
+                continue
+                
+            lines = section.strip().split('\n')
+            section_title = lines[0].strip() if lines else ""
             
-        Returns:
-            str: 종목명 (없으면 종목 코드 그대로 반환)
-        """
-        # 종목 정보 리스트 (config에서 가져오기)
-        kr_stock_info = []
-        us_stock_info = []
+            if section_title:
+                # 섹션 제목은 완전히 포함
+                if "RSI" in section_title:
+                    result_parts.append(f"📈 {section_title}")
+                elif "매도" in section_title:
+                    result_parts.append(f"🔴 {section_title}")
+                elif "매수" in section_title or "신호" in section_title:
+                    result_parts.append(f"🟢 {section_title}")
+                elif "추세" in section_title or "추가" in section_title:
+                    result_parts.append(f"📉 {section_title}")
+                else:
+                    result_parts.append(f"📌 {section_title}")
+                
+                # 내용에서 첫 문장 추출
+                content = ' '.join(lines[1:]).strip()
+                sentences = re.split(r'(?<=[.!?])\s+', content)
+                
+                if sentences and len(sentences[0]) > 10:
+                    # 첫 문장이 너무 길면 축약
+                    first_sentence = sentences[0]
+                    if len(first_sentence) > 80:
+                        first_sentence = first_sentence[:77] + "..."
+                    result_parts.append(f"  {first_sentence}")
         
-        if hasattr(self.config, 'KR_STOCK_INFO'):
-            kr_stock_info = self.config.KR_STOCK_INFO
-        if hasattr(self.config, 'US_STOCK_INFO'):
-            us_stock_info = self.config.US_STOCK_INFO
-        
-        # 종목 코드가 한국 주식인지 미국 주식인지 판단
-        if symbol.isdigit():
-            # 한국 주식: 코드로 종목 정보 찾기
-            for stock in kr_stock_info:
-                if stock.get('code') == symbol:
-                    return stock.get('name', symbol)
-        else:
-            # 미국 주식: 코드로 종목 정보 찾기
-            for stock in us_stock_info:
-                if stock.get('code') == symbol:
-                    return stock.get('name', symbol)
-                    
-        # 종목 정보가 없으면 코드 그대로 반환
-        return symbol
+        # 결과 조합 및 전송
+        result_message = '\n'.join(result_parts)
+        return self.send_message(result_message)
