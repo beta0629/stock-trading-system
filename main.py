@@ -63,8 +63,8 @@ class StockAnalysisSystem:
         # Gemini 분석기 초기화
         self.gemini_analyzer = GeminiAnalyzer(config)
         
-        # 하이브리드 분석 전략 초기화
-        self.hybrid_analysis_strategy = HybridAnalysisStrategy(config)
+        # 하이브리드 분석 전략 초기화 (필요한 모든 인자 전달)
+        self.hybrid_analysis_strategy = HybridAnalysisStrategy(self.chatgpt_analyzer, self.gemini_analyzer, config)
         
         # GPT 기반 트레이딩 전략 초기화
         self.gpt_trading_strategy = GPTTradingStrategy(config)
