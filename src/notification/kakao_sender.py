@@ -393,12 +393,12 @@ class KakaoSender:
     
     def send_signal_notification(self, signal_data):
         """
-        매매 시그널 알림 전송
+        매매 시그널 알림 전송 (축약된 형태)
         
         Args:
             signal_data: 매매 시그널 정보
         """
-        if not signal_data['signals']:
+        if not signal_data.get('signals'):
             return
             
         symbol = signal_data['symbol']
@@ -413,11 +413,69 @@ class KakaoSender:
             except:
                 timestamp = get_current_time()
         
-        # AI 모델 정보 가져오기 (GPT 또는 Gemini)
+        # 종목 이름 설정 (코드와 함께 표시)
+        stock_name = self._get_stock_name(symbol)
+        symbol_name = f"{stock_name} ({symbol})"
+        
+        # AI 모델 정보 축약
         model_used = signal_data.get('model_used', '').lower()
         model_icon = "🧠" if model_used == 'gpt' else "🤖" if model_used == 'gemini' else "🔍"
-        model_name = "GPT" if model_used == 'gpt' else "Gemini" if model_used == 'gemini' else "AI"
         
+        # 가장 중요한 신호 찾기
+        latest_signal = signals[0]
+        for signal in signals:
+            if signal.get('confidence', 0) > latest_signal.get('confidence', 0):
+                latest_signal = signal
+        
+        signal_type = latest_signal['type']
+        signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
+        confidence = latest_signal.get('confidence', 0.0)
+        confidence_str = f" (신뢰도: {confidence:.1f})" if confidence else ""
+        
+        # 메시지 생성 (축약된 형태)
+        message = f"{signal_emoji} {symbol_name} {signal_type} 신호{confidence_str}\n"
+        message += f"현재가: {price:,.2f}원\n"
+        message += f"시간: {get_current_time_str(format_str='%m-%d %H:%M')}\n"
+        
+        # AI 분석 요약
+        ai_analysis = signal_data.get('ai_analysis', '')
+        gpt_analysis = signal_data.get('gpt_analysis', '')
+        
+        if ai_analysis or gpt_analysis:
+            analysis = ai_analysis if ai_analysis else gpt_analysis
+            # HTML 태그 제거
+            analysis = self._remove_html_tags(analysis)
+            
+            # 요약 메시지로 줄이기
+            if len(analysis) > 100:
+                # 첫 문장만 추출
+                first_sentence = analysis.split('.')[0]
+                if len(first_sentence) > 100:
+                    summary = first_sentence[:97] + "..."
+                else:
+                    summary = first_sentence + "..."
+                message += f"\n💡 요약: {summary}"
+            else:
+                message += f"\n💡 분석: {analysis}"
+        
+        # 메시지 전송
+        sent = self.send_message(message)
+        
+        # 추가 분석이 필요한 경우에만 상세 메시지 전송
+        if sent and (len(signals) > 1 or len(ai_analysis) > 100 or len(gpt_analysis) > 100):
+            # 사용자가 상세 내용을 보고 싶을 때만 전송하도록 안내
+            self.send_detailed_analysis(signal_data, symbol_name)
+        
+        return sent
+    
+    def send_detailed_analysis(self, signal_data, symbol_name):
+        """
+        상세 분석 결과 전송 (분리된 메시지)
+        
+        Args:
+            signal_data: 매매 시그널 정보
+            symbol_name: 종목명 (코드 포함)
+        """
         # AI 분석이 포함된 경우
         ai_analysis = signal_data.get('ai_analysis', '')
         gpt_analysis = signal_data.get('gpt_analysis', '')
@@ -426,123 +484,65 @@ class KakaoSender:
         ai_analysis = self._remove_html_tags(ai_analysis)
         gpt_analysis = self._remove_html_tags(gpt_analysis)
         
-        # 종목 이름 설정 (코드와 함께 표시)
-        stock_name = self._get_stock_name(symbol)
-        symbol_name = f"{stock_name} ({symbol})"
+        # 모델 정보 가져오기
+        model_used = signal_data.get('model_used', '').lower()
+        model_icon = "🧠" if model_used == 'gpt' else "🤖" if model_used == 'gemini' else "🔍"
+        model_name = "GPT" if model_used == 'gpt' else "Gemini" if model_used == 'gemini' else "AI"
         
-        # 메시지 생성
-        message_parts = [
-            f"📊 매매 시그널 알림 ({model_icon} {model_name})",
-            f"종목: {symbol_name}",
-            f"현재가: {price:,.2f}",
-            f"시간: {timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(timestamp, 'strftime') else timestamp}",
-            "",
-            "발생 시그널:"
-        ]
-        
-        for signal in signals:
-            signal_type = signal['type']
-            signal_date = signal.get('date', '')
-            signal_price = signal.get('price', price)
-            confidence = signal.get('confidence', 0.0)
-            source = signal.get('source', '')
+        # 상세 분석 전송 (가장 중요한 부분만)
+        if ai_analysis or gpt_analysis:
+            analysis = ai_analysis if ai_analysis else gpt_analysis
+            detail_message = f"{model_icon} {symbol_name} 상세 분석\n\n{analysis}"
             
-            # 매수/매도 이모지
-            type_emoji = "🔴" if signal_type == 'SELL' else "🟢"
-            
-            # 신뢰도 정보 추가
-            confidence_str = f" (신뢰도: {confidence:.1f})" if confidence else ""
-            source_str = f" ({source})" if source else ""
-            
-            message_parts.append(f"{type_emoji} {signal_type}{confidence_str}: {signal_date} {signal_price:,.2f}{source_str}")
-        
-        # AI 분석 정보가 있을 경우 추가 - 너무 길지 않게 제한
-        if ai_analysis:
-            message_parts.append("")
-            message_parts.append(f"📝 {model_icon} {model_name} 분석:")
-            # AI 분석은 추가 내용으로 별도 메시지 전송
-            if len(ai_analysis) > 500:
-                # 짧은 요약은 메인 메시지에 포함
-                message_parts.append(ai_analysis[:200] + "...")
-            else:
-                message_parts.append(ai_analysis)
-        elif gpt_analysis:
-            message_parts.append("")
-            message_parts.append(f"📝 🧠 GPT 분석:")
-            # GPT 분석도 길 경우 요약
-            if len(gpt_analysis) > 500:
-                message_parts.append(gpt_analysis[:200] + "...")
-            else:
-                message_parts.append(gpt_analysis)
-        
-        main_message = "\n".join(message_parts)
-        success = self.send_message(main_message)
-        
-        # 긴 분석 내용은 별도 메시지로 전송
-        if success and ((ai_analysis and len(ai_analysis) > 500) or (gpt_analysis and len(gpt_analysis) > 500)):
-            if ai_analysis and len(ai_analysis) > 500:
-                detail_message = f"[{symbol_name}] {model_icon} 상세 분석:\n\n{ai_analysis}"
-                self.send_message(detail_message)
-            elif gpt_analysis and len(gpt_analysis) > 500:
-                detail_message = f"[{symbol_name}] 🧠 GPT 상세 분석:\n\n{gpt_analysis}"
-                self.send_message(detail_message)
-        
-        return success
-        
+            # 긴 메시지는 축약
+            if len(detail_message) > 1800:
+                # 첫 1700자만 보내기
+                detail_message = detail_message[:1700] + "...\n(분석 요약: 길이 제한으로 일부만 표시)"
+                
+            self.send_message(detail_message)
+    
     def send_system_status(self, status_message):
         """
-        시스템 상태 알림 전송
+        시스템 상태 알림 전송 (축약된 형태)
         
         Args:
             status_message: 상태 메시지
         """
-        current_time = get_current_time_str(format_str="%Y-%m-%d %H:%M:%S")
-        
         # HTML 태그 제거
         clean_message = self._remove_html_tags(status_message)
         
-        # AI 모델 정보 확인
-        model_icon = "🧠"  # 기본값: GPT
-        if "GPT" in clean_message:
-            model_icon = "🧠 GPT"
-        elif "Gemini" in clean_message:
-            model_icon = "🤖 Gemini"
-        
-        # 분석 유형에 따른 아이콘 추가
-        analysis_icon = "📊"
-        if "분석 결과" in clean_message or "상세 분석" in clean_message:
-            analysis_icon = "📈"
+        # 아이콘 설정
+        icon = "📊"
+        if "분석 결과" in clean_message:
+            icon = "📈"
         elif "매매 신호" in clean_message:
-            analysis_icon = "🔔"
-        elif "오류" in clean_message or "실패" in clean_message:
-            analysis_icon = "⚠️"
+            icon = "🔔"
+        elif "오류" in clean_message:
+            icon = "⚠️"
         
-        # 메시지 헤더 생성
-        if model_icon in ["🧠 GPT", "🤖 Gemini"]:
-            header = f"{analysis_icon} 시스템 상태 ({model_icon})\n시간: {current_time}\n\n"
-        else:
-            header = f"{analysis_icon} 시스템 상태\n시간: {current_time}\n\n"
+        # 메시지 헤더 간소화
+        header = f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n"
         
-        # 긴 메시지 처리 - 메시지 본문이 너무 길면 분할해서 전송
-        max_content_length = 1700  # 헤더 공간 확보를 위해 최대 메시지 길이에서 100자 뺌
+        # 메시지 본문 길이 제한
+        max_content_length = 1500
         
+        # 중요한 부분만 추출
         if len(clean_message) > max_content_length:
-            # 긴 내용을 여러 개의 메시지로 분할
-            content_parts = self._split_message(clean_message, max_content_length)
-            success = True
-            
-            for i, part in enumerate(content_parts):
-                part_header = f"{header}[{i+1}/{len(content_parts)}]\n"
-                if not self.send_message(part_header + part):
-                    success = False
-                # 연속 메시지 전송 시 약간의 딜레이 추가
-                if i < len(content_parts) - 1:
-                    time.sleep(0.5)
-                    
-            return success
-        else:
-            # 단일 메시지 전송
-            return self.send_message(header + clean_message)
+            # 처음 300자 + ... + 마지막 300자 
+            # 또는 문단 단위로 요약
+            paragraphs = clean_message.split('\n\n')
+            if len(paragraphs) > 4:
+                # 첫 번째와 마지막 두 개 문단만 유지
+                summary = paragraphs[0] + "\n\n"
+                summary += "...(중략)...\n\n"
+                summary += "\n\n".join(paragraphs[-2:])
+                clean_message = summary
+            else:
+                # 그냥 앞뒤 텍스트만 보여주기
+                clean_message = clean_message[:700] + "\n\n...(중략)...\n\n" + clean_message[-700:]
+        
+        # 메시지 전송
+        return self.send_message(header + clean_message)
     
     def _check_token(self):
         """토큰이 유효한지 확인하고 필요시 갱신"""
@@ -556,6 +556,7 @@ class KakaoSender:
         current_time = get_current_time()
         if current_time >= expire_time:
             self._refresh_token()
+            return
     
     def _save_token(self, token_json):
         """API 응답으로부터 토큰 저장"""
@@ -670,17 +671,26 @@ class KakaoSender:
         Returns:
             str: 종목명 (없으면 종목 코드 그대로 반환)
         """
-        # 종목 코드-이름 매핑 딕셔너리 (config에서 가져오기)
-        kr_stock_names = {}
-        us_stock_names = {}
+        # 종목 정보 리스트 (config에서 가져오기)
+        kr_stock_info = []
+        us_stock_info = []
         
-        if hasattr(self.config, 'KR_STOCK_NAMES'):
-            kr_stock_names = self.config.KR_STOCK_NAMES
-        if hasattr(self.config, 'US_STOCK_NAMES'):
-            us_stock_names = self.config.US_STOCK_NAMES
-            
-        # 종목 코드가 한국 주식인지 미국 주식인지 판단 (숫자로만 이루어진 경우 한국 주식으로 간주)
+        if hasattr(self.config, 'KR_STOCK_INFO'):
+            kr_stock_info = self.config.KR_STOCK_INFO
+        if hasattr(self.config, 'US_STOCK_INFO'):
+            us_stock_info = self.config.US_STOCK_INFO
+        
+        # 종목 코드가 한국 주식인지 미국 주식인지 판단
         if symbol.isdigit():
-            return kr_stock_names.get(symbol, symbol)
+            # 한국 주식: 코드로 종목 정보 찾기
+            for stock in kr_stock_info:
+                if stock.get('code') == symbol:
+                    return stock.get('name', symbol)
         else:
-            return us_stock_names.get(symbol, symbol)
+            # 미국 주식: 코드로 종목 정보 찾기
+            for stock in us_stock_info:
+                if stock.get('code') == symbol:
+                    return stock.get('name', symbol)
+                    
+        # 종목 정보가 없으면 코드 그대로 반환
+        return symbol
