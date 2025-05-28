@@ -62,12 +62,13 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
           
-      - name: 캐시 및 데이터 디렉토리 생성
+      - name: 캐시 디렉토리 생성
         run: |
           mkdir -p cache
           mkdir -p data/backup
+          mkdir -p logs
           touch cache/.gitkeep
-          echo "캐시 및 데이터 디렉토리 생성 완료"
+          echo "캐시 디렉토리 생성 완료"
 
       - name: 의존성 설치
         run: |
@@ -99,101 +100,55 @@ jobs:
           if [ -n "$KIS_APP_KEY" ]; then echo "✅ KIS_APP_KEY가 설정되어 있습니다"; else echo "❌ KIS_APP_KEY가 설정되지 않았습니다"; fi
           if [ -n "$KIS_APP_SECRET" ]; then echo "✅ KIS_APP_SECRET이 설정되어 있습니다"; else echo "❌ KIS_APP_SECRET이 설정되지 않았습니다"; fi
           if [ -n "$KIS_VIRTUAL_APP_KEY" ]; then echo "✅ KIS_VIRTUAL_APP_KEY가 설정되어 있습니다"; else echo "❌ KIS_VIRTUAL_APP_KEY가 설정되지 않았습니다"; fi
+          if [ -n "$KIS_VIRTUAL_APP_SECRET" ]; then echo "✅ KIS_VIRTUAL_APP_SECRET이 설정되어 있습니다"; else echo "❌ KIS_VIRTUAL_APP_SECRET이 설정되지 않았습니다"; fi
+          if [ -n "$KIS_VIRTUAL_ACCOUNT_NO" ]; then echo "✅ KIS_VIRTUAL_ACCOUNT_NO가 설정되어 있습니다"; else echo "❌ KIS_VIRTUAL_ACCOUNT_NO가 설정되지 않았습니다"; fi
+
+      - name: 데이터베이스 초기화
+        run: |
+          echo "데이터베이스 초기화 중..."
+          python -c "from src.database.db_init import initialize_db; initialize_db()"
+          echo "데이터베이스 초기화 완료"
 
       - name: API 연결 테스트
         run: |
           echo "한국투자증권 API 연결 테스트 중..."
-          python test_kis_connection.py || echo "API 테스트 실패. 모의 거래에는 영향이 없을 수 있습니다."
+          python test_kis_connection.py || echo "API 테스트 실패. 매매 과정에서 문제가 발생할 수 있습니다."
         continue-on-error: true  # API 실패해도 워크플로우 계속 진행
 
-      - name: 모의 자동매매 실행 (자동 재시작 기능 포함)
+      - name: 자동매매 실행 (main.py)
         env:
-          RESTART_COUNT: "10"  # 최대 재시작 횟수
+          RESTART_COUNT: "5"  # 최대 재시작 횟수
         run: |
-          # 실행 전 기존 프로세스 정리
-          pkill -f "python test_mock_auto_trading.py" 2>/dev/null || true
-          
           # 데이터베이스 디렉토리 설정
           export SQLITE_DB_PATH="./data/stock_trading.db"
-          echo "SQLite DB 경로: $SQLITE_DB_PATH"
+          export SIMULATION_MODE="false"  # 실제 API를 통한 매매 활성화
+          export FORCE_MARKET_OPEN="true"  # 시장 강제 오픈
+          
+          echo "자동매매 시스템을 시작합니다 (실행 횟수: $RESTART_COUNT 회)"
           
           for attempt in $(seq 1 $RESTART_COUNT); do
-            echo "자동매매 실행 시도 #$attempt/$RESTART_COUNT"
-            echo "=============================="
-            echo "실행 시작: $(date)"
-            start_time=$(date +%s)
+            echo "실행 시도 #$attempt/$RESTART_COUNT: $(date)"
+            timeout 60m python main.py --force-market-open || true
             
-            # 타임스탬프 로그 파일명 생성
-            timestamp=$(date +%Y%m%d_%H%M%S)
-            log_file="mock_auto_trading_${timestamp}.log"
-            
-            # 실행: timeout 명령어로 강제 타임아웃 처리 (60분)
-            timeout 60m python test_mock_auto_trading.py || EXIT_CODE=$?
-            
-            # 종료 코드 확인
-            if [ -n "$EXIT_CODE" ]; then
-              if [ $EXIT_CODE -eq 124 ]; then
-                echo "⚠️ 타임아웃 발생 (60분 경과)"
-              else
-                echo "⚠️ 오류 발생 (코드: $EXIT_CODE)"
-              fi
-              unset EXIT_CODE
-            fi
-            
-            end_time=$(date +%s)
-            duration=$((end_time - start_time))
-            
-            echo "실행 완료: $duration 초 동안 실행됨"
-            
-            # 로그 파일 확인 및 문제 진단
-            echo "===== 로그 파일 분석 ====="
-            if [ -f mock_auto_trading.log ]; then
-              echo "최근 로그 항목:"
-              tail -n 20 mock_auto_trading.log
-              
-              # 오류 키워드 확인
-              echo "오류 검색 결과:"
-              grep -i "error\|exception\|failed\|timeout" mock_auto_trading.log | tail -n 10 || echo "오류 관련 로그가 없습니다."
-            else
-              echo "로그 파일을 찾을 수 없습니다."
-            fi
-            
-            # 데이터베이스 정보 (존재하는 경우)
-            if [ -f "$SQLITE_DB_PATH" ]; then
-              echo "데이터베이스 존재 확인: $SQLITE_DB_PATH"
-              echo "데이터베이스 크기: $(stat -c %s "$SQLITE_DB_PATH") 바이트"
-            else
-              echo "데이터베이스 파일이 없습니다: $SQLITE_DB_PATH"
-            fi
-            
-            # 실행 시간이 너무 짧으면(오류) 대기시간 증가
-            if [ $duration -lt 60 ]; then
-              echo "⚠️ 오류 감지: 실행이 너무 빨리 종료되었습니다. 45초 대기 후 재시작합니다."
-              sleep 45
-              
-              # 남은 프로세스 정리
-              echo "남은 Python 프로세스 정리 중..."
-              pkill -f "python test_mock_auto_trading.py" || true
-              sleep 5
-            else
-              echo "✅ 정상 실행 또는 계획된 종료: 10초 후 재시작합니다."
+            # 재시작 간 대기 시간
+            if [ $attempt -lt $RESTART_COUNT ]; then
+              echo "다음 실행까지 10초 대기..."
               sleep 10
             fi
-            
-            echo "=============================="
           done
           
-          echo "모든 재시작 시도가 완료되었습니다."
+          echo "모든 매매 사이클이 완료되었습니다."
 
-      - name: 로그 파일 업로드
+      - name: 로그 파일 및 데이터베이스 업로드
         if: always()  # 이전 단계가 실패해도 항상 실행
         uses: actions/upload-artifact@v4
         with:
           name: trading-logs-and-data
           path: |
-            mock_auto_trading*.log
+            logs/*.log
             *.log
             data/*.db
+            data/backup/*.db
             
       - name: 시스템 상태 확인 및 정리
         if: always()  # 이전 단계가 실패해도 항상 실행
@@ -206,6 +161,6 @@ jobs:
           df -h
           
           echo "==== 정리 작업 ===="
-          pkill -f "python test_mock" || true
+          pkill -f "python" || true
           echo "정리 완료"
         continue-on-error: true  # 이 단계가 실패해도 워크플로우 계속 진행
