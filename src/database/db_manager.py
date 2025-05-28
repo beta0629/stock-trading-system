@@ -22,12 +22,25 @@ class DatabaseManager:
             with cls._lock:
                 if cls._instance is None:
                     if config is None:
-                        # 설정 모듈을 가져옴
+                        # 환경 변수에서 직접 설정 가져오기
+                        import os
                         import sys
                         current_dir = os.path.dirname(os.path.abspath(__file__))
                         parent_dir = os.path.dirname(os.path.dirname(current_dir))
                         sys.path.insert(0, parent_dir)
-                        import config
+                        
+                        # 환경 변수에서 설정 가져오기
+                        try:
+                            import config as config_module
+                            config = config_module
+                        except ImportError:
+                            logger = logging.getLogger('DatabaseManager')
+                            logger.error("config 모듈을 가져올 수 없습니다.")
+                            # 기본값으로 환경 변수 설정
+                            class ConfigFromEnv:
+                                pass
+                            config = ConfigFromEnv()
+                    # 어떤 경우든 환경 변수를 통한 설정 객체를 생성
                     cls._instance = DatabaseManager(config)
         return cls._instance
     
@@ -35,30 +48,60 @@ class DatabaseManager:
         """데이터베이스 관리자 초기화"""
         self.logger = logging.getLogger('DatabaseManager')
         self.config = config
-        self.use_db = config.USE_DATABASE
+        
+        # 환경 변수에서 설정 가져오기
+        import os
+        
+        # 데이터베이스 사용 여부 설정
+        try:
+            self.use_db = config.USE_DATABASE
+        except AttributeError:
+            self.use_db = os.environ.get("USE_DATABASE", "True").lower() == "true"
+            self.logger.info(f"환경 변수에서 USE_DATABASE 설정: {self.use_db}")
         
         if not self.use_db:
             self.logger.warning("데이터베이스 사용이 비활성화되어 있습니다.")
             return
         
         # 데이터베이스 타입 설정
-        self.db_type = config.DB_TYPE
+        try:
+            self.db_type = config.DB_TYPE
+        except AttributeError:
+            self.db_type = os.environ.get("DB_TYPE", "sqlite").lower()
+            self.logger.info(f"환경 변수에서 DB_TYPE 설정: {self.db_type}")
         
         # SQLite 설정
         if self.db_type == 'sqlite':
-            self.db_path = config.SQLITE_DB_PATH
+            try:
+                self.db_path = config.SQLITE_DB_PATH
+            except AttributeError:
+                from pathlib import Path
+                default_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "stock_trading.db")
+                self.db_path = os.environ.get("SQLITE_DB_PATH", default_path)
+                self.logger.info(f"환경 변수에서 SQLITE_DB_PATH 설정: {self.db_path}")
+            
             # 데이터베이스 디렉토리 생성
+            from pathlib import Path
             Path(os.path.dirname(self.db_path)).mkdir(parents=True, exist_ok=True)
             # 데이터베이스 초기화
             self._init_sqlite_db()
         
         # MySQL 설정
         elif self.db_type == 'mysql':
-            self.mysql_host = config.MYSQL_HOST
-            self.mysql_port = config.MYSQL_PORT
-            self.mysql_user = config.MYSQL_USER
-            self.mysql_password = config.MYSQL_PASSWORD
-            self.mysql_db = config.MYSQL_DB
+            try:
+                self.mysql_host = config.MYSQL_HOST
+                self.mysql_port = config.MYSQL_PORT
+                self.mysql_user = config.MYSQL_USER
+                self.mysql_password = config.MYSQL_PASSWORD
+                self.mysql_db = config.MYSQL_DB
+            except AttributeError:
+                self.mysql_host = os.environ.get("MYSQL_HOST", "localhost")
+                self.mysql_port = int(os.environ.get("MYSQL_PORT", "3306"))
+                self.mysql_user = os.environ.get("MYSQL_USER", "root")
+                self.mysql_password = os.environ.get("MYSQL_PASSWORD", "")
+                self.mysql_db = os.environ.get("MYSQL_DB", "stock_trading")
+                self.logger.info(f"환경 변수에서 MySQL 설정을 가져왔습니다: {self.mysql_host}:{self.mysql_port}")
+            
             # MySQL 데이터베이스 초기화
             self._init_mysql_db()
         else:
@@ -66,8 +109,13 @@ class DatabaseManager:
             raise ValueError(f"지원하지 않는 데이터베이스 타입: {self.db_type}")
         
         # 자동 백업 설정
-        self.auto_backup = config.DB_AUTO_BACKUP
-        self.backup_interval = config.DB_BACKUP_INTERVAL
+        try:
+            self.auto_backup = config.DB_AUTO_BACKUP
+            self.backup_interval = config.DB_BACKUP_INTERVAL
+        except AttributeError:
+            self.auto_backup = os.environ.get("DB_AUTO_BACKUP", "True").lower() == "true"
+            self.backup_interval = int(os.environ.get("DB_BACKUP_INTERVAL", "24"))
+            self.logger.info(f"환경 변수에서 백업 설정을 가져왔습니다: 자동 백업 {self.auto_backup}, 간격 {self.backup_interval}시간")
         
         # 마지막 백업 시간 초기화
         self.last_backup_time = datetime.now()
