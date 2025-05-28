@@ -242,16 +242,38 @@ class KakaoSender:
         Returns:
             bool: 전송 성공 여부
         """
-        # CI 환경이고 카카오톡 설정이 없으면 메시지 전송 건너뛰기
-        if self.is_ci_env and not self.initialized:
-            logger.info("CI 환경에서 카카오톡 설정이 되지 않아 메시지 전송을 건너뜁니다.")
-            return True  # 전송 성공으로 처리하여 프로세스 계속 진행
+        # GitHub Actions 환경인지 확인하고 로그 추가
+        is_github_actions = 'GITHUB_ACTIONS' in os.environ
+        if is_github_actions:
+            logger.info(f"GitHub Actions 환경에서 실행 중, 환경변수 확인: KAKAO_API_KEY={os.environ.get('KAKAO_API_KEY') is not None}, KAKAO_ACCESS_TOKEN={os.environ.get('KAKAO_ACCESS_TOKEN') is not None}")
+        
+        # CI 환경에서도 토큰이 유효하면 메시지 전송 시도
+        if self.is_ci_env:
+            # 토큰이 없을 때만 건너뛰기
+            if not self.access_token or not self.refresh_token:
+                logger.info("CI 환경에서 카카오톡 토큰이 없어 메시지 전송을 건너뜁니다.")
+                return True  # 전송 성공으로 처리하여 프로세스 계속 진행
             
+            logger.info(f"CI 환경에서 카카오톡 메시지 전송 시도: {message[:30]}...")
+        
         # 메시지 전송 전에 토큰 유효성 확인
         if not self.ensure_token_valid():
             logger.error("유효한 카카오톡 액세스 토큰이 없습니다.")
-            # CI 환경에서는 성공으로 처리하여 계속 진행
-            if self.is_ci_env:
+            # 토큰 정보 출력 (민감 정보 일부만 표시)
+            if self.access_token:
+                token_preview = f"{self.access_token[:5]}...{self.access_token[-5:]}"
+                logger.debug(f"액세스 토큰 미리보기: {token_preview}")
+            
+            # CI 환경이더라도 토큰을 재생성할 수 있도록 시도
+            if self.is_ci_env and os.environ.get('KAKAO_API_KEY'):
+                logger.info("CI 환경에서 토큰 재생성 시도")
+                if self.refresh_auth_token():
+                    logger.info("CI 환경에서 토큰 재생성 성공")
+                    # 여기서는 계속 진행하고 메시지 전송 시도
+                else:
+                    logger.warning("CI 환경에서 토큰 재생성 실패, 메시지 전송은 건너뜁니다")
+                    return True  # 프로세스는 계속 진행
+            elif self.is_ci_env:
                 logger.info("CI 환경에서 토큰이 유효하지 않아 메시지 전송은 건너뜁니다.")
                 return True
             return False

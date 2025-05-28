@@ -747,6 +747,12 @@ class StockAnalysisSystem:
         start_msg += f"• 카카오톡 알림: {kakao_status}\n"
         start_msg += f"• 분석 주기: 30분\n"
         
+        # GitHut Actions 환경인지 확인
+        is_github_actions = 'GITHUB_ACTIONS' in os.environ
+        if is_github_actions:
+            start_msg += "• GitHub Actions 환경에서 실행 중\n"
+            logger.info("GitHub Actions 환경에서 실행 중입니다.")
+        
         # 카카오톡이 초기화되지 않았다면 강제 재초기화 시도
         if self.use_kakao and self.kakao_sender and not self.kakao_sender.initialized:
             logger.info("카카오톡 알림 서비스 재초기화 시도")
@@ -754,6 +760,7 @@ class StockAnalysisSystem:
                 reinit_success = self.kakao_sender.initialize()
                 if reinit_success:
                     logger.info("카카오톡 재초기화 성공")
+                    kakao_status = "활성화"
                     start_msg += "• 카카오톡 재연결 성공\n"
                 else:
                     logger.warning("카카오톡 재초기화 실패")
@@ -772,11 +779,23 @@ class StockAnalysisSystem:
         # 카카오톡으로 별도 전송 시도 (조건이 충족될 경우)
         if self.use_kakao and self.kakao_sender:
             try:
-                # 직접 메시지 전송 시도
-                self.kakao_sender.send_message(start_msg)
+                # 환경 변수 설정 확인 (디버깅용)
+                if is_github_actions:
+                    logger.info(f"GitHub Actions: KAKAO_API_KEY={os.environ.get('KAKAO_API_KEY') is not None}, KAKAO_ACCESS_TOKEN={os.environ.get('KAKAO_ACCESS_TOKEN') is not None}")
+                    
+                # 직접 메시지 전송 시도 (HTML 태그 제거)
+                clean_message = start_msg
+                if '<' in start_msg and '>' in start_msg:
+                    clean_message = re.sub(r'<[^>]*>', '', start_msg)
+                
+                self.kakao_sender.send_message(clean_message)
                 logger.info("카카오톡 시작 메시지 전송 성공")
             except Exception as e:
                 logger.error(f"카카오톡 시작 메시지 전송 실패: {e}")
+                # 필요에 따라 추가 정보 로깅
+                if hasattr(self.kakao_sender, 'access_token') and self.kakao_sender.access_token:
+                    token_preview = f"{self.kakao_sender.access_token[:5]}...{self.kakao_sender.access_token[-5:]}"
+                    logger.debug(f"액세스 토큰 미리보기: {token_preview}")
         
         # 초기 데이터 수집
         self.stock_data.update_all_data()
