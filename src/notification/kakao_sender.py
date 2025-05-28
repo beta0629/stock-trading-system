@@ -426,6 +426,7 @@ class KakaoSender:
         symbol = signal_data['symbol']
         price = signal_data.get('price', signal_data.get('close', 0))
         signals = signal_data['signals']
+        market = signal_data.get('market', 'KR')  # 기본값은 KR
         
         # 종목 이름 설정 (코드와 함께 표시)
         stock_name = self._get_stock_name(symbol)
@@ -440,20 +441,63 @@ class KakaoSender:
         signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
         confidence = latest_signal.get('confidence', 0)
         
-        # 핵심만 간결하게 표시하는 메시지 생성 (스크린샷 형태와 유사하게)
-        # 형식: 종목코드 매매신호 / 종목명 / 현재가: 가격원
-        message = f"{signal_emoji} {symbol} {signal_type}\n"
+        # 매매 데이터 가져오기 (구매 수량, 평단가, 잔고 등)
+        trade_info = signal_data.get('trade_info', {})
+        trade_quantity = trade_info.get('quantity', 0)  # 매매 수량
+        total_quantity = trade_info.get('total_quantity', 0)  # 매매 후 총 보유 수량
+        avg_price = trade_info.get('avg_price', 0)  # 평균단가
+        balance = trade_info.get('balance', 0)  # 계좌 잔고
+        prev_quantity = trade_info.get('prev_quantity', 0)  # 매매 전 보유 수량
         
-        # 종목명 추가 (있는 경우)
-        if stock_name and stock_name != symbol:
-            message += f"{stock_name}\n"
+        # 매매 정보가 없는 경우, 기본 포맷으로 표시
+        if not trade_info:
+            # 기본 포맷 (구매 수량 정보 없음)
+            message = f"{signal_emoji} {symbol} {signal_type}\n"
             
-        message += f"현재가: {price:,.0f}원"
+            # 종목명 추가 (있는 경우)
+            if stock_name and stock_name != symbol:
+                message += f"{stock_name}\n"
+                
+            message += f"현재가: {price:,.0f}원"
+            
+            # 신뢰도가 있으면 추가
+            if confidence:
+                message += f" (신뢰도: {confidence*100:.1f}%)"
+        else:
+            # 확장된 포맷 (구매 수량, 평단가, 잔고 등 포함)
+            message = f"{signal_emoji} {symbol} {signal_type}\n"
+            
+            # 종목명 추가 (있는 경우)
+            if stock_name and stock_name != symbol:
+                message += f"{stock_name}\n"
+            
+            # 거래 가격 및 수량 정보
+            message += f"현재가: {price:,.0f}원"
+            
+            # 신뢰도가 있으면 추가
+            if confidence:
+                message += f" (신뢰도: {confidence*100:.1f}%)\n"
+            else:
+                message += "\n"
+                
+            # 매매 수량 및 총 보유 수량 (이전 보유량 → 현재 보유량)
+            if signal_type == "BUY":
+                message += f"⬆️ 매수량: {trade_quantity:,}주\n"
+                message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
+            else:  # "SELL"
+                message += f"⬇️ 매도량: {trade_quantity:,}주\n"
+                message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
+            
+            # 평균단가 (변동 있을 경우 이전 평단가 → 현재 평단가)
+            prev_avg_price = trade_info.get('prev_avg_price', 0)
+            if prev_avg_price and prev_avg_price != avg_price:
+                message += f"평단가: {prev_avg_price:,.0f}원 → {avg_price:,.0f}원\n"
+            else:
+                message += f"평단가: {avg_price:,.0f}원\n"
+            
+            # 계좌 잔고
+            message += f"계좌잔고: {balance:,.0f}원"
         
-        # 신뢰도가 있으면 추가
-        if confidence:
-            message += f" (신뢰도: {confidence*100:.1f}%)"
-            
         # 신호 이유 추가 (짧게)
         reason = latest_signal.get('reason', '')
         if reason and len(reason) > 0:

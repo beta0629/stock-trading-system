@@ -37,6 +37,122 @@ class StockSelector:
         if not self.api_key:
             logger.warning("OpenAI API 키가 설정되지 않았습니다. GPT 기반 종목 선정 기능이 제한됩니다.")
             
+        # 캐시 파일 경로
+        self.cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.kr_cache_file = os.path.join(self.cache_dir, 'kr_stock_recommendations.json')
+        self.us_cache_file = os.path.join(self.cache_dir, 'us_stock_recommendations.json')
+        
+    def is_api_key_valid(self):
+        """
+        OpenAI API 키의 유효성을 검사합니다.
+        
+        Returns:
+            bool: API 키가 유효한 경우 True, 그렇지 않으면 False
+        """
+        if not self.api_key:
+            logger.warning("API 키가 설정되지 않았습니다.")
+            return False
+            
+        try:
+            # 간단한 요청으로 API 키 유효성 확인
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "간단한 API 키 유효성 확인입니다."},
+                    {"role": "user", "content": "API 키가 유효한지 확인해주세요."}
+                ],
+                "max_tokens": 10
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=10  # 타임아웃 설정
+            )
+            
+            if response.status_code == 200:
+                return True
+            else:
+                logger.error(f"API 키 유효성 확인 실패: {response.status_code} {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"API 키 유효성 확인 중 오류 발생: {e}")
+            return False
+            
+    def _load_cached_recommendations(self, market):
+        """
+        캐시된 종목 추천 목록을 로드합니다.
+        
+        Args:
+            market: 시장 코드 ("KR" 또는 "US")
+            
+        Returns:
+            dict: 캐시된 추천 종목 목록. 파일이 없을 경우 기본 종목 목록 반환.
+        """
+        cache_file = self.kr_cache_file if market == "KR" else self.us_cache_file
+        
+        try:
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                    logger.info(f"캐시된 {market} 시장 종목 목록을 로드했습니다.")
+                    return cached_data
+        except Exception as e:
+            logger.error(f"캐시된 종목 목록 로드 중 오류 발생: {e}")
+            
+        # 캐시 파일이 없을 경우 기본 종목 목록 반환
+        if market == "KR":
+            return {
+                "recommended_stocks": [
+                    {"symbol": "005930", "name": "삼성전자", "sector": "반도체"},
+                    {"symbol": "000660", "name": "SK하이닉스", "sector": "반도체"},
+                    {"symbol": "051910", "name": "LG화학", "sector": "화학"},
+                    {"symbol": "035420", "name": "NAVER", "sector": "인터넷 서비스"},
+                    {"symbol": "096770", "name": "SK이노베이션", "sector": "에너지"},
+                    {"symbol": "005380", "name": "현대차", "sector": "자동차"}
+                ]
+            }
+        else:  # US
+            return {
+                "recommended_stocks": [
+                    {"symbol": "AAPL", "name": "Apple Inc.", "sector": "Technology"},
+                    {"symbol": "MSFT", "name": "Microsoft Corporation", "sector": "Technology"},
+                    {"symbol": "GOOGL", "name": "Alphabet Inc.", "sector": "Technology"},
+                    {"symbol": "AMZN", "name": "Amazon.com Inc.", "sector": "E-commerce"},
+                    {"symbol": "META", "name": "Meta Platforms Inc.", "sector": "Social Media"}
+                ]
+            }
+            
+    def _cache_recommendations(self, market, recommendations):
+        """
+        종목 추천 목록을 캐시 파일에 저장합니다.
+        
+        Args:
+            market: 시장 코드 ("KR" 또는 "US")
+            recommendations: 저장할 추천 종목 목록 딕셔너리
+            
+        Returns:
+            bool: 저장 성공 시 True, 실패 시 False
+        """
+        cache_file = self.kr_cache_file if market == "KR" else self.us_cache_file
+        
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(recommendations, f, ensure_ascii=False, indent=2)
+            logger.info(f"{market} 시장 종목 추천 목록을 캐시 파일에 저장했습니다.")
+            return True
+        except Exception as e:
+            logger.error(f"종목 추천 목록 캐싱 중 오류 발생: {e}")
+            return False
+            
     def recommend_stocks(self, market: str = "KR", count: int = 5, strategy: str = "balanced") -> Dict[str, Any]:
         """
         GPT를 사용하여 시장 상황에 맞는 종목 추천
@@ -50,6 +166,11 @@ class StockSelector:
             추천 종목 목록 및 분석 내용이 포함된 딕셔너리
         """
         logger.info(f"{market} 시장에 대한 {strategy} 전략 기반 종목 추천 시작")
+        
+        # API 키 유효성 확인
+        if not self.is_api_key_valid():
+            logger.warning("유효하지 않은 OpenAI API 키로 인해 캐시된 종목 목록을 사용합니다.")
+            return self._load_cached_recommendations(market)
         
         # 현재 날짜/시간 정보 가져오기
         now = get_current_time()
@@ -149,12 +270,14 @@ class StockSelector:
             response = requests.post(
                 f"{self.api_base}/chat/completions",
                 headers=headers,
-                json=data
+                json=data,
+                timeout=30  # 타임아웃 설정 증가
             )
             
             if response.status_code != 200:
                 logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
-                return {"error": f"API 호출 실패: {response.status_code}", "detail": response.text}
+                # API 호출 실패 시 캐시된 추천 목록 반환
+                return self._load_cached_recommendations(market)
                 
             result = response.json()
             content = result["choices"][0]["message"]["content"]
@@ -163,11 +286,15 @@ class StockSelector:
             recommendations = json.loads(content)
             logger.info(f"{market} 시장 종목 추천 완료: {len(recommendations.get('recommended_stocks', []))}개")
             
+            # 추천 결과 캐싱
+            self._cache_recommendations(market, recommendations)
+            
             return recommendations
             
         except Exception as e:
             logger.error(f"종목 추천 중 오류 발생: {e}")
-            return {"error": f"종목 추천 중 오류 발생: {str(e)}"}
+            # 오류 발생 시 캐시된 추천 목록 반환
+            return self._load_cached_recommendations(market)
             
     def advanced_sector_selection(self, market: str = "KR", sectors_count: int = 3) -> Dict[str, Any]:
         """

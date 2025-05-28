@@ -205,8 +205,22 @@ class AutoTrader:
             dict: 주문 결과
         """
         try:
+            # 종목 이름 설정
+            stock_name = symbol
+            if hasattr(self.config, 'KR_STOCK_INFO') and market == "KR":
+                for stock in self.config.KR_STOCK_INFO:
+                    if stock['code'] == symbol:
+                        stock_name = stock['name']
+                        break
+            elif hasattr(self.config, 'US_STOCK_INFO') and market == "US":
+                for stock in self.config.US_STOCK_INFO:
+                    if stock['code'] == symbol:
+                        stock_name = stock['name']
+                        break
+            
             order_info = {
                 "symbol": symbol,
+                "symbol_name": stock_name,
                 "action": action.value,
                 "quantity": quantity,
                 "price": price,
@@ -219,17 +233,31 @@ class AutoTrader:
             # 시뮬레이션 모드 체크
             if self.simulation_mode:
                 # 시뮬레이션 모드에서는 주문을 실행하지 않고 성공으로 가정
-                logger.info(f"[시뮬레이션] {action.value} {symbol} x {quantity}주")
+                logger.info(f"[시뮬레이션] {action.value} {stock_name}({symbol}) x {quantity}주")
                 
                 # 시뮬레이션 포지션 업데이트
                 if not price and market == "KR":
                     # 현재가로 시장가 주문 시뮬레이션
                     price = self.data_provider.get_current_price(symbol, market)
                 
+                # 계좌 잔고 (시뮬레이션)
+                balance = self._get_available_cash()
+                
+                # 매매 처리 전 기존 보유 수량 및 평단가 저장
+                prev_quantity = 0
+                prev_avg_price = 0
+                if symbol in self.positions:
+                    prev_quantity = self.positions[symbol].get('quantity', 0)
+                    prev_avg_price = self.positions[symbol].get('avg_price', 0)
+                
+                # 매매 금액
+                trade_amount = price * quantity
+                
                 if action == TradeAction.BUY:
                     if symbol not in self.positions:
                         self.positions[symbol] = {
                             'symbol': symbol,
+                            'symbol_name': stock_name,
                             'market': market,
                             'quantity': quantity,
                             'avg_price': price,
@@ -248,6 +276,21 @@ class AutoTrader:
                         pos['avg_price'] = total_value / total_qty
                         pos['current_price'] = price
                         pos['current_value'] = price * total_qty
+                    
+                    # 거래 후 잔고 업데이트
+                    new_balance = balance - trade_amount
+                    total_quantity = prev_quantity + quantity
+                    
+                    # 거래 정보 추가
+                    trade_info = {
+                        "quantity": quantity,  # 매매 수량
+                        "total_quantity": total_quantity,  # 매매 후 총 보유 수량
+                        "avg_price": self.positions[symbol]['avg_price'],  # 평균단가
+                        "prev_avg_price": prev_avg_price,  # 매매 전 평균단가
+                        "balance": new_balance,  # 계좌 잔고
+                        "prev_quantity": prev_quantity,  # 매매 전 보유 수량
+                        "trade_amount": trade_amount,  # 매매 금액
+                    }
                 
                 elif action == TradeAction.SELL:
                     if symbol in self.positions:
@@ -268,21 +311,67 @@ class AutoTrader:
                                 self.trade_stats["total_loss"] += abs(profit_loss)
                                 self.trade_stats["max_loss"] = max(self.trade_stats["max_loss"], abs(profit_loss))
                                 
-                            logger.info(f"[시뮬레이션] {symbol} 매도 완료: 손익 {profit_loss:,.0f}원 ({profit_loss_pct:.2f}%)")
+                            logger.info(f"[시뮬레이션] {stock_name}({symbol}) 매도 완료: 손익 {profit_loss:,.0f}원 ({profit_loss_pct:.2f}%)")
+                            
+                            # 매도 수량 및 평균단가 설정
+                            sell_quantity = pos['quantity']
+                            remaining_quantity = 0
+                            new_avg_price = 0
+                            
                             del self.positions[symbol]
+                            
                         else:
                             # 일부 매도
-                            pos['quantity'] -= quantity
-                            pos['current_value'] = price * pos['quantity']
+                            sell_quantity = quantity
+                            remaining_quantity = pos['quantity'] - quantity
+                            new_avg_price = pos['avg_price']  # 일부 매도 시 평단가 유지
+                            
+                            pos['quantity'] = remaining_quantity
+                            pos['current_value'] = price * remaining_quantity
+                        
+                        # 거래 후 잔고 업데이트
+                        new_balance = balance + (price * quantity)
+                        
+                        # 거래 정보 추가
+                        trade_info = {
+                            "quantity": quantity,  # 매매 수량
+                            "total_quantity": remaining_quantity,  # 매매 후 총 보유 수량
+                            "avg_price": new_avg_price,  # 평균단가
+                            "prev_avg_price": prev_avg_price,  # 매매 전 평균단가
+                            "balance": new_balance,  # 계좌 잔고
+                            "prev_quantity": prev_quantity,  # 매매 전 보유 수량
+                            "trade_amount": trade_amount,  # 매매 금액
+                            "profit_loss": (price - prev_avg_price) * quantity,  # 매매에 따른 손익
+                            "profit_loss_pct": ((price / prev_avg_price) - 1) * 100 if prev_avg_price > 0 else 0  # 매매 손익률
+                        }
                 
                 order_info["status"] = OrderStatus.EXECUTED.value
                 order_info["executed_price"] = price
                 order_info["executed_quantity"] = quantity
+                order_info["trade_info"] = trade_info  # 거래 정보 추가
                 
             else:
                 # 실제 주문 실행
-                logger.info(f"주문 실행: {action.value} {symbol} x {quantity}주")
+                logger.info(f"주문 실행: {action.value} {stock_name}({symbol}) x {quantity}주")
                 
+                # 거래 전 보유 정보
+                prev_quantity = 0
+                prev_avg_price = 0
+                balance = 0
+                
+                try:
+                    # 현재 포지션 정보 확인
+                    positions = self.broker.get_positions()
+                    if symbol in positions:
+                        prev_quantity = positions[symbol].get('quantity', 0)
+                        prev_avg_price = positions[symbol].get('avg_price', 0)
+                    
+                    # 현재 계좌 잔고
+                    balance = self.broker.get_balance()
+                except Exception as broker_error:
+                    logger.error(f"포지션 정보 조회 중 오류: {broker_error}")
+                
+                # 주문 실행
                 if action == TradeAction.BUY:
                     order_result = self.broker.buy(symbol, quantity, price, order_type.value, market)
                 else:
@@ -290,6 +379,40 @@ class AutoTrader:
                 
                 # 주문 결과 업데이트
                 order_info.update(order_result)
+                
+                # 거래 후 정보 조회
+                try:
+                    # 거래 후 잔고 및 포지션 정보
+                    new_balance = self.broker.get_balance()
+                    updated_positions = self.broker.get_positions()
+                    
+                    total_quantity = 0
+                    new_avg_price = 0
+                    
+                    if symbol in updated_positions:
+                        total_quantity = updated_positions[symbol].get('quantity', 0)
+                        new_avg_price = updated_positions[symbol].get('avg_price', 0)
+                    
+                    # 거래 정보 추가
+                    trade_info = {
+                        "quantity": quantity,  # 매매 수량
+                        "total_quantity": total_quantity,  # 매매 후 총 보유 수량
+                        "avg_price": new_avg_price,  # 평균단가
+                        "prev_avg_price": prev_avg_price,  # 매매 전 평균단가
+                        "balance": new_balance,  # 계좌 잔고
+                        "prev_quantity": prev_quantity,  # 매매 전 보유 수량
+                        "trade_amount": price * quantity,  # 매매 금액
+                    }
+                    
+                    # 매도의 경우 손익 정보 추가
+                    if action == TradeAction.SELL:
+                        trade_info["profit_loss"] = (price - prev_avg_price) * quantity  # 매매에 따른 손익
+                        trade_info["profit_loss_pct"] = ((price / prev_avg_price) - 1) * 100 if prev_avg_price > 0 else 0  # 매매 손익률
+                    
+                    order_info["trade_info"] = trade_info
+                    
+                except Exception as e:
+                    logger.error(f"거래 후 정보 조회 중 오류: {e}")
             
             # 주문 이력에 추가
             self.order_history.append(order_info)

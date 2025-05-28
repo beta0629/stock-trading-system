@@ -5,6 +5,7 @@ AI 주식 분석 시스템 - 메인 파일
 import logging
 import sys
 import time
+import json  # json 모듈 추가
 import schedule
 import datetime  # datetime 모듈 추가
 import argparse  # 명령줄 인수 처리를 위한 모듈 추가
@@ -84,15 +85,16 @@ class StockAnalysisSystem:
             message_type: 메시지 유형 ('signal', 'status')
             data: 알림 데이터
         """
-        # 텔레그램으로 메시지 전송 시도
-        try:
-            if message_type == 'signal':
-                self.telegram_sender.send_signal_notification(data)
-            elif message_type == 'status':
-                self.telegram_sender.send_system_status(data)
-            logger.info("텔레그램 메시지 전송 시도")
-        except Exception as e:
-            logger.error(f"텔레그램 메시지 전송 실패: {e}")
+        # 텔레그램으로 메시지 전송 시도 (텔레그램 활성화된 경우에만)
+        if getattr(self.config, 'USE_TELEGRAM', False) and self.telegram_sender and self.telegram_sender.enabled:
+            try:
+                if message_type == 'signal':
+                    self.telegram_sender.send_signal_notification(data)
+                elif message_type == 'status':
+                    self.telegram_sender.send_system_status(data)
+                logger.info("텔레그램 메시지 전송 시도")
+            except Exception as e:
+                logger.error(f"텔레그램 메시지 전송 실패: {e}")
         
         # 카카오톡으로 메시지 전송 (활성화된 경우)
         if self.use_kakao and self.kakao_sender:
@@ -730,6 +732,9 @@ class StockAnalysisSystem:
         self.is_running = True
         logger.info("AI 주식 분석 시스템 시작")
         
+        # 종목 리스트 체크 및 초기화
+        self._initialize_stock_lists()
+        
         # 자동 매매 시스템 시작
         trade_status = "비활성화"
         if self.auto_trading_enabled and self.auto_trader:
@@ -747,12 +752,44 @@ class StockAnalysisSystem:
         start_msg += f"• 자동 매매 기능: {trade_status}\n"
         start_msg += f"• 카카오톡 알림: {kakao_status}\n"
         start_msg += f"• 분석 주기: 30분\n"
+        start_msg += f"• 모니터링 종목 수: 국내 {len(self.config.KR_STOCKS)}개, 미국 {len(self.config.US_STOCKS)}개\n"
         
         # GitHut Actions 환경인지 확인
         is_github_actions = 'GITHUB_ACTIONS' in os.environ
         if is_github_actions:
             start_msg += "• GitHub Actions 환경에서 실행 중\n"
+            # GitHub 런타임/워크플로우 정보 추가
+            if 'GITHUB_WORKFLOW' in os.environ:
+                start_msg += f"• 워크플로우: {os.environ.get('GITHUB_WORKFLOW')}\n"
+            if 'GITHUB_RUN_ID' in os.environ:
+                start_msg += f"• 실행 ID: {os.environ.get('GITHUB_RUN_ID')}\n"
+            if 'GITHUB_REPOSITORY' in os.environ:
+                start_msg += f"• 저장소: {os.environ.get('GITHUB_REPOSITORY')}\n"
+            
             logger.info("GitHub Actions 환경에서 실행 중입니다.")
+            
+            # 서버 IP 정보 추가 시도
+            try:
+                import socket
+                hostname = socket.gethostname()
+                ip_address = socket.gethostbyname(hostname)
+                start_msg += f"• 서버 정보: {hostname} ({ip_address})\n"
+            except Exception as e:
+                logger.error(f"IP 정보 조회 실패: {e}")
+                
+            # 시스템 리소스 정보 추가
+            try:
+                import psutil
+                memory = psutil.virtual_memory()
+                cpu_usage = psutil.cpu_percent(interval=1)
+                disk = psutil.disk_usage('/')
+                start_msg += f"• CPU 사용률: {cpu_usage}%\n"
+                start_msg += f"• 메모리: {memory.percent}% (사용 중: {memory.used/1024/1024/1024:.1f}GB)\n"
+                start_msg += f"• 디스크: {disk.percent}% (여유: {disk.free/1024/1024/1024:.1f}GB)\n"
+            except ImportError:
+                logger.warning("psutil 패키지가 설치되어 있지 않아 시스템 정보를 가져올 수 없습니다.")
+            except Exception as e:
+                logger.error(f"시스템 정보 조회 실패: {e}")
         
         # 카카오톡이 초기화되지 않았다면 강제 재초기화 시도
         if self.use_kakao and self.kakao_sender and not self.kakao_sender.initialized:
@@ -769,6 +806,14 @@ class StockAnalysisSystem:
             except Exception as e:
                 logger.error(f"카카오톡 재초기화 중 오류: {e}")
                 start_msg += "• 카카오톡 재연결 오류\n"
+        
+        # OpenAI API 키 유효성 체크
+        if hasattr(self.config, 'OPENAI_API_KEY') and self.stock_selector.is_api_key_valid():
+            start_msg += "• OpenAI API 키: 유효함\n"
+            logger.info("OpenAI API 키가 유효합니다.")
+        else:
+            start_msg += "• OpenAI API 키: 유효하지 않음 (캐시된 종목 목록 사용)\n"
+            logger.warning("OpenAI API 키가 유효하지 않습니다. 캐시된 종목 목록을 사용합니다.")
         
         # 텔레그램으로 우선 시스템 시작 알림 전송
         try:
@@ -789,7 +834,9 @@ class StockAnalysisSystem:
                 if '<' in start_msg and '>' in start_msg:
                     clean_message = re.sub(r'<[^>]*>', '', start_msg)
                 
-                self.kakao_sender.send_message(clean_message)
+                # 서버 시작 알림에 대한 특별한 메시지 포맷 (아이콘 추가)
+                server_start_message = f"🖥️ 서버 시작 알림\n\n{clean_message}"
+                self.kakao_sender.send_message(server_start_message)
                 logger.info("카카오톡 시작 메시지 전송 성공")
             except Exception as e:
                 logger.error(f"카카오톡 시작 메시지 전송 실패: {e}")
@@ -816,8 +863,12 @@ class StockAnalysisSystem:
         
         # 메인 루프
         try:
-            # 시스템 시작 시 한 번 종목 선정 실행 (테스트용)
-            self.select_stocks_with_gpt()
+            # 시스템 시작 시 한 번 종목 선정 실행 (API 키가 유효한 경우)
+            if hasattr(self.config, 'OPENAI_API_KEY') and self.stock_selector.is_api_key_valid():
+                logger.info("시스템 시작 시 종목 선정 시작")
+                self.select_stocks_with_gpt()
+            else:
+                logger.warning("OpenAI API 키가 유효하지 않아 시작 시 종목 선정을 건너뜁니다.")
             
             while self.is_running:
                 schedule.run_pending()
@@ -831,64 +882,108 @@ class StockAnalysisSystem:
             logger.error(f"시스템 실행 중 오류 발생: {e}")
             self.stop()
             
-    def stop(self):
-        """시스템 종료"""
-        if not self.is_running:
-            return
+    def _initialize_stock_lists(self):
+        """종목 리스트 초기화 및 확인"""
+        # KR_STOCKS와 US_STOCKS가 없거나 비어있으면 캐시 파일에서 로드
+        kr_stocks = getattr(self.config, 'KR_STOCKS', [])
+        us_stocks = getattr(self.config, 'US_STOCKS', [])
+        
+        logger.info(f"현재 종목 리스트 상태: KR={len(kr_stocks)}개, US={len(us_stocks)}개")
+        
+        if not kr_stocks or not us_stocks:
+            logger.warning("종목 리스트가 비어 있습니다. 캐시된 종목 목록을 로드합니다.")
             
-        self.is_running = False
-        logger.info("AI 주식 분석 시스템 종료")
-        
-        # 자동 매매 세션 종료
-        if self.auto_trading_enabled and self.auto_trader:
-            self.auto_trader.stop_trading_session()
-            logger.info("자동 매매 세션 종료")
-        
-        # 시스템 종료 메시지 전송
-        self.send_notification('status', "AI 주식 분석 시스템이 종료되었습니다.")
-
-if __name__ == "__main__":
-    # 명령줄 인수 처리
-    parser = argparse.ArgumentParser(description="AI 주식 분석 시스템")
-    parser.add_argument("--ci", action="store_true", help="CI/CD 환경에서 실행 여부")
-    parser.add_argument("--mode", choices=["analysis", "trading", "full"], default="full",
-                      help="실행 모드 (analysis: 분석만, trading: 거래만, full: 전체 기능)")
-    parser.add_argument("--market", choices=["KR", "US", "all"], default="all",
-                      help="분석할 시장 (KR: 한국, US: 미국, all: 모두)")
-    args = parser.parse_args()
-    
-    # CI/CD 환경 여부 설정 - GitHub Actions 환경 자동 감지 추가
-    is_github_actions = 'GITHUB_ACTIONS' in os.environ or args.ci
-    if is_github_actions:
-        logger.info("CI/CD 또는 GitHub Actions 환경에서 실행합니다.")
-        os.environ["CI"] = "true"
-        # 강제로 시장을 열린 상태로 설정
-        os.environ["FORCE_MARKET_OPEN"] = "true"
-        # 카카오톡 메시지 기능이 GitHub Actions에서도 작동하도록 설정
-        if config.USE_KAKAO and config.KAKAO_API_KEY and config.KAKAO_ACCESS_TOKEN:
-            logger.info("GitHub Actions 환경에서 카카오톡 알림 기능 활성화")
-    
-    # 시스템 초기화
-    system = StockAnalysisSystem()
-    
-    # 모드에 따른 실행
-    if args.mode == "analysis":
-        logger.info("분석 모드로 실행합니다.")
-        # 시장 선택에 따른 실행
-        if args.market in ["KR", "all"]:
-            system.analyze_korean_stocks()
-        if args.market in ["US", "all"]:
-            system.analyze_us_stocks()
-        # 종목 선정
-        system.select_stocks_with_gpt()
-        # 일일 요약
-        system.send_daily_summary()
-    elif args.mode == "trading":
-        logger.info("거래 모드로 실행합니다.")
-        if system.auto_trading_enabled and system.auto_trader:
-            system.auto_trader.start_trading_session()
-            logger.info("자동 매매 세션을 시작했습니다.")
-    else:
-        # 전체 기능 실행
-        logger.info("전체 기능 모드로 실행합니다.")
-        system.start()
+            # 캐시 디렉토리 생성
+            cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            # 한국 종목 로드
+            if not kr_stocks:
+                kr_cache_file = os.path.join(cache_dir, 'kr_stock_recommendations.json')
+                if os.path.exists(kr_cache_file):
+                    try:
+                        with open(kr_cache_file, 'r', encoding='utf-8') as f:
+                            kr_data = json.load(f)
+                        
+                        if "recommended_stocks" in kr_data:
+                            kr_stock_info = []
+                            kr_stock_codes = []
+                            
+                            for stock in kr_data["recommended_stocks"]:
+                                symbol = stock.get("symbol", "")
+                                name = stock.get("name", symbol)
+                                
+                                # 종목코드 정리 (숫자만 추출)
+                                if '(' in symbol:
+                                    symbol = symbol.split('(')[0]
+                                
+                                kr_stock_codes.append(symbol)
+                                kr_stock_info.append({"code": symbol, "name": name})
+                            
+                            # 설정 업데이트
+                            if kr_stock_codes:
+                                self.config.KR_STOCKS = kr_stock_codes
+                                self.config.KR_STOCK_INFO = kr_stock_info
+                                logger.info(f"캐시에서 한국 종목 {len(kr_stock_codes)}개를 로드했습니다.")
+                    except Exception as e:
+                        logger.error(f"한국 종목 캐시 로드 실패: {e}")
+                
+                # 캐시 파일도 없으면 기본값 설정
+                if not getattr(self.config, 'KR_STOCKS', []):
+                    default_kr_stocks = [
+                        {"code": "005930", "name": "삼성전자"},
+                        {"code": "000660", "name": "SK하이닉스"},
+                        {"code": "051910", "name": "LG화학"},
+                        {"code": "035420", "name": "NAVER"},
+                        {"code": "096770", "name": "SK이노베이션"},
+                        {"code": "005380", "name": "현대차"}
+                    ]
+                    
+                    self.config.KR_STOCK_INFO = default_kr_stocks
+                    self.config.KR_STOCKS = [stock["code"] for stock in default_kr_stocks]
+                    logger.info(f"기본 한국 종목 {len(self.config.KR_STOCKS)}개를 설정했습니다.")
+            
+            # 미국 종목 로드
+            if not us_stocks:
+                us_cache_file = os.path.join(cache_dir, 'us_stock_recommendations.json')
+                if os.path.exists(us_cache_file):
+                    try:
+                        with open(us_cache_file, 'r', encoding='utf-8') as f:
+                            us_data = json.load(f)
+                        
+                        if "recommended_stocks" in us_data:
+                            us_stock_info = []
+                            us_stock_codes = []
+                            
+                            for stock in us_data["recommended_stocks"]:
+                                symbol = stock.get("symbol", "")
+                                name = stock.get("name", symbol)
+                                
+                                # 종목코드 정리 (괄호 제거)
+                                if '(' in symbol:
+                                    symbol = symbol.split('(')[0]
+                                
+                                us_stock_codes.append(symbol)
+                                us_stock_info.append({"code": symbol, "name": name})
+                            
+                            # 설정 업데이트
+                            if us_stock_codes:
+                                self.config.US_STOCKS = us_stock_codes
+                                self.config.US_STOCK_INFO = us_stock_info
+                                logger.info(f"캐시에서 미국 종목 {len(us_stock_codes)}개를 로드했습니다.")
+                    except Exception as e:
+                        logger.error(f"미국 종목 캐시 로드 실패: {e}")
+                
+                # 캐시 파일도 없으면 기본값 설정
+                if not getattr(self.config, 'US_STOCKS', []):
+                    default_us_stocks = [
+                        {"code": "AAPL", "name": "Apple Inc."},
+                        {"code": "MSFT", "name": "Microsoft Corporation"},
+                        {"code": "GOOGL", "name": "Alphabet Inc."},
+                        {"code": "AMZN", "name": "Amazon.com Inc."},
+                        {"code": "META", "name": "Meta Platforms Inc."}
+                    ]
+                    
+                    self.config.US_STOCK_INFO = default_us_stocks
+                    self.config.US_STOCKS = [stock["code"] for stock in default_us_stocks]
+                    logger.info(f"기본 미국 종목 {len(self.config.US_STOCKS)}개를 설정했습니다.")
