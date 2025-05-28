@@ -20,6 +20,12 @@ from src.utils.time_utils import now, format_time, get_korean_datetime_format, i
 import config
 
 # 로깅 설정
+# 로그 디렉토리 생성
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+    print(f"로그 디렉토리 생성: {log_dir}")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -755,6 +761,15 @@ class MockAutoTrader:
             bool: 세션 완료 여부
         """
         market_name = "한국" if market == "KR" else "미국"
+        
+        # GitHub Actions 환경에서는 반복 횟수 조정
+        is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+        if is_github_actions:
+            # GitHub Actions에서는 더 적은 반복으로 빠르게 테스트
+            original_iterations = iterations
+            iterations = min(iterations, 3)  # 최대 3회로 제한
+            logger.info(f"GitHub Actions 환경 감지: 반복 횟수를 {original_iterations}에서 {iterations}로 조정")
+            
         logger.info(f"{market_name} 시장 모의 매매 세션 시작 - {iterations}회 반복")
         
         symbols = self.kr_symbols if market == "KR" else self.us_symbols
@@ -787,7 +802,9 @@ class MockAutoTrader:
                 
                 # 대기
                 if i < iterations - 1:  # 마지막 반복이 아닌 경우에만 대기
-                    time.sleep(2)  # 2초 대기 (반복 간격)
+                    # GitHub Actions 환경에서는 대기 시간 단축
+                    wait_time = 1 if is_github_actions else 2
+                    time.sleep(wait_time)  # GitHub Actions에서는 1초, 일반 환경에서는 2초 대기
             
             logger.info(f"{market_name} 시장 모의 매매 세션 완료")
             return True
