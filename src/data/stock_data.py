@@ -1,12 +1,15 @@
 """
 주식 데이터 수집 모듈
 """
-import datetime
 import pandas as pd
 import yfinance as yf
 from pykrx import stock
 import pytz
 from ..analysis.technical import calculate_indicators
+from ..utils.time_utils import (
+    get_current_time, get_current_time_str, KST,
+    get_date_days_ago, format_timestamp
+)
 import logging
 import sys
 
@@ -47,8 +50,9 @@ class StockData:
             DataFrame: 주가 데이터
         """
         try:
-            end_date = datetime.datetime.now(self.config.KST)
-            start_date = end_date - datetime.timedelta(days=days)
+            # time_utils 함수 사용
+            end_date = get_current_time(timezone=KST)  # tz 대신 timezone 사용
+            start_date = get_date_days_ago(days, timezone=KST)  # tz 대신 timezone 사용
             
             # pykrx 라이브러리로 한국 주식 데이터 가져오기
             df = stock.get_market_ohlcv_by_date(
@@ -102,26 +106,34 @@ class StockData:
             logger.error(f"국내 주식 {symbol} 데이터 수집 실패: {e}")
             return pd.DataFrame()
     
-    def get_us_stock_data(self, symbol, period="3mo"):
+    def get_us_stock_data(self, symbol, days=90):
         """
         미국 주식 데이터 수집
         
         Args:
             symbol: 주식 티커 (예: 'AAPL')
-            period: 데이터를 가져올 기간 ('1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max')
+            days: 데이터를 가져올 기간 (일)
             
         Returns:
             DataFrame: 주가 데이터
         """
         try:
+            # time_utils 함수 사용 - 매개변수명 수정
+            end_date = get_current_time()  # 기본 UTC 시간
+            start_date = get_date_days_ago(days, timezone=KST)  # timezone 매개변수명 사용
+            
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period)
+            # 시작일과 종료일을 직접 지정하여 데이터 가져오기
+            df = ticker.history(
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d")
+            )
             
             # 기술적 지표 계산
             df = calculate_indicators(df, self.config)
             
             self.us_data[symbol] = df
-            logger.info(f"미국 주식 {symbol} 데이터 수집 완료. 데이터 크기: {len(df)}")
+            logger.info(f"미국 주식 {symbol} 데이터 수집 완료. 데이터 크기: {len(df)}, 기간: {start_date.strftime('%Y-%m-%d')}~{end_date.strftime('%Y-%m-%d')}")
             return df
             
         except Exception as e:

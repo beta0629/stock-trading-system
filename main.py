@@ -6,8 +6,9 @@ import logging
 import sys
 import time
 import schedule
-import datetime
-import pytz
+import datetime  # datetime 모듈 추가
+import argparse  # 명령줄 인수 처리를 위한 모듈 추가
+import os  # os 모듈 추가
 from src.data.stock_data import StockData
 from src.analysis.technical import analyze_signals
 from src.notification.telegram_sender import TelegramSender
@@ -15,8 +16,11 @@ from src.notification.kakao_sender import KakaoSender
 from src.trading.kis_api import KISAPI
 from src.trading.auto_trader import AutoTrader
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
+from src.ai_analysis.gemini_analyzer import GeminiAnalyzer  # Gemini 분석기 추가
+from src.ai_analysis.hybrid_analysis_strategy import HybridAnalysisStrategy  # 하이브리드 분석 전략 추가
 from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy, SignalType
 from src.ai_analysis.stock_selector import StockSelector
+from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_market_schedule, get_current_time
 import config
 
 # 로깅 설정
@@ -55,6 +59,12 @@ class StockAnalysisSystem:
         
         # ChatGPT 분석기 초기화
         self.chatgpt_analyzer = ChatGPTAnalyzer(config)
+        
+        # Gemini 분석기 초기화
+        self.gemini_analyzer = GeminiAnalyzer(config)
+        
+        # 하이브리드 분석 전략 초기화
+        self.hybrid_analysis_strategy = HybridAnalysisStrategy(config)
         
         # GPT 기반 트레이딩 전략 초기화
         self.gpt_trading_strategy = GPTTradingStrategy(config)
@@ -119,7 +129,7 @@ class StockAnalysisSystem:
         logger.info("GPT 종목 선정 프로세스 시작")
         try:
             # 현재 요일 확인 (월요일 = 0)
-            current_weekday = datetime.datetime.now().weekday()
+            current_weekday = now().weekday()
             
             # 주말에는 실행하지 않음
             if current_weekday >= 5:  # 토(5), 일(6)
@@ -245,14 +255,9 @@ class StockAnalysisSystem:
         """한국 주식 분석"""
         logger.info("한국 주식 분석 시작")
         
-        # 현재 시간이 장 운영 시간인지 확인
-        current_time = datetime.datetime.now(self.config.KST)
-        market_open = datetime.datetime.strptime(self.config.KR_MARKET_OPEN_TIME, "%H:%M").time()
-        market_close = datetime.datetime.strptime(self.config.KR_MARKET_CLOSE_TIME, "%H:%M").time()
-        
-        # 주말 확인
-        if current_time.weekday() >= 5:  # 토(5), 일(6)
-            logger.info("주말이므로 한국 주식 분석을 건너뜁니다.")
+        # 시장 개장 여부 확인 (통합 시간 유틸리티 사용)
+        if not is_market_open("KR", self.config):
+            logger.info("현재 한국 시장이 개장되지 않았습니다. 분석을 건너뜁니다.")
             return
         
         # 데이터 수집을 위한 딕셔너리 (ChatGPT 일일 리포트용)
@@ -275,7 +280,7 @@ class StockAnalysisSystem:
                 signals = analyze_signals(df, code, self.config)
                 
                 # GPT 기반 트레이딩 전략 적용 (시장 시간에만)
-                if market_open <= current_time.time() <= market_close:
+                if is_market_open("KR", self.config):
                     try:
                         # GPT 기반 매매 신호 생성
                         gpt_signals = self.gpt_trading_strategy.generate_trading_signals(df, code)
@@ -334,7 +339,8 @@ class StockAnalysisSystem:
                 
                 # 주기적으로 ChatGPT 상세 분석 실행 (하루에 한 번)
                 # 현재 시각이 오전 10시에서 10시 30분 사이일 경우에만 실행
-                if market_open <= current_time.time() <= market_close and \
+                current_time = now()
+                if is_market_open("KR", self.config) and \
                    10 <= current_time.hour < 11 and current_time.minute < 30:
                     self._run_detailed_analysis(df, code, "KR")
                 
@@ -342,16 +348,31 @@ class StockAnalysisSystem:
                 logger.error(f"종목 {code} 분석 중 오류 발생: {e}")
                 
         # 일일 리포트 생성 (장 마감 30분 전)
-        closing_time = datetime.datetime.strptime(self.config.KR_MARKET_CLOSE_TIME, "%H:%M").time()
-        closing_time_minus_30min = (
-            datetime.datetime.combine(datetime.date.today(), closing_time) - 
-            datetime.timedelta(minutes=30)
-        ).time()
-        
-        current_time = datetime.datetime.now(self.config.KST).time()
-        
-        if closing_time_minus_30min <= current_time <= closing_time and collected_data:
-            self._generate_market_report(collected_data, "KR")
+        market_schedule = get_market_schedule(date=None, market="KR", config=self.config)
+        if market_schedule['is_open'] and market_schedule['close_time'] is not None:
+            closing_time = market_schedule['close_time'].time()
+            # datetime 직접 사용 대신 time_utils 함수 사용
+            current_time = get_current_time().time()
+            
+            # 마감 30분 전인지 확인
+            closing_time_hour = closing_time.hour
+            closing_time_minute = closing_time.minute - 30
+            if closing_time_minute < 0:
+                closing_time_hour -= 1
+                closing_time_minute += 60
+            
+            # 현재 시간이 마감 30분 전과 마감 시간 사이인지 확인
+            is_before_close = (
+                current_time.hour > closing_time_hour or 
+                (current_time.hour == closing_time_hour and current_time.minute >= closing_time_minute)
+            )
+            is_not_closed = (
+                current_time.hour < closing_time.hour or
+                (current_time.hour == closing_time.hour and current_time.minute <= closing_time.minute)
+            )
+            
+            if is_before_close and is_not_closed and collected_data:
+                self._generate_market_report(collected_data, "KR")
                 
         logger.info("한국 주식 분석 완료")
         
@@ -359,21 +380,11 @@ class StockAnalysisSystem:
         """미국 주식 분석"""
         logger.info("미국 주식 분석 시작")
         
-        # 현재 시간이 장 운영 시간인지 확인
-        current_time = datetime.datetime.now(self.config.EST)
-        market_open = datetime.datetime.strptime(self.config.US_MARKET_OPEN_TIME, "%H:%M").time()
-        market_close = datetime.datetime.strptime(self.config.US_MARKET_CLOSE_TIME, "%H:%M").time()
-        
-        # 주말 확인
-        if current_time.weekday() >= 5:  # 토(5), 일(6)
-            logger.info("주말이므로 미국 주식 분석을 건너뜁니다.")
+        # 시장 개장 여부 확인 (통합 시간 유틸리티 사용)
+        if not is_market_open("US", self.config):
+            logger.info("현재 미국 시장이 개장되지 않았습니다. 분석을 건너뜁니다.")
             return
         
-        # 장 운영 시간 확인
-        if not (market_open <= current_time.time() <= market_close):
-            logger.info("미국 시장 운영 시간이 아닙니다. 분석을 건너뜁니다.")
-            return
-            
         # 데이터 수집을 위한 딕셔너리 (ChatGPT 일일 리포트용)
         collected_data = {}
         
@@ -394,7 +405,7 @@ class StockAnalysisSystem:
                 signals = analyze_signals(df, symbol, self.config)
                 
                 # GPT 기반 트레이딩 전략 적용 (시장 시간에만)
-                if market_open <= current_time.time() <= market_close:
+                if is_market_open("US", self.config):
                     try:
                         # GPT 기반 매매 신호 생성
                         gpt_signals = self.gpt_trading_strategy.generate_trading_signals(df, symbol)
@@ -453,7 +464,8 @@ class StockAnalysisSystem:
                 
                 # 주기적으로 ChatGPT 상세 분석 실행 (하루에 한 번)
                 # 현재 시각이 오후 2시에서 2시 30분 사이일 경우에만 실행
-                if market_open <= current_time.time() <= market_close and \
+                current_time = now()
+                if is_market_open("US", self.config) and \
                    14 <= current_time.hour < 15 and current_time.minute < 30:
                     self._run_detailed_analysis(df, symbol, "US")
                 
@@ -461,16 +473,31 @@ class StockAnalysisSystem:
                 logger.error(f"종목 {symbol} 분석 중 오류 발생: {e}")
                 
         # 일일 리포트 생성 (장 마감 30분 전)
-        closing_time = datetime.datetime.strptime(self.config.US_MARKET_CLOSE_TIME, "%H:%M").time()
-        closing_time_minus_30min = (
-            datetime.datetime.combine(datetime.date.today(), closing_time) - 
-            datetime.timedelta(minutes=30)
-        ).time()
-        
-        current_time = datetime.datetime.now(self.config.EST).time()
-        
-        if closing_time_minus_30min <= current_time <= closing_time and collected_data:
-            self._generate_market_report(collected_data, "US")
+        us_market_schedule = get_market_schedule(date=None, market="US", config=self.config)
+        if us_market_schedule['is_open'] and us_market_schedule['close_time'] is not None:
+            closing_time = us_market_schedule['close_time'].time()
+            # datetime 직접 사용 대신 time_utils 함수 사용
+            current_time = get_current_time(tz=self.config.EST).time()
+            
+            # 마감 30분 전인지 확인
+            closing_time_hour = closing_time.hour
+            closing_time_minute = closing_time.minute - 30
+            if closing_time_minute < 0:
+                closing_time_hour -= 1
+                closing_time_minute += 60
+            
+            # 현재 시간이 마감 30분 전과 마감 시간 사이인지 확인
+            is_before_close = (
+                current_time.hour > closing_time_hour or 
+                (current_time.hour == closing_time_hour and current_time.minute >= closing_time_minute)
+            )
+            is_not_closed = (
+                current_time.hour < closing_time.hour or
+                (current_time.hour == closing_time.hour and current_time.minute <= closing_time.minute)
+            )
+            
+            if is_before_close and is_not_closed and collected_data:
+                self._generate_market_report(collected_data, "US")
                 
         logger.info("미국 주식 분석 완료")
     
@@ -487,7 +514,7 @@ class StockAnalysisSystem:
             # 추가 정보 설정 (시장 정보 등)
             additional_info = {
                 "market": market,
-                "analysis_date": datetime.datetime.now().strftime("%Y-%m-%d")
+                "analysis_date": format_time(format_string="%Y-%m-%d")
             }
             
             # 종합 분석
@@ -572,57 +599,23 @@ class StockAnalysisSystem:
             # 통합 알림 전송 함수 사용
             self.send_notification('status', message)
     
-    def _generate_market_report(self, stock_data_dict, market):
+    def _generate_market_report(self, collected_data, market):
         """
         시장 일일 리포트 생성 및 전송
         
         Args:
-            stock_data_dict: {종목코드: DataFrame} 형태의 데이터
+            collected_data: 수집된 주가 데이터
             market: 시장 구분 ("KR" 또는 "US")
         """
         try:
-            # ChatGPT를 통한 일일 리포트 생성
-            daily_report = self.chatgpt_analyzer.generate_daily_report(stock_data_dict, market)
+            # ChatGPT 일일 리포트 생성
+            daily_report = self.chatgpt_analyzer.generate_daily_report(
+                market=market,
+                stocks_data=collected_data
+            )
             
-            # 리포트 형식화
-            market_name = "국내" if market == "KR" else "미국"
-            current_date = datetime.datetime.now().strftime("%Y년 %m월 %d일")
-            
-            message = f"<b>📈 {current_date} {market_name} 시장 일일 리포트</b>\n\n"
-            message += daily_report
-            message += "\n\n<i>이 리포트는 AI에 의해 자동 생성되었으며, 투자 결정의 참고 자료로만 활용하시기 바랍니다.</i>"
-            
-            # 메시지가 길 경우 분할 전송
-            if len(message) > 4000:
-                parts = []
-                current_part = message[:message.find("\n\n", 100)]
-                remaining = message[message.find("\n\n", 100):]
-                parts.append(current_part)
-                
-                while remaining:
-                    if len(remaining) <= 4000:
-                        parts.append(remaining)
-                        break
-                    
-                    split_point = remaining.find("\n\n", min(3000, len(remaining) // 2))
-                    if split_point == -1:
-                        split_point = remaining.find(". ", min(3000, len(remaining) // 2))
-                    
-                    if split_point == -1:
-                        parts.append(remaining)
-                        break
-                        
-                    parts.append(remaining[:split_point + 2])
-                    remaining = remaining[split_point + 2:]
-                
-                for part in parts:
-                    # 통합 알림 전송 함수 사용
-                    self.send_notification('status', part)
-                    time.sleep(1)  # API 제한 방지
-            else:
-                # 통합 알림 전송 함수 사용
-                self.send_notification('status', message)
-                
+            # 리포트 내용 전송
+            self.send_notification('status', daily_report)
             logger.info(f"{market} 시장 일일 리포트 생성 및 전송 완료")
             
         except Exception as e:
@@ -632,7 +625,7 @@ class StockAnalysisSystem:
         """일일 요약 보내기"""
         logger.info("일일 요약 작성 시작")
         
-        current_date = datetime.datetime.now(self.config.KST).strftime("%Y년 %m월 %d일")
+        current_date = get_korean_datetime_format(include_seconds=False)
         message = f"<b>📅 {current_date} 일일 요약</b>\n\n"
         
         # 국내 주식 요약
@@ -753,5 +746,42 @@ class StockAnalysisSystem:
         self.send_notification('status', "AI 주식 분석 시스템이 종료되었습니다.")
 
 if __name__ == "__main__":
+    # 명령줄 인수 처리
+    parser = argparse.ArgumentParser(description="AI 주식 분석 시스템")
+    parser.add_argument("--ci", action="store_true", help="CI/CD 환경에서 실행 여부")
+    parser.add_argument("--mode", choices=["analysis", "trading", "full"], default="full",
+                      help="실행 모드 (analysis: 분석만, trading: 거래만, full: 전체 기능)")
+    parser.add_argument("--market", choices=["KR", "US", "all"], default="all",
+                      help="분석할 시장 (KR: 한국, US: 미국, all: 모두)")
+    args = parser.parse_args()
+    
+    # CI/CD 환경 여부 설정
+    if args.ci:
+        logger.info("CI/CD 환경에서 실행합니다.")
+        os.environ["CI"] = "true"
+        os.environ["FORCE_MARKET_OPEN"] = "true"
+    
+    # 시스템 초기화
     system = StockAnalysisSystem()
-    system.start()
+    
+    # 모드에 따른 실행
+    if args.mode == "analysis":
+        logger.info("분석 모드로 실행합니다.")
+        # 시장 선택에 따른 실행
+        if args.market in ["KR", "all"]:
+            system.analyze_korean_stocks()
+        if args.market in ["US", "all"]:
+            system.analyze_us_stocks()
+        # 종목 선정
+        system.select_stocks_with_gpt()
+        # 일일 요약
+        system.send_daily_summary()
+    elif args.mode == "trading":
+        logger.info("거래 모드로 실행합니다.")
+        if system.auto_trading_enabled and system.auto_trader:
+            system.auto_trader.start_trading_session()
+            logger.info("자동 매매 세션을 시작했습니다.")
+    else:
+        # 전체 기능 실행
+        logger.info("전체 기능 모드로 실행합니다.")
+        system.start()

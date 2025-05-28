@@ -137,6 +137,13 @@ OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "1000"))  # 최대 �
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.7"))  # 응답 다양성
 OPENAI_REQUEST_INTERVAL = float(os.environ.get("OPENAI_REQUEST_INTERVAL", "1.0"))  # API 요청 간격 (초)
 
+# Google Gemini API 설정
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # Gemini API 키
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")  # 모델을 1.5로 변경
+GEMINI_MAX_TOKENS = int(os.environ.get("GEMINI_MAX_TOKENS", "1000"))  # 최대 토큰 수
+GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.7"))  # 응답 다양성
+GEMINI_REQUEST_INTERVAL = float(os.environ.get("GEMINI_REQUEST_INTERVAL", "1.2"))  # API 요청 간격 (1.2초로 증가)
+
 # GPT 분석 사용 여부
 USE_GPT_ANALYSIS = os.environ.get("USE_GPT_ANALYSIS", "False").lower() == "true"
 

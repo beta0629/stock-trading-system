@@ -24,6 +24,14 @@ def get_current_time(timezone=KST):
     Returns:
         datetime: 현재 시간 (해당 시간대)
     """
+    # 문자열로 전달된 timezone 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            # 알 수 없는 시간대일 경우 기본 KST 사용
+            timezone = KST
+            
     return datetime.datetime.now(timezone)
 
 def get_current_time_str(timezone=KST, format_str='%Y-%m-%d %H:%M:%S'):
@@ -67,6 +75,13 @@ def parse_time(time_str, format_str='%Y-%m-%d %H:%M:%S', timezone=KST):
     Returns:
         datetime: 파싱된 datetime 객체
     """
+    # 문자열로 전달된 timezone 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            timezone = KST
+            
     dt = datetime.datetime.strptime(time_str, format_str)
     return timezone.localize(dt)
 
@@ -113,14 +128,25 @@ def format_timestamp(timestamp, format_str='%Y-%m-%d %H:%M:%S', timezone=KST):
     Args:
         timestamp: 변환할 타임스탬프
         format_str: 시간 포맷
-        timezone: 시간대
+        timezone: 시간대 (KST, EST 또는 pytz.timezone 객체)
         
     Returns:
         str: 포맷된 시간 문자열
     """
     dt = datetime.datetime.fromtimestamp(timestamp)
+    
+    # 문자열로 전달된 timezone을 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            # 알 수 없는 시간대일 경우 기본 KST 사용
+            timezone = KST
+    
+    # timezone이 None이 아닐 경우에만 적용
     if timezone:
         dt = timezone.localize(dt.replace(tzinfo=None))
+    
     return dt.strftime(format_str)
 
 def get_market_hours(market="KR"):
@@ -159,6 +185,13 @@ def get_adjusted_time(adjust_days=0, adjust_hours=0, adjust_minutes=0, timezone=
     Returns:
         datetime: 조정된 시간
     """
+    # 문자열로 전달된 timezone 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            timezone = KST
+            
     now = get_current_time(timezone)
     adjusted = now + datetime.timedelta(
         days=adjust_days,
@@ -186,3 +219,49 @@ def get_date_range(days, end_date=None, timezone=KST):
     
     start_date = end_date - datetime.timedelta(days=days)
     return start_date, end_date
+
+def get_date_days_ago(days, from_date=None, timezone=KST):
+    """
+    지정된 날짜에서 일수만큼 이전 날짜를 반환
+    
+    Args:
+        days: 이전으로 돌아갈 일 수
+        from_date: 기준 날짜 (기본값: 현재 날짜)
+        timezone: 시간대
+        
+    Returns:
+        date: X일 전 날짜
+    """
+    # 문자열로 전달된 timezone 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            timezone = KST
+            
+    if from_date is None:
+        from_date = get_current_time(timezone).date()
+    elif isinstance(from_date, datetime.datetime):
+        from_date = from_date.date()
+    
+    return from_date - datetime.timedelta(days=days)
+
+def get_datetime_from_days_ago(days, timezone=KST):
+    """
+    현재 기준 X일 전의 날짜와 시간을 반환
+    
+    Args:
+        days: 이전으로 돌아갈 일 수
+        timezone: 시간대
+        
+    Returns:
+        datetime: X일 전 날짜와 시간
+    """
+    # 문자열로 전달된 timezone 처리
+    if isinstance(timezone, str):
+        try:
+            timezone = pytz.timezone(timezone)
+        except pytz.exceptions.UnknownTimeZoneError:
+            timezone = KST
+            
+    return get_current_time(timezone) - datetime.timedelta(days=days)

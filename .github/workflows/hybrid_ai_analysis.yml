@@ -1,0 +1,60 @@
+name: Hybrid AI Stock Analysis
+
+on:
+  schedule:
+    # 주중 장 시작 전 (UTC+9)에 실행 (월-금 08:30 한국시간)
+    - cron: '30 23 * * 0-4'
+    # 주중 장 마감 후 (UTC+9)에 실행 (월-금 16:00 한국시간)
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:  # 수동 실행 옵션
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        
+    - name: Set environment variables
+      run: |
+        echo "CI=true" >> $GITHUB_ENV
+        echo "FORCE_MARKET_OPEN=true" >> $GITHUB_ENV
+      
+    - name: Run Hybrid AI Stock Analysis
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        KAKAO_API_KEY: ${{ secrets.KAKAO_API_KEY }}
+        KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+        KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+        KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+      run: |
+        python main.py --ci --mode=analysis
+        
+    - name: Save token updates
+      if: always()
+      env:
+        KAKAO_ACCESS_TOKEN: ${{ env.KAKAO_ACCESS_TOKEN }}
+        KAKAO_REFRESH_TOKEN: ${{ env.KAKAO_REFRESH_TOKEN }}
+      run: |
+        if [ -n "$KAKAO_ACCESS_TOKEN" ] && [ -n "$KAKAO_REFRESH_TOKEN" ]; then
+          echo "::add-mask::$KAKAO_ACCESS_TOKEN"
+          echo "::add-mask::$KAKAO_REFRESH_TOKEN"
+          echo "KAKAO_ACCESS_TOKEN=$KAKAO_ACCESS_TOKEN" >> $GITHUB_ENV
+          echo "KAKAO_REFRESH_TOKEN=$KAKAO_REFRESH_TOKEN" >> $GITHUB_ENV
+        fi
