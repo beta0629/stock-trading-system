@@ -678,3 +678,303 @@ class GPTTradingStrategy:
         except Exception as e:
             logger.error(f"{symbol} 매매 신호 생성 중 오류 발생: {e}")
             return []
+    
+    def identify_undervalued_stocks(self, df_dict, market="KR", top_n=5):
+        """
+        여러 종목 중에서 저평가된 종목을 식별
+
+        Args:
+            df_dict: {종목코드: DataFrame} 형태의 데이터
+            market: 시장 구분 ("KR" 또는 "US")
+            top_n: 반환할 상위 종목 수
+
+        Returns:
+            list: (종목코드, 점수, 설명) 형태의 저평가 종목 리스트
+        """
+        logger.info(f"{market} 시장에서 저평가 종목 식별 시작")
+        
+        if not df_dict:
+            logger.warning("분석할 데이터가 없습니다.")
+            return []
+        
+        undervalued_stocks = []
+        
+        for symbol, df in df_dict.items():
+            if df.empty:
+                continue
+                
+            try:
+                # 저평가 분석을 위한 특별 프롬프트 구성
+                additional_info = {
+                    "analysis_purpose": "valuation",
+                    "market": market
+                }
+                
+                # GPT 분석 수행 (밸류에이션 분석)
+                analysis = self.analyzer.analyze_stock(df, symbol, "trend", additional_info)
+                
+                # 저평가 관련 키워드 검색
+                analysis_text = analysis.get("analysis", "").lower()
+                
+                # 저평가 점수 계산
+                undervalued_score = 0
+                
+                # 저평가 관련 키워드
+                undervalued_keywords = ["저평가", "undervalued", "할인", "discount", "저렴", "매력적 가치", "buying opportunity"]
+                overvalued_keywords = ["고평가", "overvalued", "프리미엄", "premium", "비싼", "과열"]
+                
+                # 저평가 키워드 발견 시 점수 증가
+                for keyword in undervalued_keywords:
+                    if keyword in analysis_text:
+                        undervalued_score += 10
+                        
+                # 고평가 키워드 발견 시 점수 감소
+                for keyword in overvalued_keywords:
+                    if keyword in analysis_text:
+                        undervalued_score -= 10
+                
+                # 기술적 지표 분석
+                if 'RSI' in df.columns:
+                    rsi = df['RSI'].iloc[-1]
+                    # RSI가 낮을수록 저평가 가능성 높음
+                    if rsi < 30:
+                        undervalued_score += 15
+                    elif rsi < 40:
+                        undervalued_score += 10
+                    elif rsi > 70:
+                        undervalued_score -= 15
+                
+                # PER, PBR 정보가 있는 경우 (추가 정보를 통해 제공됨)
+                if 'fundamental_data' in analysis and isinstance(analysis['fundamental_data'], dict):
+                    fundamental = analysis['fundamental_data']
+                    
+                    # PER이 낮으면 저평가 가능성 (업종 평균 대비)
+                    if 'PER' in fundamental and 'industry_avg_PER' in fundamental:
+                        per_ratio = fundamental['PER'] / fundamental['industry_avg_PER']
+                        if per_ratio < 0.7:  # 업종 평균보다 30% 이상 낮음
+                            undervalued_score += 20
+                        elif per_ratio < 0.9:  # 업종 평균보다 10% 이상 낮음
+                            undervalued_score += 10
+                    
+                    # PBR이 낮으면 저평가 가능성
+                    if 'PBR' in fundamental and fundamental['PBR'] < 1:
+                        undervalued_score += 10
+                
+                # 추가 분석을 위해 GPT에 직접 저평가 여부 질문
+                valuation_prompt = f"이 {symbol} 종목이 얼마나 저평가되어 있는지 1-10 척도로 평가해주세요. 1은 매우 고평가, 10은 매우 저평가입니다. 숫자로만 답변하세요."
+                valuation_response = self.analyzer.client.chat.completions.create(
+                    model=self.analyzer.model,
+                    messages=[
+                        {"role": "system", "content": "당신은 주식 밸류에이션 전문가입니다. 1-10 척도로 저평가 정도를 평가합니다."},
+                        {"role": "user", "content": valuation_prompt}
+                    ],
+                    max_tokens=10,
+                    temperature=0.3
+                )
+                
+                # 응답에서 숫자 추출 시도
+                valuation_text = valuation_response.choices[0].message.content.strip()
+                
+                try:
+                    # 숫자만 추출 (1-10 사이 값인지 확인)
+                    valuation_num = float(''.join(filter(lambda x: x.isdigit() or x == '.', valuation_text)))
+                    if 1 <= valuation_num <= 10:
+                        # 1-10 척도를 -50 ~ +50 점수로 변환 (5.5가 중간점)
+                        gpt_score = (valuation_num - 5.5) * 10
+                        undervalued_score += gpt_score
+                except:
+                    # 숫자 추출에 실패하면 기본 점수 사용
+                    pass
+                
+                # 최종 저평가 점수 정규화 (0-100)
+                normalized_score = max(0, min(100, undervalued_score + 50))
+                
+                # 분석 요약 생성
+                explanation = f"저평가 점수: {normalized_score:.1f}/100"
+                if normalized_score > 70:
+                    explanation += " (매우 저평가 상태)"
+                elif normalized_score > 60:
+                    explanation += " (다소 저평가 상태)"
+                elif normalized_score < 30:
+                    explanation += " (고평가 상태)"
+                    
+                # 결과 추가
+                undervalued_stocks.append((symbol, normalized_score, explanation))
+                logger.info(f"{symbol} 저평가 분석 완료: 점수 {normalized_score:.1f}")
+                
+            except Exception as e:
+                logger.error(f"{symbol} 저평가 분석 중 오류 발생: {e}")
+        
+        # 점수 기준 정렬 (내림차순) 및 상위 n개 반환
+        return sorted(undervalued_stocks, key=lambda x: x[1], reverse=True)[:top_n]
+    
+    def identify_swing_trading_candidates(self, df_dict, market="KR", top_n=5):
+        """
+        여러 종목 중에서 스윙 트레이딩에 적합한 종목 식별
+
+        Args:
+            df_dict: {종목코드: DataFrame} 형태의 데이터
+            market: 시장 구분 ("KR" 또는 "US")
+            top_n: 반환할 상위 종목 수
+
+        Returns:
+            list: (종목코드, 점수, 설명) 형태의 스윙 트레이딩 적합 종목 리스트
+        """
+        logger.info(f"{market} 시장에서 스윙 트레이딩 적합 종목 식별 시작")
+        
+        if not df_dict:
+            logger.warning("분석할 데이터가 없습니다.")
+            return []
+        
+        swing_candidates = []
+        
+        for symbol, df in df_dict.items():
+            if df.empty:
+                continue
+                
+            try:
+                # 스윙 트레이딩 적합성 점수 계산
+                swing_score = 0
+                explanation_parts = []
+                
+                # 1. 변동성 분석 (적당한 변동성이 있어야 함)
+                volatility = self._calculate_volatility(df)
+                daily_range = volatility["avg_daily_range_pct"]
+                
+                # 일일 변동폭이 적당한 경우 (너무 작지도, 너무 크지도 않음)
+                if 1.0 <= daily_range <= 3.0:
+                    swing_score += 20
+                    explanation_parts.append(f"적정 변동성({daily_range:.1f}%)")
+                elif daily_range < 1.0:
+                    swing_score -= 10
+                    explanation_parts.append(f"변동성 부족({daily_range:.1f}%)")
+                elif daily_range > 5.0:
+                    swing_score -= 15
+                    explanation_parts.append(f"과도한 변동성({daily_range:.1f}%)")
+                elif 3.0 < daily_range <= 5.0:
+                    swing_score += 10
+                    explanation_parts.append(f"다소 높은 변동성({daily_range:.1f}%)")
+                
+                # 2. 거래량 안정성 (거래량이 너무 불안정하면 스윙에 부적합)
+                volume = df['Volume'].tail(20)
+                volume_std = volume.std() / volume.mean()  # 거래량의 변동계수
+                
+                if volume_std < 0.5:
+                    swing_score += 15
+                    explanation_parts.append("안정적인 거래량")
+                elif volume_std > 1.0:
+                    swing_score -= 10
+                    explanation_parts.append("불안정한 거래량")
+                
+                # 3. 추세의 명확성 (추세가 명확할수록 스윙에 유리)
+                # 단기/장기 이동평균선의 방향성
+                if 'SMA_short' in df.columns and 'SMA_long' in df.columns:
+                    short_ma = df['SMA_short'].tail(10)
+                    long_ma = df['SMA_long'].tail(10)
+                    
+                    # 단기 이동평균선의 기울기
+                    short_slope = (short_ma.iloc[-1] - short_ma.iloc[0]) / short_ma.iloc[0] * 100
+                    
+                    if abs(short_slope) > 3.0:  # 뚜렷한 방향성 (3% 이상 변화)
+                        swing_score += 15
+                        explanation_parts.append(f"뚜렷한 추세({short_slope:.1f}%)")
+                    elif abs(short_slope) < 1.0:  # 횡보 시장
+                        swing_score -= 5
+                        explanation_parts.append("횡보 시장")
+                
+                # 4. RSI 중간 구간 (과매수/과매도 구간이 아닌, 추세 전환 가능성)
+                if 'RSI' in df.columns:
+                    rsi = df['RSI'].iloc[-1]
+                    
+                    if 35 <= rsi <= 65:  # 중간 구간 (스윙에 적합)
+                        swing_score += 10
+                        explanation_parts.append(f"중간 RSI({rsi:.1f})")
+                    elif rsi < 30 or rsi > 70:  # 과매수/과매도 (급격한 변화 가능성)
+                        swing_score -= 5
+                        explanation_parts.append(f"극단 RSI({rsi:.1f})")
+                
+                # 5. 주기적 패턴 확인 (스윙에 유리)
+                # 최근 데이터의 자기상관계수 계산 (주기적 패턴 확인)
+                close_pct_change = df['Close'].pct_change().tail(30).dropna()
+                if len(close_pct_change) >= 10:  # 충분한 데이터가 있는 경우
+                    # 자기상관계수가 클수록 주기적 패턴이 있을 가능성
+                    autocorr = close_pct_change.autocorr(lag=5)  # 5일 지연 자기상관
+                    
+                    if abs(autocorr) > 0.2:  # 약한 주기성 존재
+                        swing_score += 10
+                        explanation_parts.append("주기적 패턴 감지")
+                
+                # 6. GPT 분석 (추세 및 스윙 적합성)
+                additional_info = {
+                    "analysis_purpose": "swing_trading",
+                    "market": market,
+                    "volatility_data": volatility
+                }
+                
+                # GPT 분석 수행
+                analysis = self.analyzer.analyze_stock(df, symbol, "trend", additional_info)
+                analysis_text = analysis.get("analysis", "").lower()
+                
+                # 스윙 트레이딩 관련 키워드 확인
+                swing_keywords = ["스윙", "swing", "oscillation", "상승하락 반복", "지지", "저항", "반등", "조정"]
+                if any(keyword in analysis_text for keyword in swing_keywords):
+                    swing_score += 15
+                    explanation_parts.append("GPT 스윙 패턴 확인")
+                
+                # 스윙에 불리한 키워드 확인
+                negative_keywords = ["단방향", "지속 상승", "지속 하락", "폭락", "급등", "급변동"]
+                if any(keyword in analysis_text for keyword in negative_keywords):
+                    swing_score -= 15
+                    explanation_parts.append("불안정한 패턴")
+                
+                # 7. 추가 분석을 위해 GPT에 직접 스윙 적합성 질문
+                swing_prompt = f"이 {symbol} 종목이 스윙 트레이딩에 얼마나 적합한지 1-10 척도로 평가해주세요. 1은 매우 부적합, 10은 매우 적합합니다. 숫자로만 답변하세요."
+                swing_response = self.analyzer.client.chat.completions.create(
+                    model=self.analyzer.model,
+                    messages=[
+                        {"role": "system", "content": "당신은 스윙 트레이딩 전문가입니다. 1-10 척도로 스윙 트레이딩 적합도를 평가합니다."},
+                        {"role": "user", "content": swing_prompt}
+                    ],
+                    max_tokens=10,
+                    temperature=0.3
+                )
+                
+                # 응답에서 숫자 추출 시도
+                swing_text = swing_response.choices[0].message.content.strip()
+                
+                try:
+                    # 숫자만 추출 (1-10 사이 값인지 확인)
+                    swing_num = float(''.join(filter(lambda x: x.isdigit() or x == '.', swing_text)))
+                    if 1 <= swing_num <= 10:
+                        # 1-10 척도를 -50 ~ +50 점수로 변환 (5.5가 중간점)
+                        gpt_score = (swing_num - 5.5) * 10
+                        swing_score += gpt_score
+                except:
+                    # 숫자 추출에 실패하면 기본 점수 사용
+                    pass
+                
+                # 최종 스윙 적합성 점수 정규화 (0-100)
+                normalized_score = max(0, min(100, swing_score + 50))
+                
+                # 설명 생성
+                if explanation_parts:
+                    explanation = f"스윙 적합도: {normalized_score:.1f}/100 - {', '.join(explanation_parts)}"
+                else:
+                    explanation = f"스윙 적합도: {normalized_score:.1f}/100"
+                
+                # 손절매/익절 수준 분석 추가
+                try:
+                    stop_levels = self.analyze_stop_levels(df, symbol)
+                    explanation += f" (손절: {stop_levels['stop_loss_pct']}%, 익절: {stop_levels['take_profit_pct']}%)"
+                except Exception as e:
+                    logger.warning(f"{symbol} 손절/익절 수준 분석 중 오류: {e}")
+                
+                # 결과 추가
+                swing_candidates.append((symbol, normalized_score, explanation))
+                logger.info(f"{symbol} 스윙 트레이딩 적합성 분석 완료: 점수 {normalized_score:.1f}")
+                
+            except Exception as e:
+                logger.error(f"{symbol} 스윙 트레이딩 적합성 분석 중 오류 발생: {e}")
+        
+        # 점수 기준 정렬 (내림차순) 및 상위 n개 반환
+        return sorted(swing_candidates, key=lambda x: x[1], reverse=True)[:top_n]
