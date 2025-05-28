@@ -200,16 +200,27 @@ def parse_time(time_str, format_str='%Y-%m-%d %H:%M:%S', timezone=KST):
     dt = datetime.datetime.strptime(time_str, format_str)
     return timezone.localize(dt)
 
-def is_market_open(market="KR"):
+def is_market_open(market="KR", config=None):
     """
     주식 시장이 현재 개장 중인지 확인
     
     Args:
         market: 시장 코드 ("KR" 또는 "US")
+        config: 설정 모듈 (기본값: None, 전역 config 사용)
         
     Returns:
         bool: 시장 개장 여부
     """
+    # config가 None이면 전역 config 사용
+    if config is None:
+        import config as cfg
+        config = cfg
+        
+    # 강제 개장 설정 확인
+    force_open = getattr(config, 'FORCE_MARKET_OPEN', False)
+    if force_open:
+        return True
+        
     now = get_current_time(KST if market == "KR" else EST)
     today = now.strftime("%Y-%m-%d")
     weekday = now.weekday()  # 0=월요일, 6=일요일
