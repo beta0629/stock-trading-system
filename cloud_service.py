@@ -17,6 +17,7 @@ import json
 from datetime import datetime, timedelta
 import traceback
 import platform
+import atexit
 
 # 로깅 설정
 logging.basicConfig(
@@ -45,6 +46,7 @@ class CloudService:
         self.service_processes = {}  # 실행 중인 프로세스 추적
         self.start_time = datetime.now()
         self.last_resource_check = datetime.now() - timedelta(minutes=10)  # 초기값
+        self.own_pid = os.getpid()  # 현재 프로세스의 PID
         
         # 실행 환경 정보
         self.system_info = {
@@ -54,8 +56,71 @@ class CloudService:
             'is_github_actions': self.is_github_actions,
         }
         
+        # 종료 핸들러 등록
+        atexit.register(self._cleanup_at_exit)
+        
         logger.info(f"클라우드 서비스 초기화 - 실행 환경: {json.dumps(self.system_info)}")
     
+    def _cleanup_at_exit(self):
+        """
+        프로그램 종료 시 실행될 정리 함수
+        atexit에 의해 자동으로 호출됨
+        """
+        logger.info("프로그램 종료 감지, 리소스 정리 중...")
+        self.stop()
+        
+        if self.is_github_actions:
+            try:
+                # GitHub Actions에서는 자신의 프로세스 계층에서 실행하는 Python 프로세스만 종료
+                logger.info("GitHub Actions 환경에서 자식 프로세스 정리 중...")
+                
+                # psutil을 사용해 안전하게 프로세스 검색 및 종료
+                try:
+                    import psutil
+                    
+                    current_process = psutil.Process(self.own_pid)
+                    
+                    # 자신의 자식 프로세스 종료
+                    for child in current_process.children(recursive=True):
+                        try:
+                            logger.info(f"자식 프로세스 종료 시도: PID={child.pid}, 이름={child.name()}")
+                            child.terminate()
+                        except psutil.NoSuchProcess:
+                            pass
+                        except psutil.AccessDenied:
+                            logger.info(f"프로세스 {child.pid} 종료 권한 없음 (시스템 프로세스로 추정)")
+                        except Exception as e:
+                            logger.error(f"프로세스 {child.pid} 종료 중 오류: {e}")
+                            
+                    # 2초 대기 후 여전히 살아있는 자식 프로세스 강제 종료
+                    time.sleep(2)
+                    for child in current_process.children(recursive=True):
+                        try:
+                            if child.is_running():
+                                logger.info(f"자식 프로세스 강제 종료: PID={child.pid}")
+                                child.kill()
+                        except Exception:
+                            pass
+                
+                except ImportError:
+                    logger.warning("psutil 모듈이 없어 프로세스 정리가 제한됩니다.")
+                    
+                    # psutil이 없는 경우 직접 등록된 프로세스만 종료
+                    for name, process in self.service_processes.items():
+                        if process and process.poll() is None:
+                            logger.info(f"{name} 프로세스 종료 (PID: {process.pid})")
+                            try:
+                                process.terminate()
+                                time.sleep(1)
+                                if process.poll() is None:
+                                    process.kill()
+                            except Exception as e:
+                                logger.error(f"{name} 종료 중 오류: {e}")
+            
+            except Exception as e:
+                logger.error(f"종료 정리 중 오류 발생: {e}")
+                traceback.print_exc()
+
     def check_dependencies(self):
         """
         필요한 의존성 패키지 확인 및 설치
@@ -383,6 +448,9 @@ class CloudService:
         """
         서비스 종료
         """
+        if not self.running:
+            return  # 이미 종료됨
+            
         self.running = False
         logger.info("서비스 종료 중...")
         
