@@ -9,6 +9,7 @@ import schedule
 import datetime  # datetime 모듈 추가
 import argparse  # 명령줄 인수 처리를 위한 모듈 추가
 import os  # os 모듈 추가
+import re  # re 모듈 추가
 from src.data.stock_data import StockData
 from src.analysis.technical import analyze_signals
 from src.notification.telegram_sender import TelegramSender
@@ -20,7 +21,7 @@ from src.ai_analysis.gemini_analyzer import GeminiAnalyzer  # Gemini 분석기 �
 from src.ai_analysis.hybrid_analysis_strategy import HybridAnalysisStrategy  # 하이브리드 분석 전략 추가
 from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy, SignalType
 from src.ai_analysis.stock_selector import StockSelector
-from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_market_schedule, get_current_time
+from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_market_schedule, get_current_time, get_current_time_str
 import config
 
 # 로깅 설정

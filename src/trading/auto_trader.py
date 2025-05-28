@@ -7,11 +7,17 @@ AI 기반 자동 주식 매매 실행 모듈
 
 import logging
 import time
-import datetime
 import json
 import pandas as pd
+import datetime  # datetime 모듈 추가
 from enum import Enum
 import traceback
+
+# 시간 유틸리티 추가
+from src.utils.time_utils import (
+    get_current_time, get_current_time_str, is_market_open,
+    format_timestamp, get_market_hours, KST, EST, parse_time
+)
 
 # 로깅 설정
 logger = logging.getLogger('AutoTrader')
@@ -96,25 +102,8 @@ class AutoTrader:
         Returns:
             bool: 시장 개장 여부
         """
-        now = datetime.datetime.now()
-        today = now.strftime("%Y-%m-%d")
-        weekday = now.weekday()  # 0=월요일, 6=일요일
-        
-        # 주말 확인
-        if weekday >= 5:  # 토, 일
-            return False
-        
-        # 시장별 운영 시간 확인
-        market_config = self.market_hours.get(market, {})
-        start_time = market_config.get('start', '09:00')
-        end_time = market_config.get('end', '15:30')
-        
-        # 시간 변환
-        start_dt = datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
-        end_dt = datetime.datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
-        
-        # 시장 개장 시간인지 확인
-        return start_dt <= now <= end_dt
+        # 시간 유틸리티 모듈 사용
+        return is_market_open(market)
     
     def _load_positions(self):
         """현재 보유 포지션 로드"""
@@ -223,7 +212,7 @@ class AutoTrader:
                 "price": price,
                 "order_type": order_type.value,
                 "market": market,
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": get_current_time().isoformat(),
                 "status": OrderStatus.RECEIVED.value
             }
             
@@ -248,7 +237,7 @@ class AutoTrader:
                             'current_value': price * quantity,
                             'profit_loss': 0,
                             'profit_loss_pct': 0,
-                            'entry_date': datetime.datetime.now().isoformat()
+                            'entry_date': get_current_time().isoformat()
                         }
                     else:
                         # 기존 포지션에 추가
@@ -338,13 +327,13 @@ class AutoTrader:
             if status == OrderStatus.EXECUTED.value:
                 message = f"🔔 주문 체결: {action} {symbol} x {quantity}주\n"
                 message += f"💰 체결가: {price:,.0f}원\n"
-                message += f"⏱️ 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                message += f"⏱️ 시간: {get_current_time_str()}"
             else:
                 message = f"⚠️ 주문 상태 알림: {symbol} {action}\n"
                 message += f"상태: {status}\n"
                 if "error" in order_info:
                     message += f"오류: {order_info['error']}\n"
-                message += f"⏱️ 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                message += f"⏱️ 시간: {get_current_time_str()}"
             
             # 알림 발송
             self.notifier.send_message(message)
@@ -375,7 +364,7 @@ class AutoTrader:
                         self.notifier.send_message(
                             f"🔴 손절매 실행: {symbol}\n"
                             f"손실: {profit_loss_pct:.2f}%\n"
-                            f"⏱️ 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            f"⏱️ 시간: {get_current_time_str()}"
                         )
                 
                 # 익절 확인
@@ -395,7 +384,7 @@ class AutoTrader:
                         self.notifier.send_message(
                             f"🟢 익절 실행: {symbol}\n"
                             f"이익: {profit_loss_pct:.2f}%\n"
-                            f"⏱️ 시간: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            f"⏱️ 시간: {get_current_time_str()}"
                         )
         except Exception as e:
             logger.error(f"손절매/익절 확인 중 오류 발생: {e}")
@@ -549,7 +538,7 @@ class AutoTrader:
             
             # 포트폴리오 요약
             summary = {
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": get_current_time().isoformat(),
                 "total_assets": total_assets,
                 "cash": cash,
                 "invested_amount": total_position_value,
@@ -567,7 +556,7 @@ class AutoTrader:
             logger.error(f"포트폴리오 요약 생성 중 오류 발생: {e}")
             return {
                 "error": str(e),
-                "timestamp": datetime.datetime.now().isoformat()
+                "timestamp": get_current_time().isoformat()
             }
             
     def save_trading_state(self, file_path='trading_state.json'):
@@ -610,3 +599,280 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"트레이딩 상태 로드 중 오류 발생: {e}")
             return False
+    
+    def is_trading_allowed(self, symbol, market="KR"):
+        """
+        특정 종목의 거래 허용 여부 확인
+        
+        Args:
+            symbol: 종목 코드
+            market: 시장 구분 ("KR" 또는 "US")
+            
+        Returns:
+            bool: 거래 허용 여부
+        """
+        try:
+            # 시뮬레이션 모드에서는 항상 허용
+            if self.simulation_mode:
+                return True
+                
+            # 기본 상태 - 자동 매매가 실행 중인지 확인
+            if not hasattr(self, 'is_running') or not self.is_running:
+                logger.warning(f"자동 매매가 활성화되지 않았습니다.")
+                return False
+                
+            # 시장 개장 여부 확인
+            if not self._check_market_open(market):
+                logger.warning(f"{market} 시장이 개장되지 않아 거래를 허용하지 않습니다. {symbol}")
+                return False
+                
+            # 차단된 종목인지 확인
+            if hasattr(self.config, 'BLOCKED_SYMBOLS') and symbol in self.config.BLOCKED_SYMBOLS:
+                logger.warning(f"{symbol}은 거래 차단 목록에 있습니다.")
+                return False
+                
+            # 거래 가능 시간대 확인 (설정된 경우)
+            if hasattr(self.config, 'TRADING_HOURS'):
+                trading_hours = self.config.TRADING_HOURS.get(market)
+                if trading_hours:
+                    current_time = get_current_time().time()
+                    start_time = parse_time(trading_hours.get('start', '09:00')).time()
+                    end_time = parse_time(trading_hours.get('end', '15:30')).time()
+                    
+                    if not (start_time <= current_time <= end_time):
+                        logger.warning(f"현재 시간이 거래 가능 시간대를 벗어났습니다. {current_time}")
+                        return False
+            
+            # 거래 횟수 제한 확인
+            if hasattr(self.config, 'MAX_DAILY_TRADES'):
+                max_daily_trades = self.config.MAX_DAILY_TRADES
+                today_trades = len([order for order in self.order_history 
+                                    if order.get('symbol') == symbol and
+                                    order.get('timestamp', '').startswith(get_current_time().strftime("%Y-%m-%d"))])
+                                    
+                if today_trades >= max_daily_trades:
+                    logger.warning(f"{symbol}에 대한 일일 최대 거래 횟수에 도달했습니다. ({today_trades}/{max_daily_trades})")
+                    return False
+                    
+            # 자본금 제한 확인 (설정된 경우)
+            if hasattr(self.config, 'MIN_CAPITAL_REQUIRED'):
+                min_capital = self.config.MIN_CAPITAL_REQUIRED
+                available_cash = self._get_available_cash()
+                
+                if available_cash < min_capital:
+                    logger.warning(f"사용 가능한 자본금이 최소 요구 금액보다 적습니다. ({available_cash:,.0f} < {min_capital:,.0f})")
+                    return False
+            
+            # 기타 모든 조건 통과
+            return True
+            
+        except Exception as e:
+            logger.error(f"거래 허용 여부 확인 중 오류 발생: {e}")
+            # 오류 발생 시 안전하게 거래 거부
+            return False
+    
+    def process_signals(self, signals):
+        """
+        매매 신호 처리
+        
+        Args:
+            signals: 매매 신호 데이터
+            
+        Returns:
+            dict: 처리 결과
+        """
+        if not signals.get('signals'):
+            logger.info("처리할 매매 신호가 없습니다.")
+            return None
+            
+        symbol = signals.get('symbol')
+        market = signals.get('market', 'KR')
+        
+        # 해당 종목의 거래가 허용되는지 확인
+        if not self.is_trading_allowed(symbol, market):
+            logger.warning(f"{symbol}에 대한 거래가 현재 허용되지 않습니다.")
+            return None
+        
+        results = []
+        # 신호 처리 (중요도나 신뢰도 순으로 정렬)
+        sorted_signals = sorted(
+            signals['signals'], 
+            key=lambda x: x.get('confidence', 0), 
+            reverse=True
+        )
+        
+        for signal_data in sorted_signals:
+            signal_type = signal_data.get('type')
+            signal_date = signal_data.get('date')
+            signal_price = signal_data.get('price')
+            signal_confidence = signal_data.get('confidence', 5.0)  # 기본값 5.0 (중간 신뢰도)
+            
+            # 신뢰도가 낮은 신호는 무시
+            min_confidence = getattr(self.config, 'MIN_SIGNAL_CONFIDENCE', 5.0)
+            if signal_confidence < min_confidence:
+                logger.info(f"{symbol} {signal_type} 신호 무시: 신뢰도가 낮음 ({signal_confidence} < {min_confidence})")
+                continue
+                
+            try:
+                # 신호 유형에 따른 처리
+                if signal_type == "BUY":
+                    # 이미 포지션을 가지고 있는지 확인
+                    has_position = symbol in self.positions
+                    
+                    if not has_position:
+                        # 매수 신호 처리 (TradeAction 열거형 사용)
+                        signal_dict = {
+                            'symbol': symbol,
+                            'signal_data': {
+                                'signal': TradeAction.BUY.value,
+                                'strength': 'STRONG' if signal_confidence > 7.5 else (
+                                    'MODERATE' if signal_confidence > 5.0 else 'WEAK'
+                                ),
+                                'price': signal_price,
+                                'date': signal_date
+                            },
+                            'market': market,
+                            'price': signal_price
+                        }
+                        
+                        result = self.process_trading_signal(signal_dict)
+                        if result['status'] == 'processed' and result['action'] == 'buy':
+                            logger.info(f"{symbol} 매수 신호 처리 완료")
+                        
+                        results.append(result)
+                    else:
+                        logger.info(f"{symbol}에 대한 포지션이 이미 있어 매수 신호를 무시합니다.")
+                
+                elif signal_type == "SELL":
+                    # 포지션을 가지고 있는지 확인
+                    has_position = symbol in self.positions
+                    
+                    if has_position:
+                        # 매도 신호 처리
+                        signal_dict = {
+                            'symbol': symbol,
+                            'signal_data': {
+                                'signal': TradeAction.SELL.value,
+                                'strength': 'STRONG' if signal_confidence > 7.5 else (
+                                    'MODERATE' if signal_confidence > 5.0 else 'WEAK'
+                                ),
+                                'price': signal_price,
+                                'date': signal_date
+                            },
+                            'market': market,
+                            'price': signal_price
+                        }
+                        
+                        result = self.process_trading_signal(signal_dict)
+                        if result['status'] == 'processed' and result['action'] == 'sell':
+                            logger.info(f"{symbol} 매도 신호 처리 완료")
+                            
+                        results.append(result)
+                    else:
+                        logger.info(f"{symbol}에 대한 포지션이 없어 매도 신호를 무시합니다.")
+                
+            except Exception as e:
+                logger.error(f"{symbol} {signal_type} 신호 처리 중 오류: {e}")
+                results.append({
+                    "status": "error",
+                    "message": f"{signal_type} 신호 처리 중 오류: {str(e)}"
+                })
+                
+        return results
+    
+    def start_trading_session(self):
+        """자동 매매 세션 시작"""
+        logger.info("자동 매매 세션 시작")
+        self.is_running = True
+        
+        # 포지션 로드
+        self._load_positions()
+        
+        return True
+        
+    def stop_trading_session(self):
+        """자동 매매 세션 종료"""
+        logger.info("자동 매매 세션 종료")
+        self.is_running = False
+        
+        return True
+    
+    def get_trading_summary(self):
+        """
+        거래 요약 정보 반환
+        
+        Returns:
+            dict: 거래 요약 정보
+        """
+        try:
+            # 요약 정보 딕셔너리
+            summary = {
+                "오늘의거래": {},
+                "계좌정보": {},
+                "보유종목": []
+            }
+            
+            # 오늘 날짜 가져오기
+            today = get_current_time().strftime("%Y-%m-%d")
+            
+            # 오늘의 거래 카운트
+            for order in self.order_history:
+                if order.get('timestamp', '').startswith(today):
+                    symbol = order.get('symbol')
+                    action = order.get('action').lower()
+                    
+                    if symbol not in summary["오늘의거래"]:
+                        summary["오늘의거래"][symbol] = {"buy": 0, "sell": 0}
+                    
+                    if action in summary["오늘의거래"][symbol]:
+                        summary["오늘의거래"][symbol][action] += 1
+            
+            # 계좌 정보 (시뮬레이션 모드에 따라 다름)
+            if self.simulation_mode:
+                # 총 포지션 가치 계산
+                total_position_value = sum(p.get('current_value', 0) for p in self.positions.values())
+                
+                # 예수금 계산
+                cash = self.initial_capital - total_position_value
+                
+                summary["계좌정보"] = {
+                    "예수금": cash,
+                    "총자산": self.initial_capital,
+                    "평가손익": sum(p.get('profit_loss', 0) for p in self.positions.values()),
+                    "손익률": (sum(p.get('profit_loss', 0) for p in self.positions.values()) / self.initial_capital) * 100 if self.initial_capital > 0 else 0
+                }
+            else:
+                # 실제 브로커 API에서 계좌 정보 가져오기
+                try:
+                    account_info = self.broker.get_account_info()
+                    summary["계좌정보"] = account_info
+                except:
+                    logger.error("계좌 정보 조회 실패")
+            
+            # 보유 종목 정보
+            for symbol, position in self.positions.items():
+                # 종목 이름 가져오기 (있는 경우)
+                stock_name = symbol
+                if hasattr(self.config, 'STOCK_NAMES') and symbol in self.config.STOCK_NAMES:
+                    stock_name = self.config.STOCK_NAMES[symbol]
+                
+                summary["보유종목"].append({
+                    "종목코드": symbol,
+                    "종목명": stock_name,
+                    "보유수량": position.get('quantity', 0),
+                    "평균단가": position.get('avg_price', 0),
+                    "현재가": position.get('current_price', 0),
+                    "평가금액": position.get('current_value', 0),
+                    "평가손익": position.get('profit_loss', 0),
+                    "손익률": position.get('profit_loss_pct', 0)
+                })
+                
+            return summary
+            
+        except Exception as e:
+            logger.error(f"거래 요약 정보 생성 중 오류: {e}")
+            return {
+                "오늘의거래": {},
+                "계좌정보": {},
+                "보유종목": []
+            }

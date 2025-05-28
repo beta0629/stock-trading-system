@@ -633,3 +633,34 @@ class KakaoSender:
         # 결과 조합 및 전송
         result_message = '\n'.join(result_parts)
         return self.send_message(result_message)
+    
+    def _get_stock_name(self, symbol):
+        """종목 코드에 해당하는 종목 이름 반환
+
+        Args:
+            symbol: 종목 코드
+
+        Returns:
+            str: 종목 이름 (얻을 수 없는 경우 종목 코드 반환)
+        """
+        # config에 종목 이름 매핑이 있는지 확인
+        if hasattr(self.config, 'STOCK_NAMES') and symbol in self.config.STOCK_NAMES:
+            return self.config.STOCK_NAMES.get(symbol, symbol)
+        
+        # 증권사 API나 데이터 제공자가 있다면 활용할 수 있으나 여기서는 간단히 처리
+        return symbol
+    
+    def _remove_html_tags(self, text):
+        """HTML 태그 제거
+
+        Args:
+            text: HTML 태그가 포함된 텍스트
+
+        Returns:
+            str: HTML 태그가 제거된 텍스트
+        """
+        if not text:
+            return ""
+        import re
+        clean = re.compile('<.*?>')
+        return re.sub(clean, '', text)
