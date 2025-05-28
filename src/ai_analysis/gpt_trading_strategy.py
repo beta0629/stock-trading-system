@@ -5,9 +5,21 @@ import logging
 import pandas as pd
 import numpy as np
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
+# 시간 유틸리티 추가
+from src.utils.time_utils import get_current_time, get_current_time_str, format_timestamp
+from enum import Enum
 
 # 로깅 설정
 logger = logging.getLogger('GPTTradingStrategy')
+
+# 매매 신호 타입 열거형 추가
+class SignalType(Enum):
+    """매매 신호 타입 열거형"""
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+    NONE = "NONE"
+    ERROR = "ERROR"
 
 class GPTTradingStrategy:
     """GPT 모델을 활용한 고급 트레이딩 전략 클래스"""
@@ -264,7 +276,7 @@ class GPTTradingStrategy:
         additional_info = {
             "market_context": market_context or {},
             "analysis_purpose": "trading_signal",
-            "analysis_timestamp": pd.Timestamp.now().isoformat()  # 문자열로 변환
+            "analysis_timestamp": get_current_time_str(format_str="%Y-%m-%dT%H:%M:%S%z")  # ISO 형식으로 변환
         }
         
         # 여러 분석 유형 결과 조합
@@ -276,7 +288,7 @@ class GPTTradingStrategy:
             "symbol": symbol,
             "trend_analysis": trend_analysis.get("analysis", "분석 없음"),
             "risk_analysis": risk_analysis.get("analysis", "분석 없음"),
-            "timestamp": pd.Timestamp.now().isoformat()  # 문자열로 변환
+            "timestamp": get_current_time_str(format_str="%Y-%m-%dT%H:%M:%S%z")  # ISO 형식으로 변환
         }
         
         # 매매 신호 추출을 위한 특별 분석 요청
