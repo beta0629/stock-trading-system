@@ -4,6 +4,7 @@ GPT 모델을 활용한 고급 트레이딩 전략 구현
 import logging
 import pandas as pd
 import numpy as np
+import datetime
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
 # 시간 유틸리티 추가
 from src.utils.time_utils import get_current_time, get_current_time_str, format_timestamp
@@ -20,6 +21,20 @@ class SignalType(Enum):
     HOLD = "HOLD"
     NONE = "NONE"
     ERROR = "ERROR"
+
+# 트레이딩 신호 클래스 추가
+class TradingSignal:
+    """매매 신호 클래스"""
+    def __init__(self, signal_type, price, date=None, confidence=0.0, analysis=None):
+        self.signal_type = signal_type if isinstance(signal_type, SignalType) else SignalType(signal_type)
+        self.price = price
+        self.date = date or datetime.datetime.now()
+        self.confidence = confidence
+        self.analysis = analysis
+        self.generated_at = datetime.datetime.now()
+
+    def __str__(self):
+        return f"Signal: {self.signal_type.value}, Price: {self.price}, Confidence: {self.confidence:.2f}, Date: {self.date}"
 
 class GPTTradingStrategy:
     """GPT 모델을 활용한 고급 트레이딩 전략 클래스"""
@@ -593,3 +608,73 @@ class GPTTradingStrategy:
             "trailing_stop_distance": round(trailing_stop, 1),
             "confidence": 0.8
         }
+    
+    def generate_trading_signals(self, df, symbol):
+        """
+        주식 데이터로부터 매매 신호 생성
+        
+        Args:
+            df: 주가 데이터 (DataFrame)
+            symbol: 종목 코드
+            
+        Returns:
+            list: TradingSignal 객체 리스트
+        """
+        logger.info(f"종목 {symbol}에 대한 매매 신호 생성 시작")
+        
+        if df.empty:
+            logger.warning(f"{symbol}: 분석할 데이터가 없습니다.")
+            return []
+        
+        try:
+            # analyze_stock 메서드를 통해 기본 분석 수행
+            analysis_result = self.analyze_stock(df, symbol)
+            
+            signals = []
+            
+            # 신호가 BUY 또는 SELL이고 신뢰도가 임계값보다 높은 경우에만 신호 생성
+            signal_type = analysis_result.get('signal')
+            confidence = analysis_result.get('confidence', 0.0)
+            
+            if signal_type == 'BUY' and confidence >= self.buy_confidence_threshold:
+                # 현재가 기준 매수 신호 생성
+                current_price = df['Close'].iloc[-1]
+                signals.append(TradingSignal(
+                    signal_type=SignalType.BUY,
+                    price=current_price,
+                    date=pd.to_datetime(df.index[-1]) if isinstance(df.index[-1], (str, pd.Timestamp)) else datetime.datetime.now(),
+                    confidence=confidence,
+                    analysis=analysis_result.get('analysis_summary', '')
+                ))
+                logger.info(f"{symbol} 매수 신호 생성: 가격 {current_price}, 신뢰도 {confidence:.2f}")
+                
+            elif signal_type == 'SELL' and confidence >= self.sell_confidence_threshold:
+                # 현재가 기준 매도 신호 생성
+                current_price = df['Close'].iloc[-1]
+                signals.append(TradingSignal(
+                    signal_type=SignalType.SELL,
+                    price=current_price,
+                    date=pd.to_datetime(df.index[-1]) if isinstance(df.index[-1], (str, pd.Timestamp)) else datetime.datetime.now(),
+                    confidence=confidence,
+                    analysis=analysis_result.get('analysis_summary', '')
+                ))
+                logger.info(f"{symbol} 매도 신호 생성: 가격 {current_price}, 신뢰도 {confidence:.2f}")
+                
+            # 손절매/익절 수준 분석 및 추가 신호 생성 (향후 확장)
+            if signals and hasattr(self, 'analyze_stop_levels'):
+                try:
+                    stop_levels = self.analyze_stop_levels(df, symbol)
+                    # 기존 신호에 손절매/익절 정보 추가
+                    for signal in signals:
+                        if signal.signal_type == SignalType.BUY:
+                            stop_price = signal.price * (1 - stop_levels['stop_loss_pct'] / 100)
+                            target_price = signal.price * (1 + stop_levels['take_profit_pct'] / 100)
+                            logger.info(f"{symbol} 매수 후 손절가: {stop_price:.2f}, 목표가: {target_price:.2f}")
+                except Exception as e:
+                    logger.warning(f"{symbol} 손절매/익절 수준 분석 중 오류: {e}")
+            
+            return signals
+            
+        except Exception as e:
+            logger.error(f"{symbol} 매매 신호 생성 중 오류 발생: {e}")
+            return []
