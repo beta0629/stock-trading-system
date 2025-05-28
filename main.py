@@ -691,7 +691,7 @@ class StockAnalysisSystem:
                 message += f"• {symbol}: ${data['Close']:,.2f} (RSI: {data['RSI']:.2f})\n"
         
         # 자동 매매 정보 추가
-        if self.auto_trading_enabled and self.auto_trader and self.auto_trader.connected:
+        if self.auto_trading_enabled and self.auto_trader and hasattr(self.auto_trader, 'is_running') and self.auto_trader.is_running:
             message += "\n<b>자동 매매 상태:</b>\n"
             
             # 거래 요약 정보 가져오기
