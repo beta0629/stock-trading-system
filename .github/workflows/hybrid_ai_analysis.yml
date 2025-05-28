@@ -1,4 +1,4 @@
-name: Hybrid AI Stock Analysis
+name: Hybrid AI Stock Analysis and Mock Trading
 
 on:
   schedule:
@@ -9,9 +9,9 @@ on:
   workflow_dispatch:  # 수동 실행 옵션
 
 jobs:
-  analyze:
+  analyze-and-trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # 최대 실행 시간 단축 (15분으로 제한)
+    timeout-minutes: 30  # 최대 실행 시간 확장 (30분으로 제한)
     
     steps:
     - name: Checkout repository
@@ -52,8 +52,10 @@ jobs:
         echo "FORCE_MARKET_OPEN=true" >> $GITHUB_ENV
         echo "USE_TELEGRAM=false" >> $GITHUB_ENV  # 텔레그램 비활성화
         echo "PYTHONUNBUFFERED=1" >> $GITHUB_ENV  # Python의 버퍼링 비활성화하여 실시간 로그 출력
+        echo "SIMULATION_MODE=true" >> $GITHUB_ENV  # 모의투자 모드 활성화
+        echo "KIS_REAL_TRADING=false" >> $GITHUB_ENV  # 실제 거래 비활성화
       
-    - name: Run Simple Analysis Script
+    - name: Run Hybrid Analysis Script
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -62,37 +64,68 @@ jobs:
         KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
         USE_TELEGRAM: "false"  # 텔레그램 비활성화
       run: |
-        # 간소화된 분석 스크립트 실행 (timeout 설정 10분)
-        echo "스크립트 실행 시작 시간: $(date)"
+        # 분석 스크립트 실행
+        echo "하이브리드 분석 스크립트 실행 시작 시간: $(date)"
         
         # 명시적인 timeout 설정으로 10분 후 강제 종료
         timeout 10m python test_hybrid_analysis.py || true
         
-        echo "스크립트 실행 종료 시간: $(date)"
+        echo "하이브리드 분석 스크립트 실행 종료 시간: $(date)"
         
         # 로그 확인
         if [ -f hybrid_analysis_test.log ]; then
-          echo "=== 로그 파일 확인 ==="
+          echo "=== 하이브리드 분석 로그 파일 확인 ==="
           tail -n 50 hybrid_analysis_test.log
         else
           echo "로그 파일이 없습니다."
         fi
-        
-        # 남은 Python 프로세스 정리
-        echo "남아있는 Python 프로세스 확인 및 정리:"
-        ps aux | grep python
-        pkill -f python || true
-        sleep 2
-        echo "정리 후 프로세스 상태:"
-        ps aux | grep python
       continue-on-error: true  # 스크립트가 실패해도 워크플로우 계속 진행
       timeout-minutes: 12  # GitHub Actions 자체 타임아웃 설정
+        
+    - name: Run Mock Auto Trading System
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        KAKAO_API_KEY: ${{ secrets.KAKAO_API_KEY }}
+        KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+        KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+        SIMULATION_MODE: "true"  # 모의투자 모드 활성화
+        KIS_REAL_TRADING: "false"  # 실제 거래 비활성화
+        FORCE_MARKET_OPEN: "true"  # 시장 시간 체크 우회
+        # 실전투자 API 키 (참고용, 모의투자에서는 실제로 사용되지 않음)
+        KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+        KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+        # 모의투자 API 키 (모의투자 실행에 사용됨)
+        KIS_VIRTUAL_APP_KEY: ${{ secrets.KIS_VIRTUAL_APP_KEY }}
+        KIS_VIRTUAL_APP_SECRET: ${{ secrets.KIS_VIRTUAL_APP_SECRET }}
+        KIS_VIRTUAL_ACCOUNT_NO: ${{ secrets.KIS_VIRTUAL_ACCOUNT_NO }}
+      run: |
+        # 모의 자동 매매 시스템 실행
+        echo "모의 자동 매매 시스템 실행 시작 시간: $(date)"
+        echo "모의투자 모드로 실행합니다 (KIS_REAL_TRADING=false)"
+        echo "모의투자 계좌 번호: $KIS_VIRTUAL_ACCOUNT_NO (마지막 두 자리만 표시: ${KIS_VIRTUAL_ACCOUNT_NO: -2})"
+        
+        # 명시적인 timeout 설정으로 15분 후 강제 종료
+        timeout 15m python test_mock_auto_trading.py || true
+        
+        echo "모의 자동 매매 시스템 실행 종료 시간: $(date)"
+        
+        # 로그 확인
+        if [ -f mock_auto_trading.log ]; then
+          echo "=== 모의 자동 매매 로그 파일 확인 ==="
+          tail -n 50 mock_auto_trading.log
+        else
+          echo "모의 자동 매매 로그 파일이 없습니다."
+        fi
+      continue-on-error: true  # 스크립트가 실패해도 워크플로우 계속 진행
+      timeout-minutes: 17  # GitHub Actions 자체 타임아웃 설정
         
     - name: Save token updates
       if: always()  # 이전 단계가 실패해도 항상 실행
       env:
-        KAKAO_ACCESS_TOKEN: ${{ env.KAKAO_ACCESS_TOKEN }}
-        KAKAO_REFRESH_TOKEN: ${{ env.KAKAO_REFRESH_TOKEN }}
+        KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+        KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
       run: |
         if [ -n "$KAKAO_ACCESS_TOKEN" ] && [ -n "$KAKAO_REFRESH_TOKEN" ]; then
           echo "::add-mask::$KAKAO_ACCESS_TOKEN"
