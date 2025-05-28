@@ -637,3 +637,50 @@ class KakaoSender:
             if current_time >= expire_time:
                 self._refresh_token()
                 return
+    
+    def _remove_html_tags(self, text):
+        """HTML 태그를 제거하고 일반 텍스트로 변환
+        
+        Args:
+            text: HTML 태그가 포함된 문자열
+            
+        Returns:
+            str: HTML 태그가 제거된 문자열
+        """
+        if not text:
+            return ""
+        
+        # 볼드 태그 처리: <b>텍스트</b> -> *텍스트*
+        text = re.sub(r'<b>(.*?)</b>', r'*\1*', text)
+        
+        # 이탤릭 태그 처리: <i>텍스트</i> -> _텍스트_
+        text = re.sub(r'<i>(.*?)</i>', r'_\1_', text)
+        
+        # 나머지 모든 HTML 태그 제거
+        text = re.sub(r'<.*?>', '', text)
+        
+        return text
+    
+    def _get_stock_name(self, symbol):
+        """주식 종목 코드로부터 종목명을 반환
+        
+        Args:
+            symbol: 종목 코드
+            
+        Returns:
+            str: 종목명 (없으면 종목 코드 그대로 반환)
+        """
+        # 종목 코드-이름 매핑 딕셔너리 (config에서 가져오기)
+        kr_stock_names = {}
+        us_stock_names = {}
+        
+        if hasattr(self.config, 'KR_STOCK_NAMES'):
+            kr_stock_names = self.config.KR_STOCK_NAMES
+        if hasattr(self.config, 'US_STOCK_NAMES'):
+            us_stock_names = self.config.US_STOCK_NAMES
+            
+        # 종목 코드가 한국 주식인지 미국 주식인지 판단 (숫자로만 이루어진 경우 한국 주식으로 간주)
+        if symbol.isdigit():
+            return kr_stock_names.get(symbol, symbol)
+        else:
+            return us_stock_names.get(symbol, symbol)
