@@ -36,6 +36,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger('StockAnalysisSystem')
 
+# 시장 강제 오픈 설정 - 환경 변수에서 읽어오기
+force_market_open = os.environ.get("FORCE_MARKET_OPEN", "").lower() == "true"
+if force_market_open:
+    logger.info("환경 변수 FORCE_MARKET_OPEN=true 설정 감지: 시장 시간 제한 무시")
+    # config에 강제 설정
+    config.FORCE_MARKET_OPEN = True
+
 class StockAnalysisSystem:
     """주식 분석 시스템 메인 클래스"""
     
@@ -741,6 +748,16 @@ class StockAnalysisSystem:
             self.auto_trader.start_trading_session()
             trade_status = "활성화" if self.auto_trader.is_running else "비활성화"
             logger.info(f"자동 매매 시스템 상태: {trade_status}")
+            
+            # 강제 시장 열림 설정이 활성화되어 있으면, 매매 사이클 즉시 실행
+            if hasattr(self.config, 'FORCE_MARKET_OPEN') and self.config.FORCE_MARKET_OPEN:
+                logger.info("강제 시장 열림 설정이 활성화되어 있습니다. 즉시 매매 사이클을 실행합니다.")
+                try:
+                    # 즉시 매매 사이클 실행
+                    self.auto_trader.run_trading_cycle()
+                    logger.info("초기 매매 사이클 실행 완료")
+                except Exception as e:
+                    logger.error(f"초기 매매 사이클 실행 중 오류 발생: {e}")
         
         # 카카오톡 초기화 상태 확인
         kakao_status = "활성화" if self.use_kakao and self.kakao_sender and self.kakao_sender.initialized else "비활성화"
@@ -870,9 +887,22 @@ class StockAnalysisSystem:
             else:
                 logger.warning("OpenAI API 키가 유효하지 않아 시작 시 종목 선정을 건너뜁니다.")
             
+            # 무한 루프 - 프로그램이 종료되지 않도록 유지
+            logger.info("매매 시스템 메인 루프 시작 (Ctrl+C로 종료)")
             while self.is_running:
                 schedule.run_pending()
-                time.sleep(60)  # 1분마다 스케줄 확인
+                
+                # 강제 시장 열림 설정이 활성화되어 있으면, 주기적으로 매매 사이클 실행
+                if hasattr(self.config, 'FORCE_MARKET_OPEN') and self.config.FORCE_MARKET_OPEN and self.auto_trading_enabled and self.auto_trader:
+                    try:
+                        self.auto_trader.run_trading_cycle()
+                        logger.info("매매 사이클 실행 완료 (강제 실행 모드)")
+                    except Exception as e:
+                        logger.error(f"매매 사이클 실행 중 오류 발생: {e}")
+                
+                # 60초 대기
+                time.sleep(60)
+                logger.info("매매 시스템 실행 중... (1분 간격 체크)")
                 
         except KeyboardInterrupt:
             logger.info("사용자에 의해 시스템 종료")
@@ -881,7 +911,7 @@ class StockAnalysisSystem:
         except Exception as e:
             logger.error(f"시스템 실행 중 오류 발생: {e}")
             self.stop()
-            
+    
     def _initialize_stock_lists(self):
         """종목 리스트 초기화 및 확인"""
         # KR_STOCKS와 US_STOCKS가 없거나 비어있으면 캐시 파일에서 로드
@@ -987,3 +1017,63 @@ class StockAnalysisSystem:
                     self.config.US_STOCK_INFO = default_us_stocks
                     self.config.US_STOCKS = [stock["code"] for stock in default_us_stocks]
                     logger.info(f"기본 미국 종목 {len(self.config.US_STOCKS)}개를 설정했습니다.")
+    
+    def stop(self):
+        """시스템 종료"""
+        if not self.is_running:
+            logger.warning("시스템이 이미 종료되었습니다.")
+            return
+            
+        self.is_running = False
+        
+        # 자동 매매 시스템 종료
+        if self.auto_trading_enabled and self.auto_trader and hasattr(self.auto_trader, 'stop_trading_session'):
+            self.auto_trader.stop_trading_session()
+            
+        logger.info("AI 주식 분석 시스템 종료")
+        
+        # 종료 메시지 전송 시도
+        try:
+            # 종료 시간과 활성 세션 시간 계산
+            end_time = get_current_time_str(format_str='%Y-%m-%d %H:%M:%S')
+            message = f"🛑 AI 주식 분석 시스템 종료 ({end_time})"
+            self.send_notification('status', message)
+        except Exception as e:
+            logger.error(f"종료 메시지 전송 실패: {e}")
+
+
+# 명령줄 인자 처리
+def parse_args():
+    parser = argparse.ArgumentParser(description='AI 주식 분석 시스템')
+    parser.add_argument('--debug', action='store_true', help='디버그 모드 활성화')
+    parser.add_argument('--skip-stock-select', action='store_true', help='종목 선정 과정 건너뛰기')
+    parser.add_argument('--force-market-open', action='store_true', help='시장 시간 제한을 무시하고 강제로 열림 상태로 간주')
+    return parser.parse_args()
+
+
+# 메인 진입점
+if __name__ == "__main__":
+    args = parse_args()
+    
+    # 로깅 레벨 설정
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("디버그 모드 활성화")
+    
+    # 강제 시장 열림 설정
+    if args.force_market_open:
+        logger.info("강제 시장 열림 모드 활성화")
+        config.FORCE_MARKET_OPEN = True
+    
+    # 시스템 인스턴스 생성 및 시작
+    system = StockAnalysisSystem()
+    
+    try:
+        # 시스템 시작 (이 메서드는 내부에서 무한 루프를 실행)
+        system.start()
+    except KeyboardInterrupt:
+        logger.info("사용자에 의해 프로그램 종료")
+    except Exception as e:
+        logger.error(f"프로그램 실행 중 오류 발생: {e}", exc_info=True)
+    finally:
+        system.stop()

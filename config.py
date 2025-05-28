@@ -130,7 +130,7 @@ TAKE_PROFIT_PCT = 10  # 익절 비율 (기본 10%)
 USE_TRAILING_STOP = True  # 트레일링 스탑 사용 여부
 TRAILING_STOP_DISTANCE = 3  # 트레일링 스탑 거리(%) - 최고가 대비 3% 하락시 매도
 
-# 시장 시간 강제 설정 (CI 환경에서 사용)
+# 시장 강제 설정 (CI 환경에서 사용)
 FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "False").lower() == "true"  # 강제로 시장을 열림 상태로 간주
 
 # OpenAI ChatGPT API 설정
@@ -164,9 +164,9 @@ KR_STOCK_INFO = [
 US_STOCK_INFO = [
     {'code': 'AAPL', 'name': 'Apple Inc.'}, 
     {'code': 'MSFT', 'name': 'Microsoft Corporation'}, 
-    {'code': 'JNJ', 'name': 'Johnson & Johnson'}, 
-    {'code': 'XOM', 'name': 'Exxon Mobil Corporation'}, 
-    {'code': 'GOOGL', 'name': 'Alphabet Inc.'}
+    {'code': 'GOOGL', 'name': 'Alphabet Inc.'}, 
+    {'code': 'AMZN', 'name': 'Amazon.com Inc.'}, 
+    {'code': 'META', 'name': 'Meta Platforms Inc.'}
 ]
 
 # 종목 코드 리스트 생성
