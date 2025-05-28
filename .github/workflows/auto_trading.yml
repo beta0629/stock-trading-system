@@ -106,7 +106,7 @@ jobs:
       - name: 데이터베이스 초기화
         run: |
           echo "데이터베이스 초기화 중..."
-          python -c "from src.database.db_init import initialize_db; initialize_db()"
+          python -c "from src.database.db_init import initialize_database; initialize_database()"
           echo "데이터베이스 초기화 완료"
 
       - name: API 연결 테스트
