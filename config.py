@@ -105,6 +105,27 @@ MA_SHORT = 5  # 단기 이동평균 기간
 MA_MEDIUM = 20  # 중기 이동평균 기간
 MA_LONG = 60  # 장기 이동평균 기간
 
+# 이전 코드와의 호환성을 위한 별칭
+SHORT_TERM_MA = MA_SHORT  # 단기 이동평균 별칭
+MEDIUM_TERM_MA = MA_MEDIUM  # 중기 이동평균 별칭
+LONG_TERM_MA = MA_LONG  # 장기 이동평균 별칭
+
+# RSI 매수/매도 임계값
+RSI_OVERSOLD = 30  # RSI 과매도 기준
+RSI_OVERBOUGHT = 70  # RSI 과매수 기준
+
+# GPT 자동 매매 설정
+GPT_AUTO_TRADING = True  # GPT 자동 매매 활성화 여부
+GPT_STOCK_SELECTION_INTERVAL = 24  # 종목 선정 간격 (시간)
+GPT_TRADING_MAX_POSITIONS = 5  # 최대 포지션 수
+GPT_TRADING_CONF_THRESHOLD = 0.7  # 매매 신뢰도 임계값
+GPT_MAX_INVESTMENT_PER_STOCK = 1000000  # 종목당 최대 투자금액 (원)
+GPT_STRATEGY = "balanced"  # 기본 전략 (balanced, growth, value, dividend)
+GPT_TRADING_MONITOR_INTERVAL = 30  # 모니터링 간격 (분)
+
+# 미국 주식 종목 설정
+US_STOCKS = ["AAPL", "MSFT", "GOOGL", "AMZN"]
+
 # 데이터베이스 설정
 USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"  # 데이터베이스 사용 여부
 DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # 데이터베이스 타입 (sqlite, mysql)
