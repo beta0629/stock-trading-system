@@ -94,6 +94,17 @@ KIS_REAL_TRADING = os.environ.get("KIS_REAL_TRADING", "False").lower() == "true"
 MAX_QUANTITY_PER_SYMBOL = 100  # 종목당 최대 보유 수량
 MAX_AMOUNT_PER_TRADE = 1000000  # 1회 최대 매수 금액 (원)
 
+# 기술적 지표 계산을 위한 설정
+RSI_PERIOD = 14  # RSI 계산을 위한 기간
+MACD_FAST = 12  # MACD 빠른 이동평균 기간
+MACD_SLOW = 26  # MACD 느린 이동평균 기간
+MACD_SIGNAL = 9  # MACD 시그널 기간
+BOLLINGER_PERIOD = 20  # 볼린저 밴드 계산 기간
+BOLLINGER_STD = 2.0  # 볼린저 밴드 표준편차
+MA_SHORT = 5  # 단기 이동평균 기간
+MA_MEDIUM = 20  # 중기 이동평균 기간
+MA_LONG = 60  # 장기 이동평균 기간
+
 # 데이터베이스 설정
 USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"  # 데이터베이스 사용 여부
 DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # 데이터베이스 타입 (sqlite, mysql)

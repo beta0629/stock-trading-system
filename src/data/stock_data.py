@@ -173,3 +173,78 @@ class StockData:
                 return self.us_data[symbol].iloc[-1]
         
         return None
+    
+    def get_current_price(self, symbol, market="KR"):
+        """
+        현재 주식 가격 조회
+        
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            
+        Returns:
+            float: 현재 주가
+        """
+        try:
+            if market == "KR":
+                # 국내 주식인 경우
+                if symbol not in self.kr_data or self.kr_data[symbol].empty:
+                    # 데이터가 없으면 새로 가져오기
+                    df = self.get_korean_stock_data(symbol, days=5)  # 최근 5일 데이터만 가져오기
+                else:
+                    df = self.kr_data[symbol]
+                
+                # 마지막 가격 반환
+                if not df.empty:
+                    return df['Close'].iloc[-1]
+            else:
+                # 미국 주식인 경우
+                if symbol not in self.us_data or self.us_data[symbol].empty:
+                    # 데이터가 없으면 새로 가져오기
+                    df = self.get_us_stock_data(symbol, days=5)  # 최근 5일 데이터만 가져오기
+                else:
+                    df = self.us_data[symbol]
+                
+                # 마지막 가격 반환
+                if not df.empty:
+                    return df['Close'].iloc[-1]
+            
+            # 데이터를 가져올 수 없는 경우 실시간 API 직접 호출 시도
+            logger.warning(f"{symbol} 현재가 조회를 위한 API 직접 호출 시도")
+            
+            if market == "KR" and hasattr(self.config, 'BROKER_TYPE') and self.config.BROKER_TYPE == "KIS":
+                # KIS API를 통한 현재가 조회 시도 (설정되어 있는 경우)
+                from ..trading.kis_api import KISAPI
+                try:
+                    kis_api = KISAPI(self.config)
+                    if kis_api.connect():
+                        current_price = kis_api.get_current_price(symbol)
+                        logger.info(f"KIS API로 {symbol} 현재가 조회 성공: {current_price}")
+                        return current_price
+                except Exception as api_error:
+                    logger.error(f"KIS API 현재가 조회 실패: {api_error}")
+            
+            # 실시간 API 조회 실패 시 기본값 반환
+            logger.error(f"{symbol} 현재가 조회 실패")
+            return 0
+            
+        except Exception as e:
+            logger.error(f"{symbol} 현재가 조회 중 오류 발생: {e}")
+            return 0
+    
+    def get_historical_data(self, symbol, market="KR", days=90):
+        """
+        과거 주식 데이터 조회
+        
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            days: 데이터를 가져올 기간 (일)
+            
+        Returns:
+            DataFrame: 주가 데이터
+        """
+        if market == "KR":
+            return self.get_korean_stock_data(symbol, days)
+        else:
+            return self.get_us_stock_data(symbol, days)
