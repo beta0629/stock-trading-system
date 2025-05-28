@@ -107,40 +107,62 @@ class StockAnalysisSystem:
     def init_trading_system(self):
         """자동 매매 시스템 초기화"""
         try:
-            # CI 환경에서는 간소화된 초기화
-            if os.environ.get('CI') == 'true':
-                logger.info("CI 환경에서 실행 중입니다. 자동 매매 시스템을 제한된 모드로 초기화합니다.")
-                self.auto_trading_enabled = False
-                return False
+            # CI 환경에서는 특별한 설정으로 초기화
+            is_ci = os.environ.get('CI') == 'true'
+            if is_ci:
+                logger.info("CI 환경에서 실행 중입니다. 자동 매매 시스템을 특수 모드로 초기화합니다.")
+                # CI 환경에서도 자동 매매 기능 유지
+                self.auto_trading_enabled = True
                 
-            # 실제 환경에서 정상 초기화
-            if self.config.BROKER_TYPE == "KIS":
-                self.broker_api = KISAPI(self.config)
-                logger.info("한국투자증권 API 초기화 완료")
-            else:
-                logger.error(f"지원하지 않는 증권사 유형: {self.config.BROKER_TYPE}")
-                self.auto_trading_enabled = False
-                return False
+            # 증권사 API 초기화
+            try:
+                if self.config.BROKER_TYPE == "KIS":
+                    self.broker_api = KISAPI(self.config)
+                    logger.info("한국투자증권 API 초기화 완료")
+                else:
+                    logger.error(f"지원하지 않는 증권사 유형: {self.config.BROKER_TYPE}")
+                    self.auto_trading_enabled = False
+                    return False
+            except Exception as broker_error:
+                logger.error(f"브로커 API 초기화 실패: {broker_error}")
+                # CI 환경에서는 브로커 API 초기화 실패를 허용하고 진행
+                if is_ci:
+                    logger.info("CI 환경에서는 브로커 API 오류를 무시하고 계속 진행합니다.")
+                    self.broker_api = None  # 더미 브로커 객체
+                else:
+                    self.auto_trading_enabled = False
+                    return False
                 
-            # 필수 구성요소가 초기화되었는지 확인
+            # 필수 구성요소 초기화 확인
             if not hasattr(self, 'stock_data') or not self.stock_data:
-                logger.error("stock_data가 초기화되지 않았습니다.")
-                self.auto_trading_enabled = False
-                return False
+                # 필요한 객체 재생성
+                logger.info("stock_data 객체 초기화")
+                self.stock_data = StockData(self.config)
                 
             if not hasattr(self, 'gpt_trading_strategy') or not self.gpt_trading_strategy:
-                logger.error("gpt_trading_strategy가 초기화되지 않았습니다.")
-                self.auto_trading_enabled = False
-                return False
+                # 필요한 객체 재생성
+                logger.info("gpt_trading_strategy 객체 초기화")
+                self.gpt_trading_strategy = GPTTradingStrategy(self.config)
             
-            # AutoTrader 초기화 시 필요한 인자 모두 전달
+            # 알림 발송 객체 확인
+            notifier = self.telegram_sender
+            if self.use_kakao and self.kakao_sender:
+                notifier = self.kakao_sender
+            
+            # AutoTrader 초기화
             self.auto_trader = AutoTrader(
                 config=self.config, 
                 broker=self.broker_api,
-                data_provider=self.stock_data,  # StockData 객체를 data_provider로 전달
-                strategy_provider=self.gpt_trading_strategy,  # GPTTradingStrategy 객체를 strategy_provider로 전달
-                notifier=self.telegram_sender if not self.use_kakao else self.kakao_sender  # 알림 발송 객체 설정
+                data_provider=self.stock_data,
+                strategy_provider=self.gpt_trading_strategy,
+                notifier=notifier
             )
+            
+            # CI 환경에서 시뮬레이션 모드로 강제 설정
+            if is_ci:
+                self.auto_trader.simulation_mode = True
+                logger.info("CI 환경에서는 시뮬레이션 모드로 자동매매 시스템이 작동합니다.")
+                
             logger.info("자동 매매 시스템 초기화 완료")
             return True
             
@@ -501,8 +523,8 @@ class StockAnalysisSystem:
         us_market_schedule = get_market_schedule(date=None, market="US", config=self.config)
         if us_market_schedule['is_open'] and us_market_schedule['close_time'] is not None:
             closing_time = us_market_schedule['close_time'].time()
-            # datetime 직접 사용 대신 time_utils 함수 사용
-            current_time = get_current_time(tz=self.config.EST).time()
+            # 시간대 설정 - 호환성을 위해 timezone 매개변수 사용
+            current_time = get_current_time(timezone=self.config.EST).time()
             
             # 마감 30분 전인지 확인
             closing_time_hour = closing_time.hour
