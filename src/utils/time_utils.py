@@ -14,6 +14,18 @@ import config
 KST = pytz.timezone('Asia/Seoul')
 EST = pytz.timezone('US/Eastern')
 
+def now(timezone=KST):
+    """
+    현재 시간을 지정된 시간대로 반환 (get_current_time의 별칭)
+    
+    Args:
+        timezone: 시간대 (기본값: KST)
+        
+    Returns:
+        datetime: 현재 시간 (해당 시간대)
+    """
+    return get_current_time(timezone)
+
 def get_current_time(timezone=KST):
     """
     현재 시간을 지정된 시간대로 반환
