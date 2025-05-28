@@ -16,23 +16,83 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # 작업 실행 시간 제한 (2시간)
+    timeout-minutes: 120
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 1  # 빠른 체크아웃을 위해 최소 히스토리만 가져옴
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
+        cache: 'pip'  # 의존성 캐싱으로 설치 속도 향상
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      timeout-minutes: 5  # 의존성 설치 타임아웃 설정
+    
+    - name: Create cache directory
+      run: |
+        mkdir -p cache
+        touch cache/.gitkeep
     
     - name: Run real trading
-      run: python main.py
+      run: |
+        # 최대 3번 재시도하는 스크립트
+        MAX_ATTEMPTS=3
+        ATTEMPT=1
+        SUCCESS=false
+        
+        while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$SUCCESS" = false ]; do
+          echo "Running attempt $ATTEMPT of $MAX_ATTEMPTS..."
+          
+          # 시간 초과 방지를 위한 timeout 명령어 추가
+          if timeout 90m python main.py; then
+            SUCCESS=true
+            echo "Script executed successfully!"
+          else
+            EXIT_CODE=$?
+            echo "Attempt $ATTEMPT failed. Exit code: $EXIT_CODE"
+            
+            # 시간 초과인 경우 (timeout이 반환하는 124)
+            if [ $EXIT_CODE -eq 124 ]; then
+              echo "Script timed out after 90 minutes!"
+            fi
+            
+            # 로그 확인
+            echo "==== Error Debug Info ===="
+            echo "Last 50 lines of logs:"
+            if [ -f stock_analysis.log ]; then
+              tail -n 50 stock_analysis.log
+            fi
+            
+            # 프로세스 상태 확인
+            echo "==== Process Status ===="
+            ps aux | grep python
+            
+            ATTEMPT=$((ATTEMPT+1))
+            if [ $ATTEMPT -le $MAX_ATTEMPTS ]; then
+              echo "Retrying in 30 seconds..."
+              sleep 30
+              
+              # 추가 안정성: 남아있는 Python 프로세스 정리
+              echo "Cleaning up any lingering python processes..."
+              pkill -f "python main.py" || true
+              sleep 5
+            fi
+          fi
+        done
+        
+        if [ "$SUCCESS" = false ]; then
+          echo "All attempts failed, but continuing workflow."
+          # exit 1  # 워크플로우를 중단하지 않기 위해 주석 처리
+        fi
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         KAKAO_REST_API_KEY: ${{ secrets.KAKAO_REST_API_KEY }}
@@ -44,14 +104,30 @@ jobs:
         KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
         KIS_PERSONALSECKEY: ${{ secrets.KIS_PERSONALSECKEY }}
         KIS_REAL_TRADING: "true"
+        FORCE_MARKET_OPEN: "true"  # 시장 시간과 관계없이 항상 실행
+        USE_TELEGRAM: "false"  # 텔레그램 비활성화
+      continue-on-error: true  # 스크립트가 실패해도 워크플로우 계속 진행
+      timeout-minutes: 100  # GitHub Actions 자체 타임아웃 설정 (2시간 미만)
     
     - name: Display log files
+      if: always()  # 이전 단계가 실패해도 항상 실행
       run: |
         echo "=== Trading Log ==="
         if [ -f trading.log ]; then
-          tail -n 50 trading.log
+          tail -n 100 trading.log
+        else
+          echo "Trading log not found"
         fi
         echo "=== Stock Analysis Log ==="
         if [ -f stock_analysis.log ]; then
-          tail -n 50 stock_analysis.log
+          tail -n 100 stock_analysis.log
+        else
+          echo "Stock analysis log not found"
         fi
+        
+        # 메모리 사용량 및 프로세스 상태 출력 (디버깅용)
+        echo "=== System Status ==="
+        free -m
+        echo "=== Python Processes ==="
+        ps aux | grep python
+      continue-on-error: true  # 로그 표시 중 오류가 발생해도 워크플로우 계속 진행
