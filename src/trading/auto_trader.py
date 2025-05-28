@@ -208,14 +208,77 @@ class AutoTrader:
         try:
             # 증권사 API에서 포지션 정보 가져오기
             if not self.simulation_mode:
-                positions = self.broker.get_positions()
+                positions_list = self.broker.get_positions()
+                
+                # 포지션 형식 변환 (리스트 -> 딕셔너리)
+                positions = {}
+                for position in positions_list:
+                    # "종목코드" 필드를 찾아서 symbol로 사용
+                    if "종목코드" in position:
+                        symbol = position["종목코드"]
+                        symbol_name = position.get("종목명", symbol)
+                        quantity = position.get("보유수량", 0)
+                        avg_price = position.get("평균단가", 0)
+                        current_price = position.get("현재가", 0)
+                        current_value = position.get("평가금액", 0)
+                        profit_loss = position.get("손익금액", 0)
+                        
+                        # 손익률 계산
+                        profit_loss_pct = 0
+                        if avg_price > 0:
+                            profit_loss_pct = ((current_price / avg_price) - 1) * 100
+                            
+                        # 포지션 데이터 구조 변환
+                        positions[symbol] = {
+                            'symbol': symbol,
+                            'symbol_name': symbol_name,
+                            'quantity': quantity,
+                            'avg_price': avg_price,
+                            'current_price': current_price,
+                            'current_value': current_value,
+                            'profit_loss': profit_loss,
+                            'profit_loss_pct': profit_loss_pct,
+                            'market': 'KR'  # 기본값으로 KR 설정
+                        }
+                
                 self.positions = positions
                 logger.info(f"포지션 로드 완료: {len(self.positions)}개 종목 보유 중")
             else:
                 # 모의 투자 모드에서도 실제 포지션을 불러옵니다
                 try:
-                    positions = self.broker.get_positions()
-                    if positions:
+                    positions_list = self.broker.get_positions()
+                    if positions_list:
+                        # 포지션 형식 변환 (리스트 -> 딕셔너리)
+                        positions = {}
+                        for position in positions_list:
+                            # "종목코드" 필드를 찾아서 symbol로 사용
+                            if "종목코드" in position:
+                                symbol = position["종목코드"]
+                                symbol_name = position.get("종목명", symbol)
+                                quantity = position.get("보유수량", 0)
+                                avg_price = position.get("평균단가", 0)
+                                current_price = position.get("현재가", 0)
+                                current_value = position.get("평가금액", 0)
+                                profit_loss = position.get("손익금액", 0)
+                                
+                                # 손익률 계산
+                                profit_loss_pct = 0
+                                if avg_price > 0:
+                                    profit_loss_pct = ((current_price / avg_price) - 1) * 100
+                                    
+                                # 포지션 데이터 구조 변환
+                                positions[symbol] = {
+                                    'symbol': symbol,
+                                    'symbol_name': symbol_name,
+                                    'quantity': quantity,
+                                    'avg_price': avg_price,
+                                    'current_price': current_price,
+                                    'current_value': current_value,
+                                    'profit_loss': profit_loss,
+                                    'profit_loss_pct': profit_loss_pct,
+                                    'market': 'KR'  # 기본값으로 KR 설정
+                                }
+                        
                         self.positions = positions
                         logger.info(f"모의 투자 포지션 로드 완료: {len(self.positions)}개 종목 보유 중")
                     else:

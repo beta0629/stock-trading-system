@@ -112,8 +112,14 @@ jobs:
       - name: API 연결 테스트
         run: |
           echo "한국투자증권 API 연결 테스트 중..."
-          python test_kis_connection.py || echo "API 테스트 실패. 매매 과정에서 문제가 발생할 수 있습니다."
+          python kis_auth.py --check-connection || echo "API 테스트 실패. 매매 과정에서 문제가 발생할 수 있습니다."
         continue-on-error: true  # API 실패해도 워크플로우 계속 진행
+
+      - name: 데이터베이스 상태 확인
+        run: |
+          echo "데이터베이스 상태 확인 중..."
+          python -c "from src.database.db_manager import DatabaseManager; dm = DatabaseManager.get_instance(); print(f'포트폴리오 항목 수: {len(dm.get_portfolio())}개')"
+        continue-on-error: true  # 실패해도 워크플로우 계속 진행
 
       - name: 자동매매 실행 (main.py)
         env:
