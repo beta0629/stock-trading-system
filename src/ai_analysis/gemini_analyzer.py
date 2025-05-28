@@ -320,24 +320,29 @@ class GeminiAnalyzer:
                 chatgpt_analyzer = ChatGPTAnalyzer(self.config)
                 if chatgpt_analyzer.api_key:
                     chatgpt_available = True
-            except ImportError:
-                logger.debug("ChatGPTAnalyzer를 불러올 수 없습니다.")
+            except (ImportError, Exception) as e:
+                logger.debug(f"ChatGPTAnalyzer를 불러올 수 없거나 초기화 중 오류 발생: {e}")
                 
             # 기존 분석 대신 ChatGPT 분석기 사용
             if chatgpt_available:
-                logger.info(f"Gemini 대신 ChatGPT 분석기로 대체: {symbol}")
-                result = chatgpt_analyzer.analyze_stock(df, symbol, analysis_type, additional_info)
-                result["note"] = f"Gemini API {error_reason}로 ChatGPT 분석기로 대체되었습니다."
-                return result
+                try:
+                    logger.info(f"Gemini 대신 ChatGPT 분석기로 대체: {symbol}")
+                    result = chatgpt_analyzer.analyze_stock(df, symbol, analysis_type, additional_info)
+                    result["note"] = f"Gemini API {error_reason}로 ChatGPT 분석기로 대체되었습니다."
+                    return result
+                except Exception as e:
+                    logger.error(f"ChatGPT 분석기 사용 중 오류 발생: {e}")
+                    logger.info("기본 규칙 기반 분석으로 전환합니다.")
+                    # ChatGPT 분석 실패 시 아래의 기본 분석 계속 진행
                 
-            # ChatGPT도 사용 불가능할 경우 간단한 자체 분석
+            # ChatGPT도 사용 불가능하거나 실패한 경우 간단한 자체 분석
             data = self._prepare_data_for_analysis(df, symbol, additional_info)
             
             # RSI 기반 단순 분석
-            rsi = data['indicators']['rsi']
-            price_change_5d = data['statistics']['price_change_5d']
-            sma_short = data['indicators']['sma_short']
-            sma_long = data['indicators']['sma_long']
+            rsi = data['indicators']['rsi'] if 'indicators' in data and 'rsi' in data['indicators'] else None
+            price_change_5d = data['statistics']['price_change_5d'] if 'statistics' in data and 'price_change_5d' in data['statistics'] else 0
+            sma_short = data['indicators']['sma_short'] if 'indicators' in data and 'sma_short' in data['indicators'] else None
+            sma_long = data['indicators']['sma_long'] if 'indicators' in data and 'sma_long' in data['indicators'] else None
             
             analysis_text = f"[자동 생성된 기본 분석 - Gemini API {error_reason}]\n\n"
             analysis_text += f"{symbol} 종목 분석:\n"
@@ -380,11 +385,13 @@ class GeminiAnalyzer:
             
         except Exception as e:
             logger.error(f"대체 분석 생성 중 오류 발생: {e}")
+            # 오류가 발생해도 최소한의 정보는 반환하여 서비스 중단 방지
             return {
                 "symbol": symbol,
                 "error": f"{error_reason} 및 대체 분석 생성 실패: {str(e)}",
                 "analysis": f"분석 서비스 이용이 일시적으로 불가능합니다. (원인: Gemini API {error_reason})",
-                "timestamp": get_current_time_str()
+                "timestamp": get_current_time_str(),
+                "fallback": True
             }
     
     def analyze_signals(self, signal_data):
