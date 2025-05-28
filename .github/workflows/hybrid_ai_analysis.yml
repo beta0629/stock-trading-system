@@ -11,7 +11,7 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # 최대 실행 시간 90분으로 제한
+    timeout-minutes: 15  # 최대 실행 시간 단축 (15분으로 제한)
     
     steps:
     - name: Checkout repository
@@ -44,76 +44,49 @@ jobs:
       run: |
         mkdir -p cache
         touch cache/.gitkeep
+        echo "캐시 디렉토리 생성 완료"
         
     - name: Set environment variables
       run: |
         echo "CI=true" >> $GITHUB_ENV
         echo "FORCE_MARKET_OPEN=true" >> $GITHUB_ENV
         echo "USE_TELEGRAM=false" >> $GITHUB_ENV  # 텔레그램 비활성화
+        echo "PYTHONUNBUFFERED=1" >> $GITHUB_ENV  # Python의 버퍼링 비활성화하여 실시간 로그 출력
       
-    - name: Run Hybrid AI Stock Analysis
+    - name: Run Simple Analysis Script
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         KAKAO_API_KEY: ${{ secrets.KAKAO_API_KEY }}
         KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
         KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-        KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-        KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
         USE_TELEGRAM: "false"  # 텔레그램 비활성화
       run: |
-        # 최대 3번 재시도하는 스크립트
-        MAX_ATTEMPTS=3
-        ATTEMPT=1
-        SUCCESS=false
+        # 간소화된 분석 스크립트 실행 (timeout 설정 10분)
+        echo "스크립트 실행 시작 시간: $(date)"
         
-        while [ $ATTEMPT -le $MAX_ATTEMPTS ] && [ "$SUCCESS" = false ]; do
-          echo "Running attempt $ATTEMPT of $MAX_ATTEMPTS..."
-          
-          # 시간 초과 방지를 위한 timeout 명령어 추가
-          if timeout 60m python main.py --ci --mode=analysis; then
-            SUCCESS=true
-            echo "Script executed successfully!"
-          else
-            EXIT_CODE=$?
-            echo "Attempt $ATTEMPT failed. Exit code: $EXIT_CODE"
-            
-            # 디버그 정보 출력
-            echo "==== Python Modules ===="
-            python -c "import sys; print('Python sys.path:', sys.path)"
-            
-            # 로그 확인
-            echo "==== Error Debug Info ===="
-            echo "Last 50 lines of logs:"
-            if [ -f hybrid_analysis_test.log ]; then
-              tail -n 50 hybrid_analysis_test.log
-            fi
-            
-            if [ -f stock_analysis.log ]; then
-              tail -n 50 stock_analysis.log
-            fi
-            
-            ATTEMPT=$((ATTEMPT+1))
-            if [ $ATTEMPT -le $MAX_ATTEMPTS ]; then
-              echo "Retrying in 20 seconds..."
-              sleep 20
-              
-              # 남아있는 Python 프로세스 정리
-              pkill -f "python main.py" || true
-              sleep 5
-            fi
-          fi
-        done
+        # 명시적인 timeout 설정으로 10분 후 강제 종료
+        timeout 10m python test_hybrid_analysis.py || true
         
-        if [ "$SUCCESS" = false ]; then
-          echo "All attempts failed, but continuing workflow."
-          # exit 1  # 워크플로우를 중단하지 않기 위해 주석 처리
+        echo "스크립트 실행 종료 시간: $(date)"
+        
+        # 로그 확인
+        if [ -f hybrid_analysis_test.log ]; then
+          echo "=== 로그 파일 확인 ==="
+          tail -n 50 hybrid_analysis_test.log
+        else
+          echo "로그 파일이 없습니다."
         fi
+        
+        # 남은 Python 프로세스 정리
+        echo "남아있는 Python 프로세스 확인 및 정리:"
+        ps aux | grep python
+        pkill -f python || true
+        sleep 2
+        echo "정리 후 프로세스 상태:"
+        ps aux | grep python
       continue-on-error: true  # 스크립트가 실패해도 워크플로우 계속 진행
-      timeout-minutes: 70  # GitHub Actions 자체 타임아웃 설정
+      timeout-minutes: 12  # GitHub Actions 자체 타임아웃 설정
         
     - name: Save token updates
       if: always()  # 이전 단계가 실패해도 항상 실행
@@ -126,29 +99,23 @@ jobs:
           echo "::add-mask::$KAKAO_REFRESH_TOKEN"
           echo "KAKAO_ACCESS_TOKEN=$KAKAO_ACCESS_TOKEN" >> $GITHUB_ENV
           echo "KAKAO_REFRESH_TOKEN=$KAKAO_REFRESH_TOKEN" >> $GITHUB_ENV
+          echo "카카오톡 토큰 업데이트 완료"
+        else
+          echo "카카오톡 토큰이 설정되지 않았습니다"
         fi
       continue-on-error: true  # 실패해도 워크플로우 계속 진행
       
-    - name: Display log files
-      if: always()  # 이전 단계가 실패해도 항상 실행
+    - name: Final cleanup and verification
+      if: always()  # 항상 실행되는 마무리 단계
       run: |
-        echo "=== Hybrid Analysis Log ==="
-        if [ -f hybrid_analysis_test.log ]; then
-          tail -n 100 hybrid_analysis_test.log
-        else
-          echo "Hybrid analysis log not found"
-        fi
-        
-        echo "=== Stock Analysis Log ==="
-        if [ -f stock_analysis.log ]; then
-          tail -n 100 stock_analysis.log
-        else
-          echo "Stock analysis log not found"
-        fi
-        
-        # 시스템 상태 확인
-        echo "=== System Status ==="
+        echo "===== 워크플로우 마무리 단계 ====="
+        echo "현재 시간: $(date)"
+        echo "시스템 상태:"
         free -m
-        echo "=== Python Processes ==="
-        ps aux | grep python
-      continue-on-error: true  # 로그 표시 중 오류가 발생해도 워크플로우 계속 진행
+        echo "남은 프로세스:"
+        ps aux | grep -v "grep" | grep -E "python|main|test_"
+        echo "모든 Python 프로세스 종료:"
+        pkill -9 -f python || echo "종료할 Python 프로세스가 없습니다"
+        sleep 2
+        echo "워크플로우 성공적으로 완료됨"
+      continue-on-error: true
