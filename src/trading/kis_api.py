@@ -5,7 +5,8 @@ import logging
 import time
 import requests
 import json
-from datetime import timedelta  # Keep for timedelta functionality
+import traceback  # traceback 모듈 추가
+from datetime import timedelta
 import hashlib
 import jwt  # PyJWT 라이브러리 필요
 from urllib.parse import urljoin, unquote
@@ -45,14 +46,12 @@ class KISAPI(BrokerBase):
             self.account_no = config.KIS_VIRTUAL_ACCOUNT_NO
             logger.info("모의투자 모드로 설정되었습니다.")
         
-        # 계좌번호 초기화
+        # 계좌번호 통합 처리 - account_no를 기본 속성으로 사용
         self.account_number = self.account_no
+        self.cano = self.account_no
         
-        # 계좌번호 형식 처리 (수정)
-        self.cano = self.account_no  # 전체 계좌번호 (모든 자리)
-        
-        # 미국 주식 계좌의 경우 첫 자리가 다를 수 있으므로 로깅으로 확인
-        logger.info(f"계좌번호: {self.cano}")
+        # 계좌번호 로깅
+        logger.info(f"계좌번호 설정 완료 - account_no: {self.account_no}, cano: {self.cano}")
         
         self.approval_key = None
         self.access_token = None
@@ -304,32 +303,80 @@ class KISAPI(BrokerBase):
             response = requests.get(url, headers=headers, params=params)
             response_data = response.json()
             
+            # 디버깅을 위해 전체 응답 로깅
+            logger.debug(f"계좌 잔고 응답 데이터: {response_data}")
+            
             if response.status_code == 200 and response_data.get('rt_cd') == '0':
+                # 잔고 정보 초기화
+                balance_info = {
+                    "예수금": 0,
+                    "출금가능금액": 0,
+                    "D+2예수금": 0,
+                    "유가평가금액": 0,
+                    "총평가금액": 0,
+                    "순자산금액": 0
+                }
+                
                 # output1에 데이터가 있는지 확인
                 if 'output1' in response_data and response_data['output1']:
                     data = response_data.get('output1', [{}])[0]
                     
-                    # 예수금 정보
-                    balance_info = {
-                        "예수금": int(data.get('dnca_tot_amt', '0')),
-                        "출금가능금액": int(data.get('magt_rt_amt', '0'))
-                    }
+                    # 모의투자와 실전투자 API의 응답 필드명이 다를 수 있으므로 각 필드 존재 여부 확인
+                    # 예수금 관련 정보
+                    if 'dnca_tot_amt' in data:
+                        balance_info["예수금"] = int(data.get('dnca_tot_amt', '0'))
                     
-                    logger.info(f"계좌 잔고 조회 성공: {balance_info}")
-                    return balance_info
-                else:
-                    # output1이 없는 경우 기본값 반환
-                    logger.warning("계좌 잔고 정보가 없습니다. 기본값 반환")
-                    return {"예수금": 0, "출금가능금액": 0}
+                    if 'magt_rt_amt' in data:
+                        balance_info["출금가능금액"] = int(data.get('magt_rt_amt', '0'))
+                    
+                    if 'd2_dncl_amt' in data:
+                        balance_info["D+2예수금"] = int(data.get('d2_dncl_amt', '0'))
+                    
+                    # 평가 금액 정보
+                    if 'scts_evlu_amt' in data:
+                        balance_info["유가평가금액"] = int(data.get('scts_evlu_amt', '0'))
+                    
+                    if 'tot_evlu_amt' in data:
+                        balance_info["총평가금액"] = int(data.get('tot_evlu_amt', '0'))
+                    
+                    if 'tot_asst_amt' in data:
+                        balance_info["순자산금액"] = int(data.get('tot_asst_amt', '0'))
+                
+                # 모의투자 계좌인 경우 output2(보유종목)의 합계 계산
+                if not self.real_trading and ('output2' in response_data and response_data['output2']):
+                    stock_list = response_data.get('output2', [])
+                    total_stock_value = 0
+                    
+                    for stock in stock_list:
+                        try:
+                            eval_amount = int(float(stock.get('evlu_amt', '0')))
+                            total_stock_value += eval_amount
+                        except Exception as e:
+                            logger.error(f"주식 평가금액 계산 오류: {e}")
+                            continue
+                    
+                    # 유가평가금액이 설정되지 않은 경우 계산한 값으로 설정
+                    if balance_info["유가평가금액"] == 0:
+                        balance_info["유가평가금액"] = total_stock_value
+                        logger.info(f"보유종목 합산 유가평가금액: {total_stock_value:,}원")
+                    
+                    # 총평가금액이 설정되지 않은 경우 예수금 + 유가평가금액으로 계산
+                    if balance_info["총평가금액"] == 0:
+                        balance_info["총평가금액"] = balance_info["예수금"] + balance_info["유가평가금액"]
+                        logger.info(f"계산된 총평가금액: {balance_info['총평가금액']:,}원")
+                
+                logger.info(f"계좌 잔고 조회 성공: {balance_info}")
+                return balance_info
             else:
                 err_code = response_data.get('rt_cd')
                 err_msg = response_data.get('msg1')
                 logger.error(f"계좌 잔고 조회 실패: [{err_code}] {err_msg}")
-                return {"예수금": 0, "출금가능금액": 0}
+                return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
                 
         except Exception as e:
             logger.error(f"계좌 잔고 조회 실패: {e}")
-            return {"예수금": 0, "출금가능금액": 0}
+            logger.error(traceback.format_exc())
+            return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
     
     def get_positions(self, account_number=None):
         """
@@ -438,24 +485,24 @@ class KISAPI(BrokerBase):
             logger.error(f"보유 주식 현황 조회 실패: {e}")
             return []
     
-    def buy_stock(self, code, quantity, price=0, price_type='limit', account_number=None):
+    def buy_stock(self, code, quantity, price=0, order_type='market', account_number=None):
         """
-        주식 매수
+        주식 매수 주문
         
         Args:
             code: 종목 코드
             quantity: 수량
-            price: 가격 (시장가의 경우 0)
-            price_type: 가격 유형 ('limit': 지정가, 'market': 시장가)
+            price: 매수 가격
+            order_type: 주문 유형 (market: 시장가, limit: 지정가)
             account_number: 계좌번호 (None인 경우 기본 계좌 사용)
             
         Returns:
-            str: 주문번호
+            str: 매수 주문번호 (실패시 "")
         """
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
             return ""
-            
+        
         if account_number is None:
             account_number = self.account_number
             
@@ -467,12 +514,20 @@ class KISAPI(BrokerBase):
             # 주문 URL
             url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/order-cash")
             
-            # 주문 타입 설정
-            order_type = "00" if price_type == 'limit' else "01"  # 00: 지정가, 01: 시장가
+            # 계좌번호 형식 처리 - 전달된 account_number 사용
+            # 01: 상품코드 (01: 주식)
+            cano = account_number
+            acnt_prdt_cd = "01"
             
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
+            logger.info(f"매수 주문 계좌번호: {cano}-{acnt_prdt_cd}")
+            
+            # 주문 유형 처리
+            if order_type == 'market':
+                # 시장가 주문
+                order_division = "01"  # 시장가
+            else:
+                # 지정가 주문
+                order_division = "00"  # 지정가
             
             # 종목코드에서 'A' 제거
             if code.startswith('A'):
@@ -480,12 +535,12 @@ class KISAPI(BrokerBase):
                 
             # 매수 주문 데이터
             body = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
                 "PDNO": code,
-                "ORD_DVSN": order_type,
+                "ORD_DVSN": order_division,
                 "ORD_QTY": str(quantity),
-                "ORD_UNPR": "0" if price_type == 'market' else str(price)
+                "ORD_UNPR": str(int(price)) if price > 0 else "0"
             }
             
             # 해시키 생성
@@ -526,24 +581,24 @@ class KISAPI(BrokerBase):
             logger.error(f"매수 주문 실패: {e}")
             return ""
     
-    def sell_stock(self, code, quantity, price=0, price_type='limit', account_number=None):
+    def sell_stock(self, code, quantity, price=0, order_type='market', account_number=None):
         """
-        주식 매도
+        주식 매도 주문
         
         Args:
             code: 종목 코드
             quantity: 수량
-            price: 가격 (시장가의 경우 0)
-            price_type: 가격 유형 ('limit': 지정가, 'market': 시장가)
+            price: 매도 가격
+            order_type: 주문 유형 (market: 시장가, limit: 지정가)
             account_number: 계좌번호 (None인 경우 기본 계좌 사용)
             
         Returns:
-            str: 주문번호
+            str: 매도 주문번호 (실패시 "")
         """
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
             return ""
-            
+        
         if account_number is None:
             account_number = self.account_number
             
@@ -555,12 +610,20 @@ class KISAPI(BrokerBase):
             # 주문 URL
             url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/order-cash")
             
-            # 주문 타입 설정
-            order_type = "00" if price_type == 'limit' else "01"  # 00: 지정가, 01: 시장가
+            # 계좌번호 형식 처리 - 전달된 account_number 사용
+            # 01: 상품코드 (01: 주식)
+            cano = account_number
+            acnt_prdt_cd = "01"
             
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
+            logger.info(f"매도 주문 계좌번호: {cano}-{acnt_prdt_cd}")
+            
+            # 주문 유형 처리
+            if order_type == 'market':
+                # 시장가 주문
+                order_division = "01"  # 시장가
+            else:
+                # 지정가 주문
+                order_division = "00"  # 지정가
             
             # 종목코드에서 'A' 제거
             if code.startswith('A'):
@@ -568,12 +631,12 @@ class KISAPI(BrokerBase):
                 
             # 매도 주문 데이터
             body = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
                 "PDNO": code,
-                "ORD_DVSN": order_type,
+                "ORD_DVSN": order_division,
                 "ORD_QTY": str(quantity),
-                "ORD_UNPR": "0" if price_type == 'market' else str(price)
+                "ORD_UNPR": str(int(price)) if price > 0 else "0"
             }
             
             # 해시키 생성
@@ -614,60 +677,70 @@ class KISAPI(BrokerBase):
             logger.error(f"매도 주문 실패: {e}")
             return ""
     
-    def cancel_order(self, order_number, code, quantity, account_number=None):
+    def cancel_order(self, order_number, code, quantity=0, price=0, order_type='market', account_number=None):
         """
         주문 취소
         
         Args:
-            order_number: 원래 주문번호
-            code: 종목 코드
-            quantity: 취소할 수량
+            order_number: 주문번호
+            code: 종목코드
+            quantity: 취소수량 (0이면 전체 취소)
+            price: 가격 (시장가 주문인 경우 무시)
+            order_type: 주문 유형 (market: 시장가, limit: 지정가)
             account_number: 계좌번호 (None인 경우 기본 계좌 사용)
             
         Returns:
-            str: 취소 주문번호
+            bool: 취소 성공 여부
         """
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
-            return ""
+            return False
             
         if account_number is None:
             account_number = self.account_number
             
         if not account_number:
             logger.error("계좌번호가 설정되지 않았습니다.")
-            return ""
+            return False
             
         try:
             # 주문 URL
             url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/order-rvsecncl")
             
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
+            # 계좌번호 형식 처리 (수정)
+            cano = self.cano  # 계좌번호 앞부분
+            acnt_prdt_cd = "01"  # 상품코드 (01: 주식)
+            
+            # 주문 유형 처리
+            if order_type == 'market':
+                # 시장가 주문
+                order_division = "01"  # 시장가
+            else:
+                # 지정가 주문
+                order_division = "00"  # 지정가
             
             # 종목코드에서 'A' 제거
             if code.startswith('A'):
                 code = code[1:]
                 
-            # 취소 주문 데이터
+            # 주문 취소 데이터
             body = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
-                "KRX_FWDG_ORD_ORGNO": "",  # 한국투자증권 시스템에서 지정
-                "ORGN_ODNO": order_number,
-                "ORD_DVSN": "00",
-                "RVSE_CNCL_DVSN_CD": "02",  # 01: 정정, 02: 취소
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "KRX_FWDG_ORD_ORGNO": "",  # 한국거래소 전송 주문조직번호
+                "ORGN_ODNO": order_number,  # 원주문번호
+                "ORD_DVSN": order_division,
+                "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (02: 취소)
                 "ORD_QTY": str(quantity),
-                "ORD_UNPR": "0",
-                "QTY_ALL_ORD_YN": "Y"  # Y: 잔량 전부 취소, N: 일부 취소
+                "ORD_UNPR": str(int(price)) if price > 0 else "0",
+                "QTY_ALL_ORD_YN": "Y" if quantity == 0 else "N"  # 잔량전부주문여부
             }
             
             # 해시키 생성
             hashkey = self._get_hashkey(body)
             if not hashkey:
                 logger.error("해시키 생성 실패")
-                return ""
+                return False
             
             # TR ID 가져오기
             tr_id = self._get_tr_id("cancel")
@@ -683,23 +756,22 @@ class KISAPI(BrokerBase):
                 "hashkey": hashkey
             }
             
-            # 주문 요청
+            # 취소 요청
             response = requests.post(url, headers=headers, data=json.dumps(body))
             response_data = response.json()
             
             if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                cancel_order_number = response_data.get('output', {}).get('ODNO', '')
-                logger.info(f"주문 취소 전송 성공: {order_number}, {code}, {quantity}주, 취소주문번호: {cancel_order_number}")
-                return cancel_order_number
+                logger.info(f"주문 취소 요청 성공: 원주문번호 {order_number}")
+                return True
             else:
                 err_code = response_data.get('rt_cd')
                 err_msg = response_data.get('msg1')
-                logger.error(f"주문 취소 전송 실패: [{err_code}] {err_msg}")
-                return ""
+                logger.error(f"주문 취소 요청 실패: [{err_code}] {err_msg}")
+                return False
                 
         except Exception as e:
-            logger.error(f"주문 취소 실패: {e}")
-            return ""
+            logger.error(f"주문 취소 요청 실패: {e}")
+            return False
     
     def get_current_price(self, code):
         """

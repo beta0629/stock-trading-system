@@ -9,6 +9,7 @@ import sys
 import logging
 import os
 import signal
+import threading
 from datetime import timedelta  # Keep for timedelta functionality
 from src.utils.time_utils import get_current_time  # Use our time utility
 
@@ -22,6 +23,29 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('AutoRestart')
+
+# GitHub Actions 환경 감지 및 환경 변수 설정
+is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+if is_github_actions:
+    logger.info("GitHub Actions 환경이 감지되었습니다.")
+    # GitHub Actions에서는 기본적으로 MAX_RUNTIME_MINUTES를 55분으로 설정
+    # (GitHub Actions의 일반적인 작업 제한 시간은 60분)
+    if 'MAX_RUNTIME_MINUTES' not in os.environ:
+        os.environ['MAX_RUNTIME_MINUTES'] = '55'
+        logger.info("GitHub Actions 환경에서 MAX_RUNTIME_MINUTES=55로 설정했습니다.")
+    else:
+        logger.info(f"GitHub Actions 환경에서 MAX_RUNTIME_MINUTES={os.environ['MAX_RUNTIME_MINUTES']}로 설정되어 있습니다.")
+
+# GitHub Actions에서 연결 유지를 위한 활동 로그 출력 간격 (초)
+HEARTBEAT_INTERVAL = 60 if is_github_actions else None
+
+def heartbeat_thread():
+    """GitHub Actions에서 연결이 끊어지지 않도록 주기적으로 로그 출력"""
+    heartbeat_count = 0
+    while True:
+        heartbeat_count += 1
+        logger.info(f"GitHub Actions 연결 유지 신호 #{heartbeat_count} - 활성 상태 확인")
+        time.sleep(HEARTBEAT_INTERVAL)
 
 def run_with_retry(script_path, max_retries=None):
     """
@@ -41,15 +65,28 @@ def run_with_retry(script_path, max_retries=None):
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
     
+    # GitHub Actions 환경에서 하트비트 스레드 시작
+    if is_github_actions and HEARTBEAT_INTERVAL:
+        heartbeat = threading.Thread(target=heartbeat_thread, daemon=True)
+        heartbeat.start()
+        logger.info(f"GitHub Actions 연결 유지 스레드가 시작되었습니다 (간격: {HEARTBEAT_INTERVAL}초)")
+    
     while max_retries is None or retry_count < max_retries:
         start_time = get_current_time()  # Use time_utils
         logger.info(f"스크립트 실행 시작 (시도 #{retry_count + 1}): {script_path}")
         
         try:
-            # 스크립트 실행
-            process = subprocess.run([sys.executable, script_path], 
-                                    check=True)
-            exit_code = process.returncode
+            # 스크립트 실행 (환경 변수 현재 프로세스에서 상속)
+            # 출력을 캡처하지 않고 그대로 콘솔에 표시하여 장시간 무응답을 방지
+            process = subprocess.Popen(
+                [sys.executable, script_path],
+                env=os.environ,  # 환경 변수 전달
+                stdout=None,     # 표준 출력을 그대로 표시
+                stderr=None      # 표준 에러를 그대로 표시
+            )
+            
+            # 프로세스가 끝날 때까지 대기
+            exit_code = process.wait()
             
             # 정상 종료된 경우 (반환 코드 0)
             if exit_code == 0:
@@ -91,5 +128,7 @@ if __name__ == "__main__":
         script_to_run = sys.argv[1]
     
     logger.info(f"모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 시작 (대상: {script_to_run})")
-    run_with_retry(script_to_run)
+    # GitHub Actions 환경에서는 제한된 재시도 횟수를 설정 
+    max_retries = 5 if is_github_actions else None
+    run_with_retry(script_to_run, max_retries)
     logger.info("모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 종료")

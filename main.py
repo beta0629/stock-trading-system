@@ -17,6 +17,7 @@ from src.notification.telegram_sender import TelegramSender
 from src.notification.kakao_sender import KakaoSender
 from src.trading.kis_api import KISAPI
 from src.trading.auto_trader import AutoTrader
+from src.trading.gpt_auto_trader import GPTAutoTrader  # 새로 추가한 GPTAutoTrader 클래스
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
 from src.ai_analysis.gemini_analyzer import GeminiAnalyzer  # Gemini 분석기 추가
 from src.ai_analysis.hybrid_analysis_strategy import HybridAnalysisStrategy  # 하이브리드 분석 전략 추가
@@ -62,6 +63,7 @@ class StockAnalysisSystem:
         self.auto_trading_enabled = self.config.AUTO_TRADING_ENABLED
         self.broker_api = None
         self.auto_trader = None
+        self.gpt_auto_trader = None  # GPT 자동 매매 객체
         
         if self.auto_trading_enabled:
             self.init_trading_system()
@@ -168,9 +170,22 @@ class StockAnalysisSystem:
                 notifier=notifier
             )
             
+            # GPT 자동 매매 기능 초기화
+            gpt_auto_trading = getattr(self.config, 'GPT_AUTO_TRADING', True)
+            if gpt_auto_trading:
+                self.gpt_auto_trader = GPTAutoTrader(
+                    config=self.config,
+                    broker=self.broker_api,
+                    data_provider=self.stock_data,
+                    notifier=notifier
+                )
+                logger.info("GPT 기반 자동 매매 시스템 초기화 완료")
+            
             # CI 환경에서 시뮬레이션 모드로 강제 설정
             if is_ci:
                 self.auto_trader.simulation_mode = True
+                if self.gpt_auto_trader:
+                    self.gpt_auto_trader.auto_trader.simulation_mode = True
                 logger.info("CI 환경에서는 시뮬레이션 모드로 자동매매 시스템이 작동합니다.")
                 
             logger.info("자동 매매 시스템 초기화 완료")
@@ -286,6 +301,12 @@ class StockAnalysisSystem:
                 us_recommendations=us_result
             )
             
+            # GPT 자동 매매 시스템이 있으면 종목 선정 이벤트 알림
+            if self.gpt_auto_trader:
+                # 종목 선정 이후 자동으로 매매 사이클 실행
+                logger.info("GPT 종목 선정 완료 후 자동 매매 사이클 실행")
+                self.gpt_auto_trader._select_stocks()
+            
             # 종목 리스트 업데이트 확인
             updated_kr_stocks = getattr(self.config, 'KR_STOCKS', [])
             updated_us_stocks = getattr(self.config, 'US_STOCKS', [])
@@ -307,6 +328,27 @@ class StockAnalysisSystem:
         except Exception as e:
             logger.error(f"GPT 종목 선정 중 오류 발생: {e}")
             self.send_notification('status', f"❌ GPT 종목 선정 중 오류 발생: {str(e)}")
+    
+    # GPT 자동 매매 실행 메서드 추가
+    def run_gpt_trading_cycle(self):
+        """GPT 기반 자동 매매 사이클 실행"""
+        logger.info("GPT 기반 자동 매매 사이클 실행")
+        
+        try:
+            # GPT 자동 매매 시스템이 초기화되었는지 확인
+            if not self.gpt_auto_trader:
+                logger.warning("GPT 자동 매매 시스템이 초기화되지 않았습니다.")
+                return False
+                
+            # GPT 자동 매매 사이클 실행
+            self.gpt_auto_trader.run_cycle()
+            logger.info("GPT 자동 매매 사이클 완료")
+            return True
+            
+        except Exception as e:
+            logger.error(f"GPT 자동 매매 사이클 실행 중 오류 발생: {e}")
+            self.send_notification('status', f"⚠️ GPT 자동 매매 오류: {str(e)}")
+            return False
 
     def analyze_korean_stocks(self):
         """한국 주식 분석"""
@@ -744,10 +786,18 @@ class StockAnalysisSystem:
         
         # 자동 매매 시스템 시작
         trade_status = "비활성화"
+        gpt_trade_status = "비활성화"
+        
         if self.auto_trading_enabled and self.auto_trader:
             self.auto_trader.start_trading_session()
             trade_status = "활성화" if self.auto_trader.is_running else "비활성화"
             logger.info(f"자동 매매 시스템 상태: {trade_status}")
+            
+            # GPT 자동 매매 시스템 시작
+            if self.gpt_auto_trader:
+                self.gpt_auto_trader.start()
+                gpt_trade_status = "활성화" if self.gpt_auto_trader.is_running else "비활성화"
+                logger.info(f"GPT 기반 자동 매매 시스템 상태: {gpt_trade_status}")
             
             # 강제 시장 열림 설정이 활성화되어 있으면, 매매 사이클 즉시 실행
             if hasattr(self.config, 'FORCE_MARKET_OPEN') and self.config.FORCE_MARKET_OPEN:
@@ -756,6 +806,11 @@ class StockAnalysisSystem:
                     # 즉시 매매 사이클 실행
                     self.auto_trader.run_trading_cycle()
                     logger.info("초기 매매 사이클 실행 완료")
+                    
+                    # GPT 기반 매매 사이클도 실행
+                    if self.gpt_auto_trader:
+                        self.gpt_auto_trader.run_cycle()
+                        logger.info("초기 GPT 매매 사이클 실행 완료")
                 except Exception as e:
                     logger.error(f"초기 매매 사이클 실행 중 오류 발생: {e}")
         
@@ -767,6 +822,7 @@ class StockAnalysisSystem:
         start_time = get_current_time_str(format_str='%Y-%m-%d %H:%M:%S')
         start_msg = f"🚀 AI 주식 분석 시스템 시작 ({start_time})\n\n"
         start_msg += f"• 자동 매매 기능: {trade_status}\n"
+        start_msg += f"• GPT 자동 매매: {gpt_trade_status}\n"
         start_msg += f"• 카카오톡 알림: {kakao_status}\n"
         start_msg += f"• 분석 주기: 30분\n"
         start_msg += f"• 모니터링 종목 수: 국내 {len(self.config.KR_STOCKS)}개, 미국 {len(self.config.US_STOCKS)}개\n"
@@ -878,6 +934,10 @@ class StockAnalysisSystem:
         # GPT 종목 선정: 매일 오전 8시 30분 (한국 시장 오픈 전)
         schedule.every().day.at("08:30").do(self.select_stocks_with_gpt)
         
+        # GPT 자동 매매: 30분 간격으로 실행
+        gpt_trading_interval = getattr(self.config, 'GPT_TRADING_MONITOR_INTERVAL', 30)
+        schedule.every(gpt_trading_interval).minutes.do(self.run_gpt_trading_cycle)
+        
         # 메인 루프
         try:
             # 시스템 시작 시 한 번 종목 선정 실행 (API 키가 유효한 경우)
@@ -893,10 +953,17 @@ class StockAnalysisSystem:
                 schedule.run_pending()
                 
                 # 강제 시장 열림 설정이 활성화되어 있으면, 주기적으로 매매 사이클 실행
-                if hasattr(self.config, 'FORCE_MARKET_OPEN') and self.config.FORCE_MARKET_OPEN and self.auto_trading_enabled and self.auto_trader:
+                if hasattr(self.config, 'FORCE_MARKET_OPEN') and self.config.FORCE_MARKET_OPEN and self.auto_trading_enabled:
                     try:
-                        self.auto_trader.run_trading_cycle()
-                        logger.info("매매 사이클 실행 완료 (강제 실행 모드)")
+                        # 일반 매매 사이클 실행
+                        if self.auto_trader:
+                            self.auto_trader.run_trading_cycle()
+                            logger.info("매매 사이클 실행 완료 (강제 실행 모드)")
+                        
+                        # GPT 자동 매매 사이클 실행
+                        if self.gpt_auto_trader:
+                            self.gpt_auto_trader.run_cycle()
+                            logger.info("GPT 매매 사이클 실행 완료 (강제 실행 모드)")
                     except Exception as e:
                         logger.error(f"매매 사이클 실행 중 오류 발생: {e}")
                 
@@ -1029,6 +1096,10 @@ class StockAnalysisSystem:
         # 자동 매매 시스템 종료
         if self.auto_trading_enabled and self.auto_trader and hasattr(self.auto_trader, 'stop_trading_session'):
             self.auto_trader.stop_trading_session()
+            
+        # GPT 자동 매매 시스템 종료
+        if self.gpt_auto_trader and hasattr(self.gpt_auto_trader, 'stop'):
+            self.gpt_auto_trader.stop()
             
         logger.info("AI 주식 분석 시스템 종료")
         

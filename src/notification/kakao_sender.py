@@ -449,6 +449,16 @@ class KakaoSender:
         balance = trade_info.get('balance', 0)  # 계좌 잔고
         prev_quantity = trade_info.get('prev_quantity', 0)  # 매매 전 보유 수량
         
+        # 증권사 API 관련 정보 (새로 추가됨)
+        order_no = trade_info.get('order_no', '')  # 주문 번호
+        executed_price = trade_info.get('executed_price', price)  # 체결 가격
+        executed_qty = trade_info.get('executed_qty', 0)  # 체결 수량
+        remain_qty = trade_info.get('remain_qty', 0)  # 미체결 수량
+        order_status = trade_info.get('order_status', '')  # 주문 상태
+        fee = trade_info.get('fee', 0)  # 수수료
+        transaction_time = trade_info.get('transaction_time', '')  # 거래 시간
+
+        # 메시지 포맷 설정
         # 매매 정보가 없는 경우, 기본 포맷으로 표시
         if not trade_info:
             # 기본 포맷 (구매 수량 정보 없음)
@@ -497,6 +507,33 @@ class KakaoSender:
             
             # 계좌 잔고
             message += f"계좌잔고: {balance:,.0f}원"
+
+            # 증권사 API 정보 추가 (주문 번호, 체결 상태 등)
+            if order_no:
+                message += f"\n\n📝 주문정보"
+                message += f"\n주문번호: {order_no}"
+                
+                # 체결 정보가 있으면 추가
+                if executed_qty > 0:
+                    message += f"\n체결수량: {executed_qty:,}주"
+                    message += f"\n체결가격: {executed_price:,.0f}원"
+                
+                # 미체결 수량이 있으면 표시
+                if remain_qty > 0:
+                    message += f"\n미체결: {remain_qty:,}주"
+                
+                # 주문 상태 표시
+                if order_status:
+                    status_emoji = "✅" if "체결" in order_status else "⏳"
+                    message += f"\n주문상태: {status_emoji} {order_status}"
+                
+                # 수수료 정보
+                if fee > 0:
+                    message += f"\n수수료: {fee:,.0f}원"
+                
+                # 거래 시간
+                if transaction_time:
+                    message += f"\n거래시간: {transaction_time}"
         
         # 신호 이유 추가 (짧게)
         reason = latest_signal.get('reason', '')

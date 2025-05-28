@@ -61,29 +61,13 @@ KAKAO_ACCESS_TOKEN = os.environ.get("KAKAO_ACCESS_TOKEN")  # 카카오 액세스
 KAKAO_REFRESH_TOKEN = os.environ.get("KAKAO_REFRESH_TOKEN")  # 카카오 리프레시 토큰
 USE_KAKAO = os.environ.get("USE_KAKAO", "True").lower() == "true"  # 카카오톡 메시지 사용 여부
 
-# 토큰이 설정되지 않았을 경우 경고
-if USE_KAKAO and (not KAKAO_ACCESS_TOKEN or not KAKAO_REFRESH_TOKEN):
-    logger.warning("카카오톡 토큰이 설정되지 않았지만 USE_KAKAO가 활성화되어 있습니다.")
-
 # 국내 주식 설정
 KR_MARKET_OPEN_TIME = "09:00"  # 한국 시장 개장 시간
 KR_MARKET_CLOSE_TIME = "15:30"  # 한국 시장 폐장 시간
-KR_STOCKS = []
 
 # 미국 주식 설정
 US_MARKET_OPEN_TIME = "09:30"  # 미국 시장 개장 시간 (EST)
 US_MARKET_CLOSE_TIME = "16:00"  # 미국 시장 폐장 시간 (EST)
-US_STOCKS = []
-
-# 기술적 분석 파라미터
-RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
-SHORT_TERM_MA = 20
-LONG_TERM_MA = 60
-
-# 데이터 수집 설정
-DATA_UPDATE_INTERVAL = 30  # 데이터 수집 간격(분)
 
 # 자동 매매 설정
 AUTO_TRADING_ENABLED = True  # 자동 매매 활성화 여부
@@ -95,60 +79,41 @@ BROKER_TYPE = "KIS"  # 사용할 증권사 API (KIS: 한국투자증권)
 # 한국투자증권 API 설정
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")  # 한국투자증권 앱키
 KIS_APP_SECRET = os.environ.get("KIS_APP_SECRET")  # 한국투자증권 앱시크릿
-KIS_ACCOUNT_NO = os.environ.get("KIS_ACCOUNT_NO", "50123456789")  # 계좌번호 (앞 8자리)
+KIS_ACCOUNT_NO = os.environ.get("KIS_ACCOUNT_NO")  # 계좌번호
 
-# 한국투자증권 모의투자 API 설정
-KIS_VIRTUAL_APP_KEY = os.environ.get("KIS_VIRTUAL_APP_KEY")  # 모의투자 앱키
-KIS_VIRTUAL_APP_SECRET = os.environ.get("KIS_VIRTUAL_APP_SECRET")  # 모의투자 앱시크릿
-KIS_VIRTUAL_ACCOUNT_NO = os.environ.get("KIS_VIRTUAL_ACCOUNT_NO", "50123456789")  # 모의투자 계좌번호
+# 모의투자 API 설정 추가
+KIS_VIRTUAL_URL = "https://openapivts.koreainvestment.com:29443"  # 모의투자 API URL
+KIS_VIRTUAL_APP_KEY = os.environ.get("KIS_VIRTUAL_APP_KEY", KIS_APP_KEY)  # 모의투자 앱키 (기본값: 실전투자 앱키)
+KIS_VIRTUAL_APP_SECRET = os.environ.get("KIS_VIRTUAL_APP_SECRET", KIS_APP_SECRET)  # 모의투자 앱시크릿 (기본값: 실전투자 앱시크릿)
+KIS_VIRTUAL_ACCOUNT_NO = os.environ.get("KIS_VIRTUAL_ACCOUNT_NO")  # 모의투자 계좌번호
 
-# 실전투자/모의투자 설정
+# 실전투자 설정
 KIS_REAL_TRADING = os.environ.get("KIS_REAL_TRADING", "False").lower() == "true"  # 기본값: 모의투자
-
-# 모의투자용 서버 URL (실전과 다름)
-KIS_VIRTUAL_URL = "https://openapivts.koreainvestment.com:29443"
 
 # 매매 설정
 MAX_QUANTITY_PER_SYMBOL = 100  # 종목당 최대 보유 수량
-MAX_DAILY_TRADES_PER_SYMBOL = 2  # 종목당 일일 최대 거래 횟수
-MIN_TRADE_INTERVAL_SECONDS = 1800  # 종목당 매매 최소 간격 (초)
-TRADE_RATIO_PER_SYMBOL = 0.1  # 예수금 대비 종목당 최대 매수 비율 (0.1 = 10%)
 MAX_AMOUNT_PER_TRADE = 1000000  # 1회 최대 매수 금액 (원)
 
-# 매도 비율 설정 (보유량 대비)
-SELL_RATIO_STRONG = 0.5  # 강한 매도 신호 시 매도 비율 (50%)
-SELL_RATIO_MEDIUM = 0.3  # 중간 매도 신호 시 매도 비율 (30%)
-SELL_RATIO_WEAK = 0.1  # 약한 매도 신호 시 매도 비율 (10%)
+# 데이터베이스 설정
+USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"  # 데이터베이스 사용 여부
+DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # 데이터베이스 타입 (sqlite, mysql)
 
-# 모의투자 기본 설정
-MOCK_INITIAL_CAPITAL = 50000000  # 모의투자 초기 자본금 (5천만원)
-MAX_RUNTIME_MINUTES = 180  # 모의 자동매매 최대 실행 시간 (분) - 기본 3시간
+# 데이터베이스 자동 백업 설정 추가
+DB_AUTO_BACKUP = os.environ.get("DB_AUTO_BACKUP", "True").lower() == "true"  # 자동 백업 여부
+DB_BACKUP_INTERVAL = int(os.environ.get("DB_BACKUP_INTERVAL", "24"))  # 백업 간격 (시간)
 
-# 손절/익절 설정
-STOP_LOSS_PCT = 5  # 손절매 비율 (기본 5%)
-TAKE_PROFIT_PCT = 10  # 익절 비율 (기본 10%)
-USE_TRAILING_STOP = True  # 트레일링 스탑 사용 여부
-TRAILING_STOP_DISTANCE = 3  # 트레일링 스탑 거리(%) - 최고가 대비 3% 하락시 매도
+# SQLite 설정
+SQLITE_DB_PATH = os.environ.get("SQLITE_DB_PATH", str(Path(__file__).parent / "data" / "stock_trading.db"))
+
+# MySQL 설정
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
+MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
+MYSQL_USER = os.environ.get("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+MYSQL_DB = os.environ.get("MYSQL_DB", "stock_trading")
 
 # 시장 강제 설정 (CI 환경에서 사용)
-FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "False").lower() == "true"  # 강제로 시장을 열림 상태로 간주
-
-# OpenAI ChatGPT API 설정
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  # OpenAI API 키
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")  # 사용할 모델
-OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "1000"))  # 최대 토큰 수
-OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.7"))  # 응답 다양성
-OPENAI_REQUEST_INTERVAL = float(os.environ.get("OPENAI_REQUEST_INTERVAL", "1.0"))  # API 요청 간격 (초)
-
-# Google Gemini API 설정
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # Gemini API 키
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")  # 모델을 1.5로 변경
-GEMINI_MAX_TOKENS = int(os.environ.get("GEMINI_MAX_TOKENS", "1000"))  # 최대 토큰 수
-GEMINI_TEMPERATURE = float(os.environ.get("GEMINI_TEMPERATURE", "0.7"))  # 응답 다양성
-GEMINI_REQUEST_INTERVAL = float(os.environ.get("GEMINI_REQUEST_INTERVAL", "1.2"))  # API 요청 간격 (1.2초로 증가)
-
-# GPT 분석 사용 여부
-USE_GPT_ANALYSIS = os.environ.get("USE_GPT_ANALYSIS", "False").lower() == "true"
+FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true"  # 강제로 시장을 열림 상태로 간주
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 KR_STOCK_INFO = [
@@ -160,29 +125,15 @@ KR_STOCK_INFO = [
     {'code': '005380', 'name': '현대차'}
 ]
 
-# GPT에 의해 추천된 미국 종목 정보 (코드와 이름)
-US_STOCK_INFO = [
-    {'code': 'AAPL', 'name': 'Apple Inc.'}, 
-    {'code': 'MSFT', 'name': 'Microsoft Corporation'}, 
-    {'code': 'GOOGL', 'name': 'Alphabet Inc.'}, 
-    {'code': 'AMZN', 'name': 'Amazon.com Inc.'}, 
-    {'code': 'META', 'name': 'Meta Platforms Inc.'}
-]
-
 # 종목 코드 리스트 생성
 KR_STOCKS = [stock['code'] for stock in KR_STOCK_INFO]
-US_STOCKS = [stock['code'] for stock in US_STOCK_INFO]
 
 # 실행 환경 확인
 IS_CI_ENV = os.environ.get('CI') == 'true'
 logger.info(f"실행 환경: {'CI/CD' if IS_CI_ENV else '로컬'}")
 logger.info(f"카카오톡 메시지 사용: {USE_KAKAO}")
 logger.info(f"텔레그램 메시지 사용: {USE_TELEGRAM}")
-logger.info(f"GPT 분석 사용: {USE_GPT_ANALYSIS}")
-logger.info(f"자동 손절/익절 기능: 활성화 (손절: {STOP_LOSS_PCT}%, 익절: {TAKE_PROFIT_PCT}%, 트레일링 스탑: {'사용' if USE_TRAILING_STOP else '미사용'})")
-
-# 환경 설정 요약
-if USE_KAKAO and KAKAO_API_KEY and KAKAO_ACCESS_TOKEN and KAKAO_REFRESH_TOKEN:
-    logger.info("카카오톡 토큰이 설정되었습니다.")
-else:
-    logger.warning("카카오톡 토큰이 완전히 설정되지 않았습니다.")
+logger.info(f"자동 매매 기능: {AUTO_TRADING_ENABLED}")
+logger.info(f"강제 시장 열림: {FORCE_MARKET_OPEN}")
+logger.info(f"데이터베이스 사용: {USE_DATABASE} (타입: {DB_TYPE})")
+logger.info(f"증권사 API 모드: {'실전투자' if KIS_REAL_TRADING else '모의투자'}")
