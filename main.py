@@ -857,11 +857,16 @@ if __name__ == "__main__":
                       help="분석할 시장 (KR: 한국, US: 미국, all: 모두)")
     args = parser.parse_args()
     
-    # CI/CD 환경 여부 설정
-    if args.ci:
-        logger.info("CI/CD 환경에서 실행합니다.")
+    # CI/CD 환경 여부 설정 - GitHub Actions 환경 자동 감지 추가
+    is_github_actions = 'GITHUB_ACTIONS' in os.environ or args.ci
+    if is_github_actions:
+        logger.info("CI/CD 또는 GitHub Actions 환경에서 실행합니다.")
         os.environ["CI"] = "true"
+        # 강제로 시장을 열린 상태로 설정
         os.environ["FORCE_MARKET_OPEN"] = "true"
+        # 카카오톡 메시지 기능이 GitHub Actions에서도 작동하도록 설정
+        if config.USE_KAKAO and config.KAKAO_API_KEY and config.KAKAO_ACCESS_TOKEN:
+            logger.info("GitHub Actions 환경에서 카카오톡 알림 기능 활성화")
     
     # 시스템 초기화
     system = StockAnalysisSystem()

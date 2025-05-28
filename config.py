@@ -18,9 +18,12 @@ def setup_env():
     """환경 변수 설정 및 로드"""
     # 환경 설정이 CI/CD에서 실행 중인지 확인
     is_ci = os.environ.get('CI') == 'true'
+    is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
     
-    if is_ci:
-        logger.info("CI/CD 환경에서 실행 중입니다. 환경 변수를 사용합니다.")
+    if is_ci or is_github_actions:
+        logger.info("CI/CD 또는 GitHub Actions 환경에서 실행 중입니다. 환경 변수를 사용합니다.")
+        # CI/GitHub Actions 환경에서는 시장을 강제로 열림 상태로 설정
+        os.environ["FORCE_MARKET_OPEN"] = "true"
     else:
         # 로컬 환경에서는 .env 파일 로드
         logger.info("로컬 환경에서 실행 중입니다. .env 파일을 로드합니다.")

@@ -7,15 +7,16 @@ import logging
 import sys
 import time
 import random
-import datetime
-import os  # os 모듈 추가
+import os
 import pandas as pd
 import numpy as np
 import pytz
 import schedule
+import datetime  # datetime 모듈 추가
 from src.notification.kakao_sender import KakaoSender
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
 from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
+from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_datetime_from_days_ago
 import config
 
 # 로깅 설정
@@ -28,6 +29,15 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('MockAutoTrading')
+
+# GitHub Actions 환경 감지
+is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+if is_github_actions:
+    logger.info("GitHub Actions 환경에서 실행 중입니다.")
+
+# 환경 변수에서 최대 실행 시간 설정 (GitHub Actions 환경변수 우선)
+MAX_RUNTIME_MINUTES = int(os.environ.get('MAX_RUNTIME_MINUTES', getattr(config, 'MAX_RUNTIME_MINUTES', 170)))
+logger.info(f"최대 실행 시간 설정: {MAX_RUNTIME_MINUTES}분")
 
 class MockStockData:
     """모의 주식 데이터 생성 클래스"""
@@ -118,9 +128,9 @@ class MockStockData:
         volatility = self.stock_info[symbol]["volatility"]
         
         # 날짜 생성
-        end_date = datetime.datetime.now()
-        start_date = end_date - datetime.timedelta(days=days)
-        dates = [start_date + datetime.timedelta(days=i) for i in range(days)]
+        end_date = now()
+        start_date = get_datetime_from_days_ago(days)
+        dates = [start_date + pd.Timedelta(days=i) for i in range(days)]
         
         # 랜덤 워크로 가격 생성
         closes = [base_price]
@@ -255,7 +265,7 @@ class MockAutoTrader:
         
         # 성과 기록
         self.performance = {
-            'start_date': datetime.datetime.now(),
+            'start_date': now(),  # datetime.datetime.now() 대신 time_utils의 now() 함수 사용
             'start_capital': self.initial_capital,
             'current_capital': self.account_balance,
             'total_trades': 0,

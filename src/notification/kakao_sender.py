@@ -415,7 +415,7 @@ class KakaoSender:
     
     def send_signal_notification(self, signal_data):
         """
-        매매 시그널 알림 전송 (매우 간결한 형태)
+        매매 시그널 알림 전송 (핵심적인 정보만 간결하게 표시)
         
         Args:
             signal_data: 매매 시그널 정보
@@ -429,7 +429,6 @@ class KakaoSender:
         
         # 종목 이름 설정 (코드와 함께 표시)
         stock_name = self._get_stock_name(symbol)
-        symbol_display = f"{stock_name}({symbol})" if stock_name != symbol else symbol
         
         # 가장 중요한 신호 찾기
         latest_signal = signals[0]
@@ -439,19 +438,31 @@ class KakaoSender:
         
         signal_type = latest_signal['type']
         signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
+        confidence = latest_signal.get('confidence', 0)
         
-        # 매우 간결한 메시지 생성 (핵심만 표시)
-        message = f"{signal_emoji} {symbol_display} {signal_type}\n"
-        message += f"현재가: {price:,.0f}원\n"
+        # 핵심만 간결하게 표시하는 메시지 생성 (스크린샷 형태와 유사하게)
+        # 형식: 종목코드 매매신호 / 종목명 / 현재가: 가격원
+        message = f"{signal_emoji} {symbol} {signal_type}\n"
         
-        # AI 분석 핵심만 한 문장으로 표시
-        ai_analysis = signal_data.get('ai_analysis', '')
-        if ai_analysis:
-            clean_analysis = self._remove_html_tags(ai_analysis)
-            first_sentence = clean_analysis.split('.')[0]
-            if len(first_sentence) > 50:
-                first_sentence = first_sentence[:47] + "..."
-            message += f"\n💡 {first_sentence}"
+        # 종목명 추가 (있는 경우)
+        if stock_name and stock_name != symbol:
+            message += f"{stock_name}\n"
+            
+        message += f"현재가: {price:,.0f}원"
+        
+        # 신뢰도가 있으면 추가
+        if confidence:
+            message += f" (신뢰도: {confidence*100:.1f}%)"
+            
+        # 신호 이유 추가 (짧게)
+        reason = latest_signal.get('reason', '')
+        if reason and len(reason) > 0:
+            # 이유가 길면 첫 문장만 추출
+            sentences = re.split(r'(?<=[.!?])\s+', reason)
+            first_reason = sentences[0] if sentences else reason
+            if len(first_reason) > 80:  # 너무 길면 자르기
+                first_reason = first_reason[:77] + "..."
+            message += f"\n\n💬 {first_reason}"
         
         # 메시지 전송
         return self.send_message(message)
@@ -469,7 +480,7 @@ class KakaoSender:
     
     def send_system_status(self, status_message):
         """
-        시스템 상태 알림 전송 (매우 간결한 형태)
+        시스템 상태 알림 전송 (정보 알림은 모든 내용 표시)
         
         Args:
             status_message: 상태 메시지
@@ -483,39 +494,38 @@ class KakaoSender:
             icon = "📈"
         elif "매매" in clean_message:
             icon = "🔔"
-        elif "오류" in clean_message:
+        elif "오류" in clean_message or "실패" in clean_message:
             icon = "⚠️"
         elif "업데이트" in clean_message:
             icon = "🔄"
-        
-        # 메시지 종류 분류하여 처리
-        if "### RSI" in clean_message:
+            
+        # 메시지 특성에 따른 처리
+        if "GPT 추천" in clean_message or "종목 리스트 업데이트" in clean_message:
+            # GPT 추천 종목 분석과 종목 업데이트 메시지는 전체 내용 표시
+            logger.info("GPT 종목 추천 또는 종목 업데이트 메시지 전송 (전체 내용)")
+            return self.send_message(f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n{clean_message}")
+        elif "### RSI" in clean_message:
             # RSI 분석 등 기술적 분석 메시지는 핵심만 추출
             return self._send_technical_analysis(clean_message)
-        
-        # 일반 상태 메시지는 앞부분만 유지
-        max_length = 300  # 최대 길이 제한
-        
-        if len(clean_message) > max_length:
-            # 문단 단위로 구분
-            paragraphs = [p for p in clean_message.split('\n\n') if p.strip()]
+        elif len(clean_message) > 1800:
+            # 길이 제한에 걸리는 아주 긴 메시지만 분할 전송
+            logger.info("매우 긴 메시지 분할 전송")
+            parts = self._split_message(clean_message, 1800)
+            success = True
             
-            if paragraphs:
-                # 첫 번째 문단과 두 번째 문단의 일부만 유지
-                result = paragraphs[0]
-                
-                if len(paragraphs) > 1:
-                    second_para = paragraphs[1]
-                    if len(second_para) > 100:
-                        second_para = second_para[:97] + "..."
-                    result += "\n\n" + second_para
+            for i, part in enumerate(parts):
+                part_with_header = f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')} [{i+1}/{len(parts)}]\n\n{part}"
+                if not self._send_single_message(part_with_header):
+                    success = False
+                # 연속 메시지 전송 시 약간의 딜레이 추가
+                if i < len(parts) - 1:
+                    time.sleep(0.5)
                     
-                result += "\n\n(메시지 축약됨...)"
-                clean_message = result
-        
-        # 메시지 전송
-        return self.send_message(f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n{clean_message}")
-    
+            return success
+        else:
+            # 일반 정보 알림 메시지는 전체 내용 표시
+            return self.send_message(f"{icon} {get_current_time_str(format_str='%m-%d %H:%M')}\n\n{clean_message}")
+            
     def _send_technical_analysis(self, message):
         """기술적 분석 메시지에서 핵심 내용만 추출하여 전송
         
@@ -580,11 +590,23 @@ class KakaoSender:
         Returns:
             str: 종목 이름 (얻을 수 없는 경우 종목 코드 반환)
         """
+        # 한국 주식 KR_STOCK_INFO에서 종목명 찾기
+        if hasattr(self.config, 'KR_STOCK_INFO'):
+            for stock in self.config.KR_STOCK_INFO:
+                if stock['code'] == symbol:
+                    return stock['name']
+        
+        # 미국 주식 US_STOCK_INFO에서 종목명 찾기
+        if hasattr(self.config, 'US_STOCK_INFO'):
+            for stock in self.config.US_STOCK_INFO:
+                if stock['code'] == symbol:
+                    return stock['name']
+        
         # config에 종목 이름 매핑이 있는지 확인
         if hasattr(self.config, 'STOCK_NAMES') and symbol in self.config.STOCK_NAMES:
             return self.config.STOCK_NAMES.get(symbol, symbol)
         
-        # 증권사 API나 데이터 제공자가 있다면 활용할 수 있으나 여기서는 간단히 처리
+        # 마지막 대안으로 symbol 그대로 반환
         return symbol
     
     def _remove_html_tags(self, text):

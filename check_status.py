@@ -6,10 +6,10 @@ import os
 import sys
 import logging
 import argparse
-import datetime
 import pandas as pd
 from src.data.stock_data import StockData
 from src.trading.kis_api import KISAPI
+from src.utils.time_utils import get_current_time_str
 import config
 
 # 로깅 설정
@@ -148,7 +148,7 @@ def main():
     # 옵션이 지정되지 않았거나 --all 인 경우 모두 실행
     run_all = args.all or not (args.api or args.data or args.system or args.log)
     
-    print(f"===== 주식 자동매매 시스템 상태 확인 ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) =====\n")
+    print(f"===== 주식 자동매매 시스템 상태 확인 ({get_current_time_str('%Y-%m-%d %H:%M:%S')}) =====\n")
     
     if args.api or run_all:
         check_api_connection()

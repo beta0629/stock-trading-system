@@ -5,13 +5,14 @@ import logging
 import time
 import requests
 import json
-import datetime
+from datetime import timedelta  # Keep for timedelta functionality
 import hashlib
 import jwt  # PyJWT 라이브러리 필요
 from urllib.parse import urljoin, unquote
 import pandas as pd
 
 from .broker_base import BrokerBase
+from ..utils.time_utils import get_current_time, get_adjusted_time, KST
 
 # 로깅 설정
 logger = logging.getLogger('KISAPI')
@@ -123,7 +124,11 @@ class KISAPI(BrokerBase):
             if response.status_code == 200:
                 self.access_token = response_data.get('access_token')
                 expires_in = response_data.get('expires_in', 86400)  # 기본 유효기간: 1일
-                self.token_expired_at = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
+                
+                # datetime 직접 사용 대신 time_utils 사용
+                current_time = get_current_time()
+                self.token_expired_at = current_time + timedelta(seconds=expires_in)
+                
                 self.connected = True
                 logger.info(f"한국투자증권 API 연결 성공. 토큰 만료시간: {self.token_expired_at}")
                 return True
@@ -150,8 +155,11 @@ class KISAPI(BrokerBase):
         if not self.access_token or not self.token_expired_at:
             return self.connect()
             
+        # datetime 직접 사용 대신 time_utils 사용
+        current_time = get_current_time()
+        
         # 토큰 만료 10분 전에 재발급
-        if datetime.datetime.now() > self.token_expired_at - datetime.timedelta(minutes=10):
+        if current_time > self.token_expired_at - timedelta(minutes=10):
             logger.info("토큰 유효기간이 10분 이내로 남아 재발급합니다.")
             return self.connect()
             

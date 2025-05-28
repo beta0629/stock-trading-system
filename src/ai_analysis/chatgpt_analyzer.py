@@ -5,11 +5,12 @@ import os
 import logging
 import json
 import time
-import datetime
 import pandas as pd
 import numpy as np
 import openai
 from dotenv import load_dotenv
+# datetime 모듈 대신 time_utils 사용
+from ..utils.time_utils import get_current_time, get_current_time_str, format_timestamp
 
 # 환경 변수 로드 (.env 파일)
 load_dotenv()
@@ -28,7 +29,7 @@ def json_default(obj):
     Returns:
         JSON 직렬화 가능한 형태로 변환된 객체
     """
-    if isinstance(obj, (pd.Timestamp, datetime.datetime, datetime.date)):
+    if hasattr(obj, 'isoformat'):
         return obj.isoformat()
     elif isinstance(obj, np.integer):
         return int(obj)
@@ -108,9 +109,12 @@ class ChatGPTAnalyzer:
         # DataFrame을 records 형식으로 변환하여 Timestamp 인덱스 문제 해결
         recent_data = recent_df[['Open', 'High', 'Low', 'Close', 'Volume']].reset_index().to_dict('records')
         
+        # datetime.now() 대신 time_utils의 함수 사용
+        current_date = get_current_time_str("%Y-%m-%d")
+        
         analysis_data = {
             "symbol": symbol,
-            "current_date": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "current_date": current_date,
             "recent_data": recent_data,
             "statistics": {
                 "current_price": float(recent_close),
@@ -189,7 +193,7 @@ class ChatGPTAnalyzer:
             result = {
                 "symbol": symbol,
                 "analysis_type": analysis_type,
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": get_current_time_str(),  # format_timestamp 대신 get_current_time_str 직접 사용
                 "analysis": analysis_text,
                 "data": data
             }
@@ -313,7 +317,7 @@ class ChatGPTAnalyzer:
             # 시장 개요 데이터 준비
             market_summary = {
                 "market": market,
-                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "date": get_current_time_str("%Y-%m-%d"),
                 "symbols_analyzed": list(stock_data_dict.keys()),
                 "stocks_data": []
             }

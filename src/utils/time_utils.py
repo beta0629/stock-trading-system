@@ -129,16 +129,21 @@ def get_market_schedule(date=None, market="KR", config=None):
         'timezone': timezone
     }
 
-def get_current_time(timezone=KST):
+def get_current_time(timezone=KST, tz=None):
     """
     현재 시간을 지정된 시간대로 반환
     
     Args:
         timezone: 시간대 (기본값: KST)
+        tz: timezone의 별칭, 이 인수가 제공되면 timezone보다 우선함
         
     Returns:
         datetime: 현재 시간 (해당 시간대)
     """
+    # tz 인자가 제공된 경우 timezone 대신 사용
+    if tz is not None:
+        timezone = tz
+        
     # 문자열로 전달된 timezone 처리
     if isinstance(timezone, str):
         try:

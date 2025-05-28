@@ -7,9 +7,10 @@ GPT 기반 종목 선정 모듈
 import os
 import json
 import logging
-import datetime
 import requests
 from typing import Dict, List, Any, Optional, Union
+# 시간 유틸리티 추가
+from src.utils.time_utils import get_current_time, get_current_time_str
 
 logger = logging.getLogger('StockAnalysisSystem')
 
@@ -51,8 +52,8 @@ class StockSelector:
         logger.info(f"{market} 시장에 대한 {strategy} 전략 기반 종목 추천 시작")
         
         # 현재 날짜/시간 정보 가져오기
-        now = datetime.datetime.now()
-        current_date = now.strftime("%Y년 %m월 %d일")
+        now = get_current_time()
+        current_date = get_current_time_str("%Y년 %m월 %d일")
         current_year = now.year
         
         # 시장에 따라 다른 프롬프트 사용
@@ -182,8 +183,8 @@ class StockSelector:
         logger.info(f"{market} 시장에 대한 유망 산업 섹터 선정 시작")
         
         # 현재 날짜/시간 정보 가져오기
-        now = datetime.datetime.now()
-        current_date = now.strftime("%Y년 %m월 %d일")
+        now = get_current_time()
+        current_date = get_current_time_str("%Y년 %m월 %d일")
         
         # 시장에 따라 다른 프롬프트 사용
         market_info = {
@@ -291,7 +292,7 @@ class StockSelector:
         logger.info(f"{market} 시장의 {sector_name} 섹터 내 종목 추천 시작")
         
         # 현재 날짜 정보
-        current_date = datetime.datetime.now().strftime("%Y년 %m월 %d일")
+        current_date = get_current_time_str("%Y년 %m월 %d일")
         
         # 시장 정보
         market_info = {
