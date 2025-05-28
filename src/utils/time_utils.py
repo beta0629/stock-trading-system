@@ -7,12 +7,57 @@
 """
 
 import datetime
+import os
 import pytz
-import config
+import logging
+
+# 로거 설정
+logger = logging.getLogger('TimeUtils')
+
+try:
+    import config
+except ImportError:
+    logger.warning("config 모듈을 가져올 수 없습니다. 환경 변수에서 설정을 가져옵니다.")
+    config = None
 
 # 타임존 설정
 KST = pytz.timezone('Asia/Seoul')
 EST = pytz.timezone('US/Eastern')
+
+# 시장 설정 기본값
+DEFAULT_KR_MARKET_OPEN_TIME = "09:00"
+DEFAULT_KR_MARKET_CLOSE_TIME = "15:30"
+DEFAULT_US_MARKET_OPEN_TIME = "09:30"
+DEFAULT_US_MARKET_CLOSE_TIME = "16:00"
+
+def get_config_value(attr_name, default_value, config_obj=None):
+    """
+    config 객체나 환경 변수에서 설정 값을 가져옵니다.
+    
+    Args:
+        attr_name: 설정 속성 이름
+        default_value: 기본값
+        config_obj: 설정 객체 (None일 경우 환경 변수 사용)
+        
+    Returns:
+        설정 값
+    """
+    if config_obj is not None:
+        return getattr(config_obj, attr_name, default_value)
+    
+    try:
+        if config is not None:
+            return getattr(config, attr_name, default_value)
+    except Exception:
+        pass
+    
+    # 환경 변수에서 가져오기
+    env_name = attr_name.upper()
+    env_value = os.environ.get(env_name)
+    if env_value is not None:
+        return env_value
+    
+    return default_value
 
 def now(timezone=KST):
     """
@@ -80,10 +125,6 @@ def get_market_schedule(date=None, market="KR", config=None):
     Returns:
         dict: 시장 스케줄 정보
     """
-    if config is None:
-        import config as cfg
-        config = cfg
-    
     if date is None:
         date = get_current_time(KST if market == "KR" else EST).date()
     elif isinstance(date, datetime.datetime):
@@ -93,15 +134,15 @@ def get_market_schedule(date=None, market="KR", config=None):
     weekday = date.weekday()
     is_weekend = weekday >= 5
     
-    # 시장 기본 정보
+    # 시장 기본 정보 및 설정 가져오기
     if market == "KR":
         timezone = KST
-        open_time_str = config.KR_MARKET_OPEN_TIME
-        close_time_str = config.KR_MARKET_CLOSE_TIME
+        open_time_str = get_config_value('KR_MARKET_OPEN_TIME', DEFAULT_KR_MARKET_OPEN_TIME, config)
+        close_time_str = get_config_value('KR_MARKET_CLOSE_TIME', DEFAULT_KR_MARKET_CLOSE_TIME, config)
     else:  # "US"
         timezone = EST
-        open_time_str = config.US_MARKET_OPEN_TIME
-        close_time_str = config.US_MARKET_CLOSE_TIME
+        open_time_str = get_config_value('US_MARKET_OPEN_TIME', DEFAULT_US_MARKET_OPEN_TIME, config)
+        close_time_str = get_config_value('US_MARKET_CLOSE_TIME', DEFAULT_US_MARKET_CLOSE_TIME, config)
     
     # 개장/마감 시간 생성
     open_time = datetime.datetime.strptime(f"{date.strftime('%Y-%m-%d')} {open_time_str}", "%Y-%m-%d %H:%M")
@@ -115,7 +156,10 @@ def get_market_schedule(date=None, market="KR", config=None):
     is_open = not is_weekend
     
     # 강제 개장 설정 확인
-    force_open = getattr(config, 'FORCE_MARKET_OPEN', False)
+    force_open = get_config_value('FORCE_MARKET_OPEN', False, config)
+    if isinstance(force_open, str):
+        force_open = force_open.lower() == "true"
+    
     if force_open:
         is_open = True
     
@@ -211,18 +255,16 @@ def is_market_open(market="KR", config=None):
     
     Args:
         market: 시장 코드 ("KR" 또는 "US")
-        config: 설정 모듈 (기본값: None, 전역 config 사용)
+        config: 설정 모듈 (기본값: None, 전역 config 또는 환경 변수 사용)
         
     Returns:
         bool: 시장 개장 여부
     """
-    # config가 None이면 전역 config 사용
-    if config is None:
-        import config as cfg
-        config = cfg
-        
     # 강제 개장 설정 확인
-    force_open = getattr(config, 'FORCE_MARKET_OPEN', False)
+    force_open = get_config_value('FORCE_MARKET_OPEN', False, config)
+    if isinstance(force_open, str):
+        force_open = force_open.lower() == "true"
+    
     if force_open:
         return True
         
@@ -236,11 +278,11 @@ def is_market_open(market="KR", config=None):
     
     # 시장별 운영 시간 확인
     if market == "KR":
-        start_time = config.KR_MARKET_OPEN_TIME
-        end_time = config.KR_MARKET_CLOSE_TIME
+        start_time = get_config_value('KR_MARKET_OPEN_TIME', DEFAULT_KR_MARKET_OPEN_TIME, config)
+        end_time = get_config_value('KR_MARKET_CLOSE_TIME', DEFAULT_KR_MARKET_CLOSE_TIME, config)
     else:
-        start_time = config.US_MARKET_OPEN_TIME
-        end_time = config.US_MARKET_CLOSE_TIME
+        start_time = get_config_value('US_MARKET_OPEN_TIME', DEFAULT_US_MARKET_OPEN_TIME, config)
+        end_time = get_config_value('US_MARKET_CLOSE_TIME', DEFAULT_US_MARKET_CLOSE_TIME, config)
     
     # 시간 변환
     start_dt = datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
@@ -292,14 +334,14 @@ def get_market_hours(market="KR"):
     """
     if market == "KR":
         return {
-            'start': config.KR_MARKET_OPEN_TIME,
-            'end': config.KR_MARKET_CLOSE_TIME,
+            'start': get_config_value('KR_MARKET_OPEN_TIME', DEFAULT_KR_MARKET_OPEN_TIME),
+            'end': get_config_value('KR_MARKET_CLOSE_TIME', DEFAULT_KR_MARKET_CLOSE_TIME),
             'timezone': 'Asia/Seoul'
         }
     else:
         return {
-            'start': config.US_MARKET_OPEN_TIME,
-            'end': config.US_MARKET_CLOSE_TIME,
+            'start': get_config_value('US_MARKET_OPEN_TIME', DEFAULT_US_MARKET_OPEN_TIME),
+            'end': get_config_value('US_MARKET_CLOSE_TIME', DEFAULT_US_MARKET_CLOSE_TIME),
             'timezone': 'US/Eastern'
         }
 
