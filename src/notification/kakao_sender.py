@@ -429,7 +429,7 @@ class KakaoSender:
         
         # 종목 이름 설정 (코드와 함께 표시)
         stock_name = self._get_stock_name(symbol)
-        symbol_name = f"{stock_name} ({symbol})"
+        symbol_display = f"{stock_name}({symbol})" if stock_name != symbol else symbol
         
         # 가장 중요한 신호 찾기
         latest_signal = signals[0]
@@ -439,86 +439,23 @@ class KakaoSender:
         
         signal_type = latest_signal['type']
         signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
-        confidence = latest_signal.get('confidence', 0.0)
         
-        # 매우 간결한 메시지 생성
-        message = f"{signal_emoji} {symbol_name} {signal_type}\n"
-        message += f"현재가: {price:,.2f}원\n"
+        # 매우 간결한 메시지 생성 (핵심만 표시)
+        message = f"{signal_emoji} {symbol_display} {signal_type}\n"
+        message += f"현재가: {price:,.0f}원\n"
         
-        # AI 분석 핵심만 추출 (키워드 기반)
+        # AI 분석 핵심만 한 문장으로 표시
         ai_analysis = signal_data.get('ai_analysis', '')
-        gpt_analysis = signal_data.get('gpt_analysis', '')
+        if ai_analysis:
+            clean_analysis = self._remove_html_tags(ai_analysis)
+            first_sentence = clean_analysis.split('.')[0]
+            if len(first_sentence) > 50:
+                first_sentence = first_sentence[:47] + "..."
+            message += f"\n💡 {first_sentence}"
         
-        if ai_analysis or gpt_analysis:
-            analysis = ai_analysis if ai_analysis else gpt_analysis
-            # HTML 태그 제거
-            analysis = self._remove_html_tags(analysis)
-            
-            # 키워드 추출 방식으로 핵심만 표시
-            keywords = self._extract_analysis_keywords(analysis, signal_type)
-            message += f"\n{keywords}\n"
-        
-        # 시그널 신뢰도 표시는 마지막에 간단히
-        if confidence > 0:
-            message += f"\n신뢰도: {confidence:.1f}/10"
-            
         # 메시지 전송
         return self.send_message(message)
     
-    def _extract_analysis_keywords(self, analysis, signal_type):
-        """분석 내용에서 핵심 키워드만 추출
-        
-        Args:
-            analysis: 전체 분석 내용
-            signal_type: 시그널 타입 ('BUY' 또는 'SELL')
-            
-        Returns:
-            str: 핵심 키워드만 포함된 문자열
-        """
-        # 분석 내용이 없으면 빈 문자열 반환
-        if not analysis:
-            return ""
-        
-        # 문단 분리
-        paragraphs = analysis.split('\n\n')
-        first_paragraph = paragraphs[0] if paragraphs else analysis
-        
-        # RSI 관련 정보 추출
-        rsi_match = re.search(r'RSI[^.]*?(\d+\.?\d*)[^.]*?\.', analysis)
-        macd_match = re.search(r'MACD[^.]*?\.', analysis)
-        trend_match = re.search(r'(추세|상승세|하락세|횡보)[^.]*?\.', analysis)
-        
-        # 추출된 정보를 모으기
-        extracted = []
-        
-        # 핵심 첫 문장 (50자 이내)
-        if first_paragraph:
-            first_sentence = first_paragraph.split('.')[0]
-            if len(first_sentence) > 50:
-                first_sentence = first_sentence[:47] + "..."
-            extracted.append(f"💡 {first_sentence}")
-        
-        # RSI 정보가 있으면 추가
-        if rsi_match:
-            extracted.append(f"📊 RSI: {rsi_match.group(0).strip()}")
-        
-        # MACD 정보가 있으면 추가 
-        if macd_match:
-            extracted.append(f"📈 {macd_match.group(0).strip()}")
-        
-        # 추세 정보가 있으면 추가
-        if trend_match:
-            extracted.append(f"📉 {trend_match.group(0).strip()}")
-            
-        # 매매 신호 관련 문장 추가
-        signal_keyword = "매수" if signal_type == "BUY" else "매도"
-        for sentence in analysis.split('.'):
-            if signal_keyword in sentence and len(sentence) < 100:
-                extracted.append(f"🔍 {sentence.strip()}.")
-                break
-        
-        return "\n".join(extracted)
-        
     def send_detailed_analysis(self, signal_data, symbol_name):
         """
         상세 분석은 사용자 요청 시에만 보내도록 상세 보기 안내 메시지만 전송
