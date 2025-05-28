@@ -24,7 +24,16 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install -v wheel setuptools
+        if [ -f requirements.txt ]; then 
+          pip install -v -r requirements.txt
+        fi
+        # 명시적으로 Gemini API 패키지 설치
+        pip install -v google-generativeai
+        
+        # 설치된 패키지 확인
+        pip list | grep google
+        python -c "import importlib; print('google.generativeai:', importlib.util.find_spec('google.generativeai'))"
         
     - name: Set environment variables
       run: |
@@ -44,6 +53,7 @@ jobs:
         KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
         KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
       run: |
+        python -c "import sys; print('Python sys.path:', sys.path)"
         python main.py --ci --mode=analysis
         
     - name: Save token updates
