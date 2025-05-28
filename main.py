@@ -107,6 +107,13 @@ class StockAnalysisSystem:
     def init_trading_system(self):
         """자동 매매 시스템 초기화"""
         try:
+            # CI 환경에서는 간소화된 초기화
+            if os.environ.get('CI') == 'true':
+                logger.info("CI 환경에서 실행 중입니다. 자동 매매 시스템을 제한된 모드로 초기화합니다.")
+                self.auto_trading_enabled = False
+                return False
+                
+            # 실제 환경에서 정상 초기화
             if self.config.BROKER_TYPE == "KIS":
                 self.broker_api = KISAPI(self.config)
                 logger.info("한국투자증권 API 초기화 완료")
@@ -115,7 +122,25 @@ class StockAnalysisSystem:
                 self.auto_trading_enabled = False
                 return False
                 
-            self.auto_trader = AutoTrader(self.config, self.broker_api)
+            # 필수 구성요소가 초기화되었는지 확인
+            if not hasattr(self, 'stock_data') or not self.stock_data:
+                logger.error("stock_data가 초기화되지 않았습니다.")
+                self.auto_trading_enabled = False
+                return False
+                
+            if not hasattr(self, 'gpt_trading_strategy') or not self.gpt_trading_strategy:
+                logger.error("gpt_trading_strategy가 초기화되지 않았습니다.")
+                self.auto_trading_enabled = False
+                return False
+            
+            # AutoTrader 초기화 시 필요한 인자 모두 전달
+            self.auto_trader = AutoTrader(
+                config=self.config, 
+                broker=self.broker_api,
+                data_provider=self.stock_data,  # StockData 객체를 data_provider로 전달
+                strategy_provider=self.gpt_trading_strategy,  # GPTTradingStrategy 객체를 strategy_provider로 전달
+                notifier=self.telegram_sender if not self.use_kakao else self.kakao_sender  # 알림 발송 객체 설정
+            )
             logger.info("자동 매매 시스템 초기화 완료")
             return True
             
