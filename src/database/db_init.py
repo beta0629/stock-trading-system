@@ -9,11 +9,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 현재 디렉토리를 모듈 경로에 추가
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(os.path.dirname(current_dir))
-sys.path.insert(0, parent_dir)
-
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +19,19 @@ logger = logging.getLogger('DB_INIT')
 
 # 데이터베이스 관리자 클래스 가져오기
 try:
+    import os
+    import sys
+    # 상위 디렉토리를 시스템 경로에 추가
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, parent_dir)
+    
+    # 환경 변수에서 직접 설정 가져오기
+    USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"
+    DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()
+    SQLITE_DB_PATH = os.environ.get("SQLITE_DB_PATH", os.path.join(parent_dir, "data", "stock_trading.db"))
+    
+    # config 모듈과 필요한 클래스 가져오기
     import config
     from src.database.db_manager import DatabaseManager
 except ImportError:
@@ -34,8 +42,11 @@ def initialize_database():
     """데이터베이스 초기화"""
     logger.info("데이터베이스 초기화 시작")
     
+    # 환경 변수 정보 로그 출력
+    logger.info(f"데이터베이스 사용 여부 환경 변수: {os.environ.get('USE_DATABASE', 'Not Set')}")
+    
     # 데이터베이스 관리자 인스턴스 생성
-    db_manager = DatabaseManager.get_instance(config)
+    db_manager = DatabaseManager.get_instance()
     
     logger.info(f"데이터베이스 타입: {db_manager.db_type}")
     if db_manager.db_type == 'sqlite':
