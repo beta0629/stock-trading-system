@@ -1045,3 +1045,169 @@ class KISAPI(BrokerBase):
     def get_trading_mode(self):
         """현재 거래 모드 반환"""
         return "실전투자" if self.real_trading else "모의투자"
+    
+    def buy(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
+        """
+        매수 주문 실행
+        
+        Args:
+            symbol: 종목 코드
+            quantity: 매수 수량
+            price: 매수 희망 가격 (시장가 주문시 0)
+            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
+            market: 시장 구분 ('KR': 국내, 'US': 미국)
+            
+        Returns:
+            dict: 매수 주문 결과
+        """
+        try:
+            # 모의투자에서의 시장 제한 확인
+            if not self.real_trading:
+                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
+                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
+                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
+                # 허용된 시장 확인
+                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
+                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+            
+            order_type_str = order_type.lower()
+            
+            # 종목코드 처리
+            if market == 'KR':
+                if not symbol.startswith('A'):
+                    trade_symbol = 'A' + symbol
+                else:
+                    trade_symbol = symbol
+            else:  # 미국 주식인 경우
+                trade_symbol = symbol
+
+            # 매수 주문 실행
+            order_number = self.buy_stock(
+                trade_symbol, quantity, price, 
+                'market' if order_type_str == 'market' else 'limit'
+            )
+            
+            if order_number:
+                logger.info(f"매수 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
+                
+                # 주문 결과 반환
+                return {
+                    "success": True,
+                    "order_no": order_number,
+                    "message": f"매수 주문이 접수되었습니다. (주문번호: {order_number})"
+                }
+            else:
+                logger.error(f"매수 주문 실패: {symbol}")
+                return {
+                    "success": False,
+                    "order_no": "",
+                    "error": "매수 주문 처리 실패",
+                    "message": "매수 주문을 처리할 수 없습니다."
+                }
+                
+        except Exception as e:
+            logger.error(f"매수 주문 중 예외 발생: {e}")
+            return {
+                "success": False,
+                "order_no": "",
+                "error": str(e),
+                "message": f"매수 주문 중 오류가 발생했습니다: {str(e)}"
+            }
+    
+    def sell(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
+        """
+        매도 주문 실행
+        
+        Args:
+            symbol: 종목 코드
+            quantity: 매도 수량
+            price: 매도 희망 가격 (시장가 주문시 0)
+            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
+            market: 시장 구분 ('KR': 국내, 'US': 미국)
+            
+        Returns:
+            dict: 매도 주문 결과
+        """
+        try:
+            # 모의투자에서의 시장 제한 확인
+            if not self.real_trading:
+                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
+                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
+                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
+                # 허용된 시장 확인
+                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
+                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+            
+            order_type_str = order_type.lower()
+            
+            # 종목코드 처리
+            if market == 'KR':
+                if not symbol.startswith('A'):
+                    trade_symbol = 'A' + symbol
+                else:
+                    trade_symbol = symbol
+            else:  # 미국 주식인 경우
+                trade_symbol = symbol
+
+            # 매도 주문 실행
+            order_number = self.sell_stock(
+                trade_symbol, quantity, price, 
+                'market' if order_type_str == 'market' else 'limit'
+            )
+            
+            if order_number:
+                logger.info(f"매도 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
+                
+                # 주문 결과 반환
+                return {
+                    "success": True,
+                    "order_no": order_number,
+                    "message": f"매도 주문이 접수되었습니다. (주문번호: {order_number})"
+                }
+            else:
+                logger.error(f"매도 주문 실패: {symbol}")
+                return {
+                    "success": False,
+                    "order_no": "",
+                    "error": "매도 주문 처리 실패",
+                    "message": "매도 주문을 처리할 수 없습니다."
+                }
+                
+        except Exception as e:
+            logger.error(f"매도 주문 중 예외 발생: {e}")
+            return {
+                "success": False,
+                "order_no": "",
+                "error": str(e),
+                "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
+            }

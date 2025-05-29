@@ -91,6 +91,10 @@ KIS_VIRTUAL_ACCOUNT_NO = os.environ.get("KIS_VIRTUAL_ACCOUNT_NO")  # 모의투�
 # 실전투자 설정
 KIS_REAL_TRADING = os.environ.get("KIS_REAL_TRADING", "False").lower() == "true"  # 기본값: 모의투자
 
+# 모의투자 시장 제한 설정
+VIRTUAL_TRADING_KR_ONLY = os.environ.get("VIRTUAL_TRADING_KR_ONLY", "True").lower() == "true"  # 모의투자에서 국내주식만 거래 가능 여부
+ALLOWED_VIRTUAL_MARKETS = os.environ.get("ALLOWED_VIRTUAL_MARKETS", "KR").split(",")  # 모의투자에서 허용된 시장 (KR, US)
+
 # 매매 설정
 MAX_QUANTITY_PER_SYMBOL = 100  # 종목당 최대 보유 수량
 MAX_AMOUNT_PER_TRADE = 1000000  # 1회 최대 매수 금액 (원)

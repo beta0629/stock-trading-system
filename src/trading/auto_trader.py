@@ -1060,7 +1060,19 @@ class AutoTrader:
             bool: 거래 허용 여부
         """
         try:
-            # 시뮬레이션 모드에서는 항상 허용
+            # 모의투자에서의 시장 제한 확인
+            if (self.simulation_mode or not self.broker.real_trading):
+                # 모의투자에서 국내주식만 거래 가능하도록 제한
+                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY:
+                    if market != "KR":
+                        logger.warning(f"{market} 시장은 모의투자에서 거래할 수 없습니다. 실전투자 모드에서만 해외주식 거래가 가능합니다.")
+                        return False
+                # 허용된 시장 확인 (설정 파일에서 정의)
+                elif hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
+                    logger.warning(f"{market} 시장은 모의투자에서 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}")
+                    return False
+                
+            # 시뮬레이션 모드에서는 거래 허용
             if self.simulation_mode:
                 return True
                 
