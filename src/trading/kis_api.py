@@ -457,11 +457,13 @@ class KISAPI(BrokerBase):
                             break
                     
                     # 주문가능금액 별도 처리 (모의투자에서 중요한 필드)
-                    for field in ['ord_psbl_cash_amt', 'psbl_buy_amt', 'nass_amt']:
-                        if field in data and balance_info["주문가능금액"] == 0:
-                            balance_info["주문가능금액"] = int(data.get(field, '0'))
-                            logger.info(f"주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
-                            break
+                    for field in ['ord_psbl_cash_amt', 'psbl_buy_amt', 'nass_amt', 'dnca_tot_amt', 'tot_evlu_amt']:
+                        if field in data:
+                            value = int(data.get(field, '0'))
+                            if value > 0:  # 0보다 큰 값이 있는 경우에만 업데이트
+                                balance_info["주문가능금액"] = value
+                                logger.info(f"주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
+                                break
                 
                 # output2(보유종목)의 상세 정보 활용
                 if 'output2' in response_data and response_data['output2']:
