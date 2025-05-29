@@ -2378,3 +2378,30 @@ class KISAPI(BrokerBase):
             # 실전투자는 짧은 대기 시간 적용
             time.sleep(3)
             return True
+    
+    def _get_headers(self, tr_id=None):
+        """
+        API 요청에 사용할 헤더 생성
+        
+        Args:
+            tr_id: 트랜잭션 ID (직접 지정하는 경우)
+        
+        Returns:
+            dict: API 요청 헤더
+        """
+        if not self._check_token():
+            logger.error("토큰이 유효하지 않거나 만료되었습니다.")
+            return {}
+        
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self.access_token}",
+            "appkey": self.app_key,
+            "appsecret": self.app_secret,
+        }
+        
+        # TR ID가 지정된 경우 헤더에 추가
+        if tr_id:
+            headers["tr_id"] = tr_id
+            
+        return headers
