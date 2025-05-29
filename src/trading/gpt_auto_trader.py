@@ -733,29 +733,22 @@ class GPTAutoTrader:
                 
                 # 주문 후 잔고 변화 확인을 위해 지연시간 추가
                 logger.info(f"주문 체결 후 API 반영 대기 시작...")
-                time.sleep(3)  # 3초 대기
+                time.sleep(10)  # 10초로 증가 - 모의투자 API 반영 시간 고려
                 
-                # 매수 후 계좌 잔고 확인
+                # 매수 후 계좌 잔고 확인 - 증권사 API 데이터만 사용
                 post_balance_info = self.broker.get_balance()
                 post_available_cash = post_balance_info.get('주문가능금액', post_balance_info.get('예수금', 0))
                 logger.info(f"매수 후 주문가능금액: {post_available_cash:,.0f}원")
                 
-                # 잔고 변화 확인
+                # 잔고 변화 확인 및 로깅 (정보 제공 목적으로만 사용)
                 cash_diff = pre_available_cash - post_available_cash
                 logger.info(f"주문가능금액 변화: -{cash_diff:,.0f}원 (예상: -{expected_total:,.0f}원)")
                 
-                if cash_diff < expected_total * 0.5:  # 예상 금액의 절반보다 작으면 경고
-                    logger.warning(f"주의: 주문가능금액 감소({cash_diff:,.0f}원)이 예상 금액({expected_total:,.0f}원)보다 크게 적습니다.")
-                    logger.warning(f"모의투자 API에서는 잔고 업데이트가 지연될 수 있습니다. 5초 후 다시 확인합니다.")
-                    
-                    # 추가 지연 후 재확인
-                    time.sleep(5)
-                    retry_balance_info = self.broker.get_balance()
-                    retry_available_cash = retry_balance_info.get('주문가능금액', retry_balance_info.get('예수금', 0))
-                    retry_cash_diff = pre_available_cash - retry_available_cash
-                    logger.info(f"5초 후 재확인 - 주문가능금액: {retry_available_cash:,.0f}원, 변화: -{retry_cash_diff:,.0f}원")
+                if cash_diff < expected_total * 0.5:  # 예상 금액의 절반보다 작으면 참고용 로그만 남김
+                    logger.info(f"참고: 주문가능금액 변화({cash_diff:,.0f}원)가 예상({expected_total:,.0f}원)보다 적습니다.")
+                    logger.info(f"모의투자 API에서는 잔고 업데이트가 지연될 수 있습니다.")
                 
-                # 보유 종목 업데이트
+                # 보유 종목 업데이트 (증권사 API에서 제공하는 데이터만 사용)
                 self._load_current_holdings()
                 
                 return True
