@@ -308,9 +308,12 @@ class KISAPI(BrokerBase):
             # 디버깅을 위해 전체 응답 로깅 (상세 출력)
             logger.info(f"계좌 잔고 API 응답 데이터 (상세): {json.dumps(response_data, indent=2, ensure_ascii=False)}")
             
-            # output1 필드의 모든 키 출력 (모의투자와 실전의 필드명 차이 확인용)
+            # output1과 output2 필드의 모든 키 출력 (모의투자와 실전의 필드명 차이 확인용)
             if 'output1' in response_data and response_data['output1'] and len(response_data['output1']) > 0:
                 logger.info(f"output1 필드 키 목록: {list(response_data['output1'][0].keys())}")
+            
+            if 'output2' in response_data and response_data['output2'] and len(response_data['output2']) > 0:
+                logger.info(f"output2 필드 키 목록: {list(response_data['output2'][0].keys())}")
             
             if response.status_code == 200 and response_data.get('rt_cd') == '0':
                 # 잔고 정보 초기화
@@ -320,7 +323,8 @@ class KISAPI(BrokerBase):
                     "D+2예수금": 0,
                     "유가평가금액": 0,
                     "총평가금액": 0,
-                    "순자산금액": 0
+                    "순자산금액": 0,
+                    "주문가능금액": 0  # 주문가능금액 필드 추가
                 }
                 
                 # output1에 데이터가 있는지 확인
@@ -328,75 +332,96 @@ class KISAPI(BrokerBase):
                     data = response_data.get('output1', [{}])[0]
                     
                     # 모의투자와 실전투자 API의 응답 필드명이 다를 수 있으므로 각 필드 존재 여부 확인
-                    # 예수금 관련 정보 - 모의투자에서는 다른 필드명일 수 있음
                     
-                    # 실전투자 필드명
-                    if 'dnca_tot_amt' in data:
-                        balance_info["예수금"] = int(data.get('dnca_tot_amt', '0'))
-                    # 모의투자 필드명 (가능한 대체 필드명들)
-                    elif 'prvs_rcdl_excc_amt' in data:
-                        balance_info["예수금"] = int(data.get('prvs_rcdl_excc_amt', '0'))
-                    elif 'cash_amt' in data:
-                        balance_info["예수금"] = int(data.get('cash_amt', '0'))
-                    elif 'dnca_tot_amt' in data:
-                        balance_info["예수금"] = int(data.get('dnca_tot_amt', '0'))
+                    # 예수금 관련 정보 - 다양한 필드명 확인
+                    for field in ['dnca_tot_amt', 'prvs_rcdl_excc_amt', 'cash_amt']:
+                        if field in data and balance_info["예수금"] == 0:
+                            balance_info["예수금"] = int(data.get(field, '0'))
+                            logger.info(f"예수금 필드 '{field}' 사용: {balance_info['예수금']:,}원")
+                            break
                     
                     # 출금가능금액
-                    if 'magt_rt_amt' in data:
-                        balance_info["출금가능금액"] = int(data.get('magt_rt_amt', '0'))
-                    elif 'ord_psbl_cash_amt' in data:
-                        balance_info["출금가능금액"] = int(data.get('ord_psbl_cash_amt', '0'))
+                    for field in ['magt_rt_amt', 'ord_psbl_cash_amt']:
+                        if field in data and balance_info["출금가능금액"] == 0:
+                            balance_info["출금가능금액"] = int(data.get(field, '0'))
+                            logger.info(f"출금가능금액 필드 '{field}' 사용: {balance_info['출금가능금액']:,}원")
+                            break
                     
                     # D+2예수금
-                    if 'd2_dncl_amt' in data:
-                        balance_info["D+2예수금"] = int(data.get('d2_dncl_amt', '0'))
-                    elif 'thdt_buy_amt' in data:  # 당일매수금액 등 대체 필드
-                        balance_info["D+2예수금"] = int(data.get('thdt_buy_amt', '0'))
+                    for field in ['d2_dncl_amt', 'thdt_buy_amt', 'd2_auto_rdpt_amt']:
+                        if field in data and balance_info["D+2예수금"] == 0:
+                            balance_info["D+2예수금"] = int(data.get(field, '0'))
+                            logger.info(f"D+2예수금 필드 '{field}' 사용: {balance_info['D+2예수금']:,}원")
+                            break
                     
                     # 평가 금액 정보
-                    if 'scts_evlu_amt' in data:
-                        balance_info["유가평가금액"] = int(data.get('scts_evlu_amt', '0'))
-                    elif 'tot_asst_amt' in data:  # 다른 가능한 필드명
-                        balance_info["유가평가금액"] = int(data.get('tot_asst_amt', '0'))
+                    for field in ['scts_evlu_amt', 'tot_asst_amt', 'stck_evlu_amt']:
+                        if field in data and balance_info["유가평가금액"] == 0:
+                            balance_info["유가평가금액"] = int(data.get(field, '0'))
+                            logger.info(f"유가평가금액 필드 '{field}' 사용: {balance_info['유가평가금액']:,}원")
+                            break
                     
-                    if 'tot_evlu_amt' in data:
-                        balance_info["총평가금액"] = int(data.get('tot_evlu_amt', '0'))
-                    elif 'tot_loan_amt' in data:  # 다른 가능한 필드명
-                        balance_info["총평가금액"] = int(data.get('tot_loan_amt', '0'))
+                    for field in ['tot_evlu_amt', 'tot_loan_amt']:
+                        if field in data and balance_info["총평가금액"] == 0:
+                            balance_info["총평가금액"] = int(data.get(field, '0'))
+                            logger.info(f"총평가금액 필드 '{field}' 사용: {balance_info['총평가금액']:,}원")
+                            break
                     
-                    if 'tot_asst_amt' in data:
-                        balance_info["순자산금액"] = int(data.get('tot_asst_amt', '0'))
+                    for field in ['tot_asst_amt', 'asst_icdc_amt']:
+                        if field in data and balance_info["순자산금액"] == 0:
+                            balance_info["순자산금액"] = int(data.get(field, '0'))
+                            logger.info(f"순자산금액 필드 '{field}' 사용: {balance_info['순자산금액']:,}원")
+                            break
                     
                     # 주문가능금액 별도 처리 (모의투자에서 중요한 필드)
-                    if 'ord_psbl_cash_amt' in data:
-                        balance_info["주문가능금액"] = int(data.get('ord_psbl_cash_amt', '0'))
-                        # 예수금이 0인데 주문가능금액이 있으면 예수금에 복사
-                        if balance_info["예수금"] == 0 and balance_info["주문가능금액"] > 0:
-                            balance_info["예수금"] = balance_info["주문가능금액"]
-                            logger.info(f"주문가능금액({balance_info['주문가능금액']:,}원)을 예수금에 적용")
+                    for field in ['ord_psbl_cash_amt', 'psbl_buy_amt', 'nass_amt']:
+                        if field in data and balance_info["주문가능금액"] == 0:
+                            balance_info["주문가능금액"] = int(data.get(field, '0'))
+                            logger.info(f"주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
+                            break
                 
-                # 모의투자 계좌인 경우 output2(보유종목)의 합계 계산
-                if not self.real_trading and ('output2' in response_data and response_data['output2']):
+                # output2(보유종목)의 상세 정보 활용
+                if 'output2' in response_data and response_data['output2']:
                     stock_list = response_data.get('output2', [])
                     total_stock_value = 0
+                    stock_count = len(stock_list)
+                    logger.info(f"보유종목 수: {stock_count}개")
                     
                     for stock in stock_list:
                         try:
+                            # 종목명과 평가금액 로깅 (디버깅용)
+                            stock_name = stock.get('prdt_name', '종목명 없음')
+                            
                             # 다양한 필드명 시도
-                            if 'evlu_amt' in stock:
-                                eval_amount = int(float(stock.get('evlu_amt', '0')))
-                            elif 'pchs_amt' in stock:
-                                eval_amount = int(float(stock.get('pchs_amt', '0')))
-                            else:
-                                eval_amount = 0
-                                
+                            eval_amount = 0
+                            for field in ['evlu_amt', 'pchs_amt', 'hldg_qty', 'evlu_pfls_amt']:
+                                if field in stock and eval_amount == 0:
+                                    try:
+                                        eval_amount = int(float(stock.get(field, '0')))
+                                        logger.info(f"- {stock_name}: {eval_amount:,}원 (필드: {field})")
+                                        break
+                                    except (ValueError, TypeError):
+                                        continue
+                            
+                            # 수량과 단가 확인
+                            quantity = 0
+                            price = 0
+                            try:
+                                quantity = int(float(stock.get('hldg_qty', '0')))
+                                price = int(float(stock.get('prpr', '0')))
+                                if quantity > 0 and price > 0 and eval_amount == 0:
+                                    eval_amount = quantity * price
+                                    logger.info(f"  > 수량({quantity})과 단가({price})로 평가금액 계산: {eval_amount:,}원")
+                            except (ValueError, TypeError):
+                                pass
+                            
                             total_stock_value += eval_amount
                         except Exception as e:
                             logger.error(f"주식 평가금액 계산 오류: {e}")
                             continue
                     
                     # 유가평가금액이 설정되지 않은 경우 계산한 값으로 설정
-                    if balance_info["유가평가금액"] == 0:
+                    if balance_info["유가평가금액"] == 0 and total_stock_value > 0:
                         balance_info["유가평가금액"] = total_stock_value
                         logger.info(f"보유종목 합산 유가평가금액: {total_stock_value:,}원")
                     
@@ -1225,6 +1250,17 @@ class KISAPI(BrokerBase):
         try:
             # 모의투자에서의 시장 제한 확인
             if not self.real_trading:
+                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
+                if market == 'US':
+                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
                 # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
                 if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
                     error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
@@ -1308,6 +1344,17 @@ class KISAPI(BrokerBase):
         try:
             # 모의투자에서의 시장 제한 확인
             if not self.real_trading:
+                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
+                if market == 'US':
+                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
                 # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
                 if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
                     error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
