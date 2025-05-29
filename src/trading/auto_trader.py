@@ -766,7 +766,29 @@ class AutoTrader:
                 logger.info(f"포지션 데이터 구조를 리스트에서 딕셔너리로 변환했습니다. {len(self.positions)}개 항목")
 
             for symbol, position in list(self.positions.items()):
-                profit_loss_pct = position.get('profit_loss_pct', 0)
+                # 보유 수량이 0이거나 평균단가가 0인 잘못된 데이터 건너뛰기
+                quantity = position.get('quantity', 0)
+                avg_price = position.get('avg_price', 0)
+                if quantity <= 0 or avg_price <= 0:
+                    logger.warning(f"{symbol} 포지션 데이터가 유효하지 않습니다. (수량: {quantity}, 평균단가: {avg_price}) - 손절매/익절 검사 건너뜀")
+                    continue
+                    
+                # 현재가 확인 (0이면 건너뛰기)
+                current_price = position.get('current_price', 0)
+                if current_price <= 0:
+                    logger.warning(f"{symbol} 현재가가 유효하지 않습니다. (현재가: {current_price}) - 손절매/익절 검사 건너뜀")
+                    continue
+                
+                # 손익률 계산 (안전하게)
+                try:
+                    profit_loss_pct = ((current_price / avg_price) - 1) * 100
+                    # 비정상적인 손실률 제한 (-99%까지만 허용)
+                    if profit_loss_pct < -99:
+                        logger.warning(f"{symbol} 계산된 손실률이 비정상적입니다: {profit_loss_pct:.2f}% (현재가: {current_price}, 평균단가: {avg_price}) - 손실률을 -99%로 제한")
+                        profit_loss_pct = -99
+                except Exception as e:
+                    logger.error(f"{symbol} 손익률 계산 중 오류: {e}")
+                    continue
                 
                 # 손절매 확인
                 if profit_loss_pct <= -self.stop_loss_pct:
@@ -782,9 +804,11 @@ class AutoTrader:
                     
                     # 알림 발송
                     if self.notifier:
+                        # 현재가, 평균단가 정보 추가
                         self.notifier.send_message(
                             f"🔴 손절매 실행: {symbol}\n"
                             f"손실: {profit_loss_pct:.2f}%\n"
+                            f"현재가: {current_price:,}원, 평단가: {avg_price:,}원\n"
                             f"⏱️ 시간: {get_current_time_str()}"
                         )
                 
@@ -802,13 +826,16 @@ class AutoTrader:
                     
                     # 알림 발송
                     if self.notifier:
+                        # 현재가, 평균단가 정보 추가
                         self.notifier.send_message(
                             f"🟢 익절 실행: {symbol}\n"
                             f"이익: {profit_loss_pct:.2f}%\n"
+                            f"현재가: {current_price:,}원, 평단가: {avg_price:,}원\n"
                             f"⏱️ 시간: {get_current_time_str()}"
                         )
         except Exception as e:
             logger.error(f"손절매/익절 확인 중 오류 발생: {e}")
+            logger.error(traceback.format_exc())
     
     def process_trading_signal(self, signal_data):
         """
