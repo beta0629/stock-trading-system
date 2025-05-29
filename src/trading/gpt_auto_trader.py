@@ -67,6 +67,18 @@ class GPTAutoTrader:
         
         logger.info("GPT 자동 매매 시스템 초기화 완료")
         
+    def is_trading_time(self, market="KR"):
+        """
+        현재 시간이 거래 시간인지 확인
+        
+        Args:
+            market (str): 시장 코드 ('KR' 또는 'US')
+            
+        Returns:
+            bool: 거래 시간이면 True, 아니면 False
+        """
+        return is_market_open(market)
+    
     def start(self):
         """GPT 기반 자동 매매 시작"""
         logger.info("GPT 자동 매매 시작 시도 중...")
@@ -789,7 +801,7 @@ class GPTAutoTrader:
             # 현재 시간이 거래 시간인지 확인
             now = get_current_time()
             
-            if not self.is_trading_time(now):
+            if not self.is_trading_time():  # datetime 매개변수 제거하고 기본 "KR" 시장 사용
                 logger.info("현재는 거래 시간이 아닙니다.")
                 return
                 
