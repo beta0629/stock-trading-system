@@ -31,6 +31,9 @@ class KISAPI(BrokerBase):
             config: 설정 모듈
         """
         super().__init__(config)
+        # 로거 설정 - 클래스 인스턴스에 할당
+        self.logger = logger
+        
         # 실전투자 여부 확인
         self.real_trading = config.KIS_REAL_TRADING
         
@@ -40,14 +43,14 @@ class KISAPI(BrokerBase):
             self.app_key = config.KIS_APP_KEY
             self.app_secret = config.KIS_APP_SECRET
             self.account_no = config.KIS_ACCOUNT_NO
-            logger.info("실전투자 모드로 설정되었습니다.")
+            self.logger.info("실전투자 모드로 설정되었습니다.")
         else:
             # 모의투자 URL 하드코딩 (KIS_VIRTUAL_URL이 config에 없는 경우 대비)
             self.base_url = getattr(config, 'KIS_VIRTUAL_URL', "https://openapivts.koreainvestment.com:29443")
             self.app_key = config.KIS_VIRTUAL_APP_KEY
             self.app_secret = config.KIS_VIRTUAL_APP_SECRET
             self.account_no = config.KIS_VIRTUAL_ACCOUNT_NO
-            logger.info(f"모의투자 모드로 설정되었습니다. URL: {self.base_url}")
+            self.logger.info(f"모의투자 모드로 설정되었습니다. URL: {self.base_url}")
         
         # 계좌번호 통합 처리 - account_no를 기본 속성으로 사용
         self.account_number = self.account_no
