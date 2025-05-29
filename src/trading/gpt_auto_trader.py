@@ -1189,81 +1189,54 @@ class GPTAutoTrader:
                     
                     # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
                     if not self.gpt_selections.get('KR'):
-                        self.gpt_selections['KR'] = recommended_stocks
-                        logger.info(f"한국 종목 추천 캐시 로드: {len(self.gpt_selections['KR'])}개 종목")
-                        
-                        # 정규화된 추천 종목 코드 저장 (숫자만 추출)
+                        # 캐시 파일에서 추천 종목 로드
                         normalized_recommendations = []
-                        for stock in self.gpt_selections['KR']:
-                            symbol = stock.get('symbol', '')
+                        
+                        for stock in recommended_stocks:
+                            # 깊은 복사를 통해 원본 데이터 유지
+                            stock_copy = stock.copy() if stock else {}
                             
-                            # 종목코드에서 숫자만 추출 (예: "005930(삼성전자)" -> "005930")
-                            if '(' in symbol:
-                                symbol = symbol.split('(')[0].strip()
+                            # 종목 코드와 이름이 제대로 있는지 확인
+                            symbol = stock_copy.get('symbol', '')
+                            name = stock_copy.get('name', '')
                             
-                            # 원래 데이터 복사 후 정규화된 종목 코드로 교체
-                            stock_copy = stock.copy()
-                            stock_copy['symbol'] = symbol
+                            if not symbol:  # 종목 코드가 없으면 건너뜀
+                                logger.warning(f"종목 코드가 없는 항목을 건너뜁니다: {stock_copy}")
+                                continue
+                                
+                            # 종목 데이터 검증 및 기본값 설정
+                            if not stock_copy.get('suggested_weight'):
+                                # 비중이 없거나 0인 경우 기본값 설정
+                                stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
+                                logger.info(f"{symbol} 종목에 기본 비중 20% 설정")
+                            
+                            if not stock_copy.get('risk_level'):
+                                stock_copy['risk_level'] = 5  # 기본 위험도 5로 설정
+                            
+                            if not stock_copy.get('target_price'):
+                                # 목표가가 없으면 현재가의 20% 상승으로 설정
+                                current_price = self.data_provider.get_current_price(symbol, "KR") if self.data_provider else 0
+                                if current_price:
+                                    stock_copy['target_price'] = current_price * 1.2
+                                else:
+                                    stock_copy['target_price'] = 0
+                            
+                            # 종목 정보 검증 완료된 데이터 추가
                             normalized_recommendations.append(stock_copy)
-                            
-                            # 로그 출력
-                            name = stock.get('name', symbol)
-                            weight = stock.get('suggested_weight', 0)
-                            logger.info(f"정규화된 추천 종목: {name}({symbol}), 비중: {weight}%")
+                            logger.info(f"정규화된 추천 종목: {name}({symbol}), 비중: {stock_copy['suggested_weight']}%")
                         
                         # 정규화된 추천 목록으로 교체
                         self.gpt_selections['KR'] = normalized_recommendations
+                        logger.info(f"한국 종목 추천 캐시 로드: {len(normalized_recommendations)}개 종목")
                         
                 except Exception as e:
                     logger.error(f"한국 종목 추천 캐시 로드 중 오류: {e}")
+                    # 오류 발생 시 기본 종목 목록 사용
+                    self._use_default_stocks()
             else:
                 logger.warning(f"한국 종목 추천 캐시 파일이 존재하지 않습니다: {kr_cache_file}")
-                
-                # 데이터베이스에서 최신 추천 종목 가져오기 시도
-                try:
-                    from src.database.db_manager import DatabaseManager
-                    db_manager = DatabaseManager.get_instance(self.config)
-                    
-                    if db_manager.use_db:
-                        logger.info("데이터베이스에서 최신 추천 종목 가져오기 시도")
-                        recent_recs = db_manager.get_recent_recommendations(market="KR", limit=1)
-                        
-                        if not recent_recs.empty:
-                            recent_rec = recent_recs.iloc[0]
-                            symbols_data = recent_rec['symbols']
-                            
-                            if isinstance(symbols_data, str):
-                                try:
-                                    symbols_data = json.loads(symbols_data)
-                                except:
-                                    logger.error("DB에서 가져온 symbols 문자열을 JSON으로 파싱할 수 없습니다.")
-                            
-                            if isinstance(symbols_data, list) and symbols_data:
-                                logger.info(f"DB에서 {len(symbols_data)}개의 한국 추천 종목을 가져왔습니다.")
-                                
-                                # 정규화된 추천 종목 코드 저장 (숫자만 추출)
-                                normalized_recommendations = []
-                                for stock in symbols_data:
-                                    symbol = stock.get('symbol', '')
-                                    
-                                    # 종목코드에서 숫자만 추출 (예: "005930(삼성전자)" -> "005930")
-                                    if '(' in symbol:
-                                        symbol = symbol.split('(')[0].strip()
-                                    
-                                    # 원래 데이터 복사 후 정규화된 종목 코드로 교체
-                                    stock_copy = stock.copy()
-                                    stock_copy['symbol'] = symbol
-                                    normalized_recommendations.append(stock_copy)
-                                    
-                                    # 로그 출력
-                                    name = stock.get('name', symbol)
-                                    weight = stock.get('suggested_weight', 0)
-                                    logger.info(f"DB에서 가져온 종목: {name}({symbol}), 비중: {weight}%")
-                                
-                                # 정규화된 추천 목록으로 교체
-                                self.gpt_selections['KR'] = normalized_recommendations
-                except Exception as e:
-                    logger.error(f"데이터베이스에서 추천 종목 가져오기 중 오류: {e}")
+                # 캐시 파일이 없을 경우 기본 종목 목록 사용
+                self._use_default_stocks()
             
             # 미국 종목 추천 캐시 로드
             us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
@@ -1274,8 +1247,32 @@ class GPTAutoTrader:
                         
                     # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
                     if not self.gpt_selections.get('US'):
-                        self.gpt_selections['US'] = us_data.get('recommended_stocks', [])
-                        logger.info(f"미국 종목 추천 캐시 로드: {len(self.gpt_selections['US'])}개 종목")
+                        recommended_stocks = us_data.get('recommended_stocks', [])
+                        normalized_recommendations = []
+                        
+                        for stock in recommended_stocks:
+                            # 깊은 복사를 통해 원본 데이터 유지
+                            stock_copy = stock.copy() if stock else {}
+                            
+                            # 종목 코드와 이름이 제대로 있는지 확인
+                            symbol = stock_copy.get('symbol', '')
+                            name = stock_copy.get('name', '')
+                            
+                            if not symbol:  # 종목 코드가 없으면 건너뜀
+                                continue
+                                
+                            # 종목 데이터 검증 및 기본값 설정
+                            if not stock_copy.get('suggested_weight'):
+                                stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
+                            
+                            if not stock_copy.get('risk_level'):
+                                stock_copy['risk_level'] = 5  # 기본 위험도 5로 설정
+                            
+                            # 종목 정보 검증 완료된 데이터 추가
+                            normalized_recommendations.append(stock_copy)
+                            
+                        self.gpt_selections['US'] = normalized_recommendations
+                        logger.info(f"미국 종목 추천 캐시 로드: {len(normalized_recommendations)}개 종목")
                         
                         # 선택된 종목 로그 출력
                         for stock in self.gpt_selections['US']:
@@ -1286,33 +1283,40 @@ class GPTAutoTrader:
                 except Exception as e:
                     logger.error(f"미국 종목 추천 캐시 로드 중 오류: {e}")
             
-            # 로드 후 추천 종목이 없을 경우 하드코딩된 기본값이 있는지 확인
-            if not self.gpt_selections.get('KR'):
-                logger.warning("추천 종목이 없어 config.py의 기본 종목을 사용합니다.")
-                default_stocks = getattr(self.config, 'DEFAULT_STOCKS_KR', [])
-                
-                # 기본 종목에 비중 설정 (균등 배분)
-                if default_stocks:
-                    weight_each = 100 // len(default_stocks) if default_stocks else 0
-                    
-                    normalized_recommendations = []
-                    for symbol in default_stocks:
-                        stock_data = {
-                            'symbol': symbol,
-                            'name': symbol,  # 이름 정보가 없으므로 심볼로 대체
-                            'suggested_weight': weight_each,  # 균등 비중 부여
-                            'risk_level': 5,  # 중간 위험도
-                            'target_price': 0  # 목표가 정보 없음
-                        }
-                        normalized_recommendations.append(stock_data)
-                        logger.info(f"기본 종목 추가: {symbol}, 비중: {weight_each}%")
-                    
-                    self.gpt_selections['KR'] = normalized_recommendations
-            
             return True
         except Exception as e:
             logger.error(f"캐시된 종목 추천 정보 로드 중 오류 발생: {e}")
+            # 오류 발생 시 기본 종목 목록 사용
+            self._use_default_stocks()
             return False
+            
+    def _use_default_stocks(self):
+        """기본 종목 목록 사용"""
+        logger.warning("추천 종목이 없어 config.py의 기본 종목을 사용합니다.")
+        default_stocks = getattr(self.config, 'DEFAULT_STOCKS_KR', [])
+        
+        # 기본 종목에 비중 설정 (균등 배분)
+        if default_stocks:
+            weight_each = 100 // len(default_stocks) if default_stocks else 0
+            
+            normalized_recommendations = []
+            for symbol in default_stocks:
+                # 종목 코드가 있는지 확인
+                if not symbol:
+                    continue
+                    
+                stock_data = {
+                    'symbol': symbol,
+                    'name': symbol,  # 이름 정보가 없으므로 심볼로 대체
+                    'suggested_weight': weight_each,  # 균등 비중 부여
+                    'risk_level': 5,  # 중간 위험도
+                    'target_price': 0  # 목표가 정보 없음
+                }
+                normalized_recommendations.append(stock_data)
+                logger.info(f"기본 종목 추가: {symbol}, 비중: {weight_each}%")
+            
+            self.gpt_selections['KR'] = normalized_recommendations
+        return
     
     def _optimize_technical_indicators(self):
         """GPT를 사용하여 기술적 지표 설정 최적화"""
