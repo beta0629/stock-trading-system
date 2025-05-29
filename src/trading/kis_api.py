@@ -1616,3 +1616,46 @@ class KISAPI(BrokerBase):
                 logger.warning(f"카카오톡 오류 알림 전송 중 오류 발생: {notify_err}")
             
             return result
+    
+    def _get_headers(self, tr_id, content_type="application/json"):
+        """
+        API 요청용 헤더 생성
+        
+        Args:
+            tr_id: 거래 ID
+            content_type: 콘텐츠 타입 (기본값: "application/json")
+            
+        Returns:
+            dict: 헤더 딕셔너리
+        """
+        headers = {
+            "content-type": content_type,
+            "authorization": f"Bearer {self.access_token}",
+            "appkey": self.app_key,
+            "appsecret": self.app_secret,
+            "tr_id": tr_id,
+            "custtype": "P"
+        }
+        return headers
+        
+    def _handle_api_delay(self, retry_count):
+        """
+        API 지연/실패에 대한 대기 처리
+        
+        Args:
+            retry_count: 현재 재시도 횟수
+            
+        Returns:
+            bool: 계속 재시도할지 여부
+        """
+        # 모의투자일 때만 더 긴 대기 시간 적용
+        if not self.real_trading:
+            # 재시도 횟수에 따라 대기 시간 증가
+            wait_time = self.api_retry_delay * (retry_count + 1)
+            logger.warning(f"모의투자 API 지연 발생, {wait_time}초 대기 후 재시도합니다...")
+            time.sleep(wait_time)
+            return True
+        else:
+            # 실전투자는 짧은 대기 후 재시도
+            time.sleep(3)
+            return True
