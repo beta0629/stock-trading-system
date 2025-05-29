@@ -125,14 +125,14 @@ def run_with_retry(script_path, max_retries=None):
         logger.warning(f"최대 재시도 횟수({max_retries}회)에 도달했습니다. 프로세스를 종료합니다.")
 
 if __name__ == "__main__":
-    script_to_run = "test_mock_auto_trading.py"
+    script_to_run = "main.py"
     
     # 명령행 인자로 다른 스크립트를 지정한 경우
     if len(sys.argv) > 1:
         script_to_run = sys.argv[1]
     
-    logger.info(f"모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 시작 (대상: {script_to_run})")
+    logger.info(f"자동 매매 시스템 자동 재시작 래퍼 스크립트 시작 (대상: {script_to_run})")
     # GitHub Actions 환경에서만 제한된 재시도 횟수를 설정, 로컬에서는 무제한 재시도
     max_retries = 5 if is_github_actions else None
     run_with_retry(script_to_run, max_retries)
-    logger.info("모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 종료")
+    logger.info("자동 매매 시스템 자동 재시작 래퍼 스크립트 종료")

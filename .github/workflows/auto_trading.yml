@@ -5,7 +5,12 @@ on:
     # 한국 시간 오후 11시 36분 (UTC 14:36)
     - cron: '36 14 * * *'
   workflow_dispatch:
-    # 수동 실행 옵션
+    inputs:
+      simulation_mode:
+        description: '모의 투자 모드 활성화'
+        required: true
+        default: true
+        type: boolean
 
 jobs:
   auto-trading:
@@ -14,7 +19,6 @@ jobs:
     
     env:
       # 기본 설정
-      MOCK_INITIAL_CAPITAL: "10000000"  # 모의 자본금 (1천만원)
       KR_MARKET_OPEN_TIME: "09:00"  # 한국 시장 시작 시간
       KR_MARKET_CLOSE_TIME: "15:30"  # 한국 시장 종료 시간
       USE_KAKAO: "true"  # 카카오톡 알림 활성화
@@ -124,17 +128,19 @@ jobs:
       - name: 자동매매 실행 (main.py)
         env:
           RESTART_COUNT: "5"  # 최대 재시작 횟수
+          MOCK_INITIAL_CAPITAL: "10000000"  # 모의 투자 초기 자본금 (1천만원)
         run: |
           # 데이터베이스 디렉토리 설정
           export SQLITE_DB_PATH="./data/stock_trading.db"
-          export SIMULATION_MODE="false"  # 실제 API를 통한 매매 활성화
+          export SIMULATION_MODE="true"  # 모의 투자 활성화
           export FORCE_MARKET_OPEN="true"  # 시장 강제 오픈
+          export USE_VIRTUAL_ACCOUNT="true"  # 가상 계좌 사용
           
-          echo "자동매매 시스템을 시작합니다 (실행 횟수: $RESTART_COUNT 회)"
+          echo "모의 자동매매 시스템을 시작합니다 (실행 횟수: $RESTART_COUNT 회)"
           
           for attempt in $(seq 1 $RESTART_COUNT); do
             echo "실행 시도 #$attempt/$RESTART_COUNT: $(date)"
-            timeout 60m python main.py --force-market-open || true
+            timeout 60m python main.py --force-market-open --simulation-mode || true
             
             # 재시작 간 대기 시간
             if [ $attempt -lt $RESTART_COUNT ]; then
@@ -143,7 +149,7 @@ jobs:
             fi
           done
           
-          echo "모든 매매 사이클이 완료되었습니다."
+          echo "모든 모의 매매 사이클이 완료되었습니다."
 
       - name: 로그 파일 및 데이터베이스 업로드
         if: always()  # 이전 단계가 실패해도 항상 실행
