@@ -44,6 +44,13 @@ if force_market_open:
     # config에 강제 설정
     config.FORCE_MARKET_OPEN = True
 
+# 모의투자 모드 설정 - 환경 변수에서 읽어오기
+simulation_mode = os.environ.get("SIMULATION_MODE", "").lower() == "true"
+if simulation_mode:
+    logger.info("환경 변수 SIMULATION_MODE=true 설정 감지: 모의투자 모드 활성화")
+    config.KIS_REAL_TRADING = False
+    logger.info("한국투자증권 모의투자 계좌를 사용합니다.")
+
 class StockAnalysisSystem:
     """주식 분석 시스템 메인 클래스"""
     
@@ -193,6 +200,15 @@ class StockAnalysisSystem:
             else:
                 logger.info("GPT 자동 매매 기능이 비활성화되어 있습니다.")
                 self.gpt_auto_trader = None
+            
+            # 시뮬레이션 모드 설정이 활성화 되었는지 확인
+            if hasattr(self.config, 'SIMULATION_MODE') and self.config.SIMULATION_MODE:
+                if self.auto_trader:
+                    self.auto_trader.simulation_mode = True
+                    logger.info("자동 매매 시스템이 시뮬레이션 모드로 설정되었습니다.")
+                if self.gpt_auto_trader and hasattr(self.gpt_auto_trader, 'auto_trader'):
+                    self.gpt_auto_trader.auto_trader.simulation_mode = True
+                    logger.info("GPT 자동 매매 시스템이 시뮬레이션 모드로 설정되었습니다.")
             
             # CI 환경에서 시뮬레이션 모드로 강제 설정
             if is_ci:
@@ -1132,6 +1148,7 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='디버그 모드 활성화')
     parser.add_argument('--skip-stock-select', action='store_true', help='종목 선정 과정 건너뛰기')
     parser.add_argument('--force-market-open', action='store_true', help='시장 시간 제한을 무시하고 강제로 열림 상태로 간주')
+    parser.add_argument('--simulation-mode', action='store_true', help='자동 매매 시스템을 시뮬레이션 모드로 실행')
     return parser.parse_args()
 
 
@@ -1148,6 +1165,12 @@ if __name__ == "__main__":
     if args.force_market_open:
         logger.info("강제 시장 열림 모드 활성화")
         config.FORCE_MARKET_OPEN = True
+    
+    # 시뮬레이션 모드 설정
+    if args.simulation_mode:
+        logger.info("시뮬레이션 모드 활성화")
+        config.KIS_REAL_TRADING = False
+        logger.info("한국투자증권 모의투자 계좌를 사용합니다.")
     
     # 시스템 인스턴스 생성 및 시작
     system = StockAnalysisSystem()
