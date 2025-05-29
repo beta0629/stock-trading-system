@@ -677,7 +677,7 @@ class GPTAutoTrader:
             symbol = stock_data.get('symbol')
             name = stock_data.get('name', symbol)
             market = "KR" if len(symbol) == 6 and symbol.isdigit() else "US"
-            suggested_weight = stock_data.get('suggested_weight', 10) / 100
+            suggested_weight = stock_data.get('suggested_weight', 20) / 100
             
             # 현재가 확인
             current_price = self.data_provider.get_current_price(symbol, market)
@@ -685,12 +685,13 @@ class GPTAutoTrader:
                 logger.warning(f"{symbol} 현재가를 가져올 수 없습니다.")
                 return False
                 
-            # 계좌 잔고 확인
-            balance_info = self.broker.get_balance()
-            available_cash = balance_info.get('주문가능금액', balance_info.get('예수금', 0))
+            # 매수 전 계좌 잔고 기록
+            pre_balance_info = self.broker.get_balance()
+            pre_available_cash = pre_balance_info.get('주문가능금액', pre_balance_info.get('예수금', 0))
+            logger.info(f"매수 전 주문가능금액: {pre_available_cash:,.0f}원")
             
             # 투자 금액 결정 (계좌 잔고 또는 최대 투자 금액 중 작은 것)
-            investment_amount = min(self.max_investment_per_stock, available_cash * suggested_weight)
+            investment_amount = min(self.max_investment_per_stock, pre_available_cash * suggested_weight)
             
             # 매수 수량 계산 (투자 금액 / 현재가)
             quantity = int(investment_amount / current_price)
@@ -700,7 +701,8 @@ class GPTAutoTrader:
                 logger.warning(f"{symbol} 매수 수량({quantity})이 1보다 작아 매수하지 않습니다.")
                 return False
                 
-            logger.info(f"{symbol} 매수 실행: {quantity}주 × {current_price:,.0f}원 = {quantity * current_price:,.0f}원")
+            expected_total = quantity * current_price
+            logger.info(f"{symbol} 매수 실행: {quantity}주 × {current_price:,.0f}원 = {expected_total:,.0f}원 (예상)")
             
             # 매수 실행
             order_result = self.auto_trader._execute_order(
@@ -728,6 +730,30 @@ class GPTAutoTrader:
                     'suggested_weight': suggested_weight * 100
                 }
                 self.trade_history.append(trade_record)
+                
+                # 주문 후 잔고 변화 확인을 위해 지연시간 추가
+                logger.info(f"주문 체결 후 API 반영 대기 시작...")
+                time.sleep(3)  # 3초 대기
+                
+                # 매수 후 계좌 잔고 확인
+                post_balance_info = self.broker.get_balance()
+                post_available_cash = post_balance_info.get('주문가능금액', post_balance_info.get('예수금', 0))
+                logger.info(f"매수 후 주문가능금액: {post_available_cash:,.0f}원")
+                
+                # 잔고 변화 확인
+                cash_diff = pre_available_cash - post_available_cash
+                logger.info(f"주문가능금액 변화: -{cash_diff:,.0f}원 (예상: -{expected_total:,.0f}원)")
+                
+                if cash_diff < expected_total * 0.5:  # 예상 금액의 절반보다 작으면 경고
+                    logger.warning(f"주의: 주문가능금액 감소({cash_diff:,.0f}원)이 예상 금액({expected_total:,.0f}원)보다 크게 적습니다.")
+                    logger.warning(f"모의투자 API에서는 잔고 업데이트가 지연될 수 있습니다. 5초 후 다시 확인합니다.")
+                    
+                    # 추가 지연 후 재확인
+                    time.sleep(5)
+                    retry_balance_info = self.broker.get_balance()
+                    retry_available_cash = retry_balance_info.get('주문가능금액', retry_balance_info.get('예수금', 0))
+                    retry_cash_diff = pre_available_cash - retry_available_cash
+                    logger.info(f"5초 후 재확인 - 주문가능금액: {retry_available_cash:,.0f}원, 변화: -{retry_cash_diff:,.0f}원")
                 
                 # 보유 종목 업데이트
                 self._load_current_holdings()
@@ -1196,7 +1222,7 @@ class GPTAutoTrader:
                         symbol = stock.get('symbol', '')
                         name = stock.get('name', symbol)
                         # 비중 값 확인 (명시적으로 가져오기)
-                        weight = stock.get('suggested_weight', 20)  # 기본값 20%로 설정
+                        weight = stock.get('suggested_weight', 20) # 기본값 20%로 설정
                         logger.info(f"캐시 파일 종목: {name}({symbol}), 비중: {weight}%")
                     
                     # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
