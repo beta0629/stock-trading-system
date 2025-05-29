@@ -422,40 +422,40 @@ class KISAPI(BrokerBase):
                             balance_info["예수금"] = int(data.get(field, '0'))
                             logger.info(f"예수금 필드 '{field}' 사용: {balance_info['예수금']:,}원")
                             break
-                    
+                
                     # 출금가능금액
                     for field in ['magt_rt_amt', 'ord_psbl_cash_amt']:
                         if field in data and balance_info["출금가능금액"] == 0:
                             balance_info["출금가능금액"] = int(data.get(field, '0'))
                             logger.info(f"출금가능금액 필드 '{field}' 사용: {balance_info['출금가능금액']:,}원")
                             break
-                    
+                
                     # D+2예수금
                     for field in ['d2_dncl_amt', 'thdt_buy_amt', 'd2_auto_rdpt_amt']:
                         if field in data and balance_info["D+2예수금"] == 0:
                             balance_info["D+2예수금"] = int(data.get(field, '0'))
                             logger.info(f"D+2예수금 필드 '{field}' 사용: {balance_info['D+2예수금']:,}원")
                             break
-                    
+                
                     # 평가 금액 정보
                     for field in ['scts_evlu_amt', 'tot_asst_amt', 'stck_evlu_amt']:
                         if field in data and balance_info["유가평가금액"] == 0:
                             balance_info["유가평가금액"] = int(data.get(field, '0'))
                             logger.info(f"유가평가금액 필드 '{field}' 사용: {balance_info['유가평가금액']:,}원")
                             break
-                    
+                
                     for field in ['tot_evlu_amt', 'tot_loan_amt']:
                         if field in data and balance_info["총평가금액"] == 0:
                             balance_info["총평가금액"] = int(data.get(field, '0'))
                             logger.info(f"총평가금액 필드 '{field}' 사용: {balance_info['총평가금액']:,}원")
                             break
-                    
+                
                     for field in ['tot_asst_amt', 'asst_icdc_amt']:
                         if field in data and balance_info["순자산금액"] == 0:
                             balance_info["순자산금액"] = int(data.get(field, '0'))
                             logger.info(f"순자산금액 필드 '{field}' 사용: {balance_info['순자산금액']:,}원")
                             break
-                    
+                
                     # 주문가능금액 별도 처리 (모의투자에서 중요한 필드)
                     for field in ['ord_psbl_cash_amt', 'psbl_buy_amt', 'nass_amt', 'dnca_tot_amt', 'tot_evlu_amt']:
                         if field in data:
@@ -464,57 +464,41 @@ class KISAPI(BrokerBase):
                                 balance_info["주문가능금액"] = value
                                 logger.info(f"주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
                                 break
+            
+            # output2에서 추가 정보 확인 (필요시)
+            if 'output2' in response_data and response_data['output2'] and balance_info["주문가능금액"] == 0:
+                # 모의투자에서는 output2에 데이터를 반환하는 경우가 있음
+                data = response_data.get('output2', [{}])[0]
                 
-                # output2(보유종목)의 상세 정보 활용
-                if 'output2' in response_data and response_data['output2']:
-                    stock_list = response_data.get('output2', [])
-                    total_stock_value = 0
-                    stock_count = len(stock_list)
-                    logger.info(f"보유종목 수: {stock_count}개")
-                    
-                    for stock in stock_list:
-                        try:
-                            # 종목명과 평가금액 로깅 (디버깅용)
-                            stock_name = stock.get('prdt_name', '종목명 없음')
-                            
-                            # 다양한 필드명 시도
-                            eval_amount = 0
-                            for field in ['evlu_amt', 'pchs_amt', 'hldg_qty', 'evlu_pfls_amt']:
-                                if field in stock and eval_amount == 0:
-                                    try:
-                                        eval_amount = int(float(stock.get(field, '0')))
-                                        logger.info(f"- {stock_name}: {eval_amount:,}원 (필드: {field})")
-                                        break
-                                    except (ValueError, TypeError):
-                                        continue
-                            
-                            # 수량과 단가 확인
-                            quantity = 0
-                            price = 0
-                            try:
-                                quantity = int(float(stock.get('hldg_qty', '0')))
-                                price = int(float(stock.get('prpr', '0')))
-                                if quantity > 0 and price > 0 and eval_amount == 0:
-                                    eval_amount = quantity * price
-                                    logger.info(f"  > 수량({quantity})과 단가({price})로 평가금액 계산: {eval_amount:,}원")
-                            except (ValueError, TypeError):
-                                pass
-                            
-                            total_stock_value += eval_amount
-                        except Exception as e:
-                            logger.error(f"주식 평가금액 계산 오류: {e}")
-                            continue
-                    
-                    # 유가평가금액이 설정되지 않은 경우 계산한 값으로 설정
-                    if balance_info["유가평가금액"] == 0 and total_stock_value > 0:
-                        balance_info["유가평가금액"] = total_stock_value
-                        logger.info(f"보유종목 합산 유가평가금액: {total_stock_value:,}원")
-                    
-                    # 총평가금액이 설정되지 않은 경우 예수금 + 유가평가금액으로 계산
-                    if balance_info["총평가금액"] == 0:
-                        balance_info["총평가금액"] = balance_info["예수금"] + balance_info["유가평가금액"]
-                        logger.info(f"계산된 총평가금액: {balance_info['총평가금액']:,}원")
+                # 주문가능금액 필드 확인
+                for field in ['nass_amt', 'dnca_tot_amt', 'tot_evlu_amt', 'prvs_rcdl_excc_amt', 'nxdy_excc_amt']:
+                    if field in data:
+                        value = int(data.get(field, '0'))
+                        if value > 0:  # 0보다 큰 값이 있는 경우에만 업데이트
+                            balance_info["주문가능금액"] = value
+                            logger.info(f"output2에서 주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
+                            break
                 
+                # 예수금이 설정되지 않은 경우, output2에서 찾음
+                if balance_info["예수금"] == 0:
+                    for field in ['dnca_tot_amt', 'prvs_rcdl_excc_amt', 'nxdy_excc_amt']:
+                        if field in data:
+                            value = int(data.get(field, '0'))
+                            if value > 0:
+                                balance_info["예수금"] = value
+                                logger.info(f"output2에서 예수금 필드 '{field}' 사용: {balance_info['예수금']:,}원")
+                                break
+                
+                # 총평가금액이 설정되지 않은 경우, output2에서 찾음
+                if balance_info["총평가금액"] == 0:
+                    for field in ['tot_evlu_amt', 'nass_amt']:
+                        if field in data:
+                            value = int(data.get(field, '0'))
+                            if value > 0:
+                                balance_info["총평가금액"] = value
+                                logger.info(f"output2에서 총평가금액 필드 '{field}' 사용: {balance_info['총평가금액']:,}원")
+                                break
+                        
                 return balance_info
             else:
                 err_code = response_data.get('rt_cd')
