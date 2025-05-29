@@ -500,7 +500,7 @@ class GPTAutoTrader:
             # 시장이 열려있는지 확인
             market = "KR" if len(symbol) == 6 and symbol.isdigit() else "US"
             if not is_market_open(market):
-                logger.info(f"{market} 시장이 닫혀 있어 매수하지 않습니다.")
+                logger.info(f"{market} 시장이 닫혀있어 매수하지 않습니다.")
                 return False
                 
             # 추천 비중이 충분히 높은지 확인
@@ -790,6 +790,15 @@ class GPTAutoTrader:
         except Exception as e:
             logger.error(f"매도 실행 중 오류 발생: {e}")
             return False
+    
+    def _update_positions(self):
+        """
+        보유 종목 현황 업데이트 (계좌 정보 동기화)
+        
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        return self._load_current_holdings()
     
     def run_cycle(self):
         """
