@@ -36,6 +36,8 @@ class KISAPI(BrokerBase):
         
         # 실전투자 여부 확인
         self.real_trading = config.KIS_REAL_TRADING
+        # 목 트레이딩 여부 설정 - 실전투자의 반대 개념
+        self.mock_trading = not self.real_trading
         
         # 실전/모의투자에 따른 설정
         if self.real_trading:
