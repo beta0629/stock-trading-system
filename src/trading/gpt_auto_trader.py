@@ -362,16 +362,39 @@ class GPTAutoTrader:
             positions = self.broker.get_positions()
             self.holdings = {}
             
-            for symbol, position in positions.items():
-                self.holdings[symbol] = {
-                    'symbol': symbol,
-                    'name': position.get('name', symbol),
-                    'quantity': position.get('quantity', 0),
-                    'avg_price': position.get('avg_price', 0),
-                    'current_price': position.get('current_price', 0),
-                    'market': position.get('market', 'KR'),
-                    'entry_time': position.get('entry_time', get_current_time().isoformat())
-                }
+            # positions가 dict인 경우 (key-value 형태)
+            if isinstance(positions, dict):
+                logger.debug("Dict 형태의 positions 처리")
+                for symbol, position in positions.items():
+                    self.holdings[symbol] = {
+                        'symbol': symbol,
+                        'name': position.get('name', symbol),
+                        'quantity': position.get('quantity', 0),
+                        'avg_price': position.get('avg_price', 0),
+                        'current_price': position.get('current_price', 0),
+                        'market': position.get('market', 'KR'),
+                        'entry_time': position.get('entry_time', get_current_time().isoformat())
+                    }
+            # positions가 list인 경우 (항목 리스트 형태)
+            elif isinstance(positions, list):
+                logger.debug("List 형태의 positions 처리")
+                for position in positions:
+                    symbol = position.get('symbol')
+                    if not symbol:  # symbol이 없으면 건너뜀
+                        continue
+                    
+                    self.holdings[symbol] = {
+                        'symbol': symbol,
+                        'name': position.get('name', symbol),
+                        'quantity': position.get('quantity', 0),
+                        'avg_price': position.get('avg_price', 0),
+                        'current_price': position.get('current_price', 0),
+                        'market': position.get('market', 'KR'),
+                        'entry_time': position.get('entry_time', get_current_time().isoformat())
+                    }
+            else:
+                # 예상치 않은 형태
+                logger.warning(f"예상치 않은 positions 형식: {type(positions)}")
                 
             logger.info(f"보유 종목 로드 완료: {len(self.holdings)}개")
             return True
