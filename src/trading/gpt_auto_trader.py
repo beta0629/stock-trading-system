@@ -825,6 +825,9 @@ class GPTAutoTrader:
             if not self.is_trading_time():  # datetime 매개변수 제거하고 기본 "KR" 시장 사용
                 logger.info("현재는 거래 시간이 아닙니다.")
                 return
+            
+            # 캐시된 GPT 추천 정보 로드 (GPT 선정 데이터가 없을 경우 대비)
+            self._load_cached_recommendations()
                 
             # 종목 선정 (필요한 경우)
             self._select_stocks()
@@ -1115,4 +1118,58 @@ class GPTAutoTrader:
                 
         except Exception as e:
             logger.error(f"매수 실행 중 오류 발생: {e}")
+            return False
+    
+    def _load_cached_recommendations(self):
+        """캐시된 종목 추천 정보를 로드"""
+        try:
+            # 캐시 파일 경로
+            cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
+            kr_cache_file = os.path.join(cache_dir, 'kr_stock_recommendations.json')
+            us_cache_file = os.path.join(cache_dir, 'us_stock_recommendations.json')
+            
+            # 한국 종목 추천 캐시 로드
+            if os.path.exists(kr_cache_file):
+                try:
+                    with open(kr_cache_file, 'r', encoding='utf-8') as f:
+                        kr_data = json.load(f)
+                        
+                    # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
+                    if not self.gpt_selections.get('KR'):
+                        self.gpt_selections['KR'] = kr_data.get('recommended_stocks', [])
+                        logger.info(f"한국 종목 추천 캐시 로드: {len(self.gpt_selections['KR'])}개 종목")
+                        
+                        # 선택된 종목 로그 출력
+                        for stock in self.gpt_selections['KR']:
+                            symbol = stock.get('symbol', '')
+                            name = stock.get('name', symbol)
+                            weight = stock.get('suggested_weight', 0)
+                            logger.debug(f"캐시된 한국 추천 종목: {name}({symbol}), 추천 비중: {weight}%")
+                except Exception as e:
+                    logger.error(f"한국 종목 추천 캐시 로드 중 오류: {e}")
+            
+            # 미국 종목 추천 캐시 로드
+            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            if us_stock_trading_enabled and os.path.exists(us_cache_file):
+                try:
+                    with open(us_cache_file, 'r', encoding='utf-8') as f:
+                        us_data = json.load(f)
+                        
+                    # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
+                    if not self.gpt_selections.get('US'):
+                        self.gpt_selections['US'] = us_data.get('recommended_stocks', [])
+                        logger.info(f"미국 종목 추천 캐시 로드: {len(self.gpt_selections['US'])}개 종목")
+                        
+                        # 선택된 종목 로그 출력
+                        for stock in self.gpt_selections['US']:
+                            symbol = stock.get('symbol', '')
+                            name = stock.get('name', symbol)
+                            weight = stock.get('suggested_weight', 0)
+                            logger.debug(f"캐시된 미국 추천 종목: {name}({symbol}), 추천 비중: {weight}%")
+                except Exception as e:
+                    logger.error(f"미국 종목 추천 캐시 로드 중 오류: {e}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"캐시된 종목 추천 정보 로드 중 오류 발생: {e}")
             return False
