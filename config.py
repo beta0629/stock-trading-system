@@ -123,7 +123,7 @@ LONG_TERM_MA = MA_LONG  # 장기 이동평균 별칭
 # GPT 기술적 지표 최적화 설정
 GPT_OPTIMIZE_TECHNICAL_INDICATORS = True  # GPT가 기술적 지표 설정 최적화 여부
 GPT_TECHNICAL_OPTIMIZATION_INTERVAL = 168  # 기술적 지표 최적화 간격 (시간, 기본값 1주일)
-GPT_TECHNICAL_MARKET_SENSITIVITY = "balanced"  # market_sensitive(시장 민감), balanced(균형), conservative(보수적)
+GPT_TECHNICAL_MARKET_SENSITIVITY = "market_sensitive"  # market_sensitive(시장 민감), balanced(균형), conservative(보수적)
 
 # RSI 매수/매도 임계값
 RSI_OVERSOLD = 30  # RSI 과매도 기준
@@ -135,7 +135,7 @@ GPT_STOCK_SELECTION_INTERVAL = 24  # 종목 선정 간격 (시간)
 GPT_TRADING_MAX_POSITIONS = 10  # 최대 포지션 수 (5에서 10으로 증가)
 GPT_TRADING_CONF_THRESHOLD = 0.7  # 매매 신뢰도 임계값
 GPT_MAX_INVESTMENT_PER_STOCK = 1000000  # 종목당 최대 투자금액 (원)
-GPT_STRATEGY = "balanced"  # 기본 전략 (balanced, growth, value, dividend)
+GPT_STRATEGY = "growth"  # 기본 전략 (balanced, growth, value, dividend)
 GPT_TRADING_MONITOR_INTERVAL = 30  # 모니터링 간격 (분)
 GPT_USE_DYNAMIC_SELECTION = True  # 하드코딩 대신 GPT가 동적으로 종목 선정 (추가된 옵션)
 
