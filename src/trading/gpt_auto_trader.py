@@ -497,7 +497,7 @@ class GPTAutoTrader:
         try:
             symbol = stock_data.get('symbol')
             risk_level = stock_data.get('risk_level', 5)
-            suggested_weight = stock_data.get('suggested_weight', 10)
+            suggested_weight = stock_data.get('suggested_weight', 20)  # 기본값 20%로 변경
             target_price = stock_data.get('target_price', 0)
             
             # 기본 검증
@@ -886,7 +886,12 @@ class GPTAutoTrader:
             logger.info("=== KR 추천 종목 목록 로그 확인 ===")
             for stock in self.gpt_selections.get('KR', []):
                 symbol = stock.get('symbol', '')
+                # 비중이 없거나 0인 경우 기본값 20%로 설정 (로그용)
                 weight = stock.get('suggested_weight', 0)
+                if weight == 0:
+                    weight = 20
+                    # 실제 데이터도 업데이트
+                    stock['suggested_weight'] = 20
                 name = stock.get('name', symbol)
                 logger.info(f"추천 종목: {name}({symbol}), 추천 비중: {weight}%")
             
@@ -920,9 +925,15 @@ class GPTAutoTrader:
                 # 원래 데이터 복사 후 정규화된 종목 코드로 교체
                 stock_copy = stock.copy()
                 stock_copy['symbol'] = symbol
+                
+                # 비중이 없거나 0인 경우 기본값 20%로 설정
+                if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
+                    stock_copy['suggested_weight'] = 20
+                
                 normalized_recommendations.append(stock_copy)
                 
-                logger.info(f"정규화된 종목코드: {symbol}, 추천 비중: {stock.get('suggested_weight', 0)}%")
+                # 로그에 기록할 비중 값은 위에서 설정한 값을 사용
+                logger.info(f"정규화된 종목코드: {symbol}, 추천 비중: {stock_copy.get('suggested_weight')}%")
             
             # 정규화된 추천 목록으로 교체
             kr_recommendations = normalized_recommendations
@@ -939,7 +950,7 @@ class GPTAutoTrader:
                 
                 symbol = stock_data.get('symbol')
                 name = stock_data.get('name', symbol)
-                weight = stock_data.get('suggested_weight', 0)
+                weight = stock_data.get('suggested_weight', 20)  # 기본값 20%
                 logger.info(f"{symbol}({name}) 매수 진행 - 추천 비중: {weight}%")
                 
                 if self._execute_buy(stock_data):
