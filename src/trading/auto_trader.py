@@ -413,6 +413,9 @@ class AutoTrader:
                     if stock['code'] == symbol:
                         stock_name = stock['name']
                         break
+                
+            # 디버그 로깅: 종목명 확인
+            logger.info(f"주문 실행: 종목명 확인 - 심볼: {symbol}, 종목명: {stock_name}")
             
             order_info = {
                 "symbol": symbol,
@@ -689,7 +692,7 @@ class AutoTrader:
                 # order_info에 trade_info가 있으면 이를 포함하여 알림
                 signal_data = {
                     'symbol': symbol,
-                    'name': stock_name,
+                    'name': stock_name,  # 종목명 추가
                     'price': price,
                     'market': market,
                     'signals': [{
@@ -700,6 +703,10 @@ class AutoTrader:
                     }],
                     'trade_info': order_info.get('trade_info', {})
                 }
+                
+                # 데이터 구조 확인 로그
+                logger.info(f"알림 데이터 확인: symbol={signal_data['symbol']}, name={signal_data['name']}")
+                
                 self.notifier.send_signal_notification(signal_data)
             
             return order_info

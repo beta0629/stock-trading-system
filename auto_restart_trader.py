@@ -35,6 +35,10 @@ if is_github_actions:
         logger.info("GitHub Actions 환경에서 MAX_RUNTIME_MINUTES=55로 설정했습니다.")
     else:
         logger.info(f"GitHub Actions 환경에서 MAX_RUNTIME_MINUTES={os.environ['MAX_RUNTIME_MINUTES']}로 설정되어 있습니다.")
+else:
+    # 로컬 환경에서는 MAX_RUNTIME_MINUTES 환경 변수를 무제한으로 설정
+    os.environ['MAX_RUNTIME_MINUTES'] = '0'  # 0으로 설정하면 무제한
+    logger.info("로컬 환경에서 MAX_RUNTIME_MINUTES=0(무제한)으로 설정했습니다.")
 
 # GitHub Actions에서 연결 유지를 위한 활동 로그 출력 간격 (초)
 HEARTBEAT_INTERVAL = 60 if is_github_actions else None
@@ -128,7 +132,7 @@ if __name__ == "__main__":
         script_to_run = sys.argv[1]
     
     logger.info(f"모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 시작 (대상: {script_to_run})")
-    # GitHub Actions 환경에서는 제한된 재시도 횟수를 설정 
+    # GitHub Actions 환경에서만 제한된 재시도 횟수를 설정, 로컬에서는 무제한 재시도
     max_retries = 5 if is_github_actions else None
     run_with_retry(script_to_run, max_retries)
     logger.info("모의 자동 매매 시스템 자동 재시작 래퍼 스크립트 종료")

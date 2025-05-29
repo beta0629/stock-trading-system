@@ -429,7 +429,12 @@ class KakaoSender:
         market = signal_data.get('market', 'KR')  # 기본값은 KR
         
         # 종목 이름 설정 (코드와 함께 표시)
-        stock_name = self._get_stock_name(symbol)
+        stock_name = signal_data.get('name')
+        if not stock_name:
+            stock_name = self._get_stock_name(symbol)
+        
+        # 로그 추가 - 종목명 디버깅
+        logger.info(f"종목명 확인: symbol={symbol}, stock_name={stock_name}, market={market}")
         
         # 가장 중요한 신호 찾기
         latest_signal = signals[0]
@@ -462,11 +467,13 @@ class KakaoSender:
         # 매매 정보가 없는 경우, 기본 포맷으로 표시
         if not trade_info:
             # 기본 포맷 (구매 수량 정보 없음)
-            message = f"{signal_emoji} {symbol} {signal_type}\n"
+            message = f"{signal_emoji} {signal_type}\n"
             
-            # 종목명 추가 (있는 경우)
-            if stock_name and stock_name != symbol:
-                message += f"{stock_name}\n"
+            # 종목명 표시 (종목코드를 괄호 안에 표시)
+            if stock_name:
+                message += f"{stock_name} ({symbol})\n"
+            else:
+                message += f"{symbol}\n"
                 
             message += f"현재가: {price:,.0f}원"
             
@@ -475,11 +482,13 @@ class KakaoSender:
                 message += f" (신뢰도: {confidence*100:.1f}%)"
         else:
             # 확장된 포맷 (구매 수량, 평단가, 잔고 등 포함)
-            message = f"{signal_emoji} {symbol} {signal_type}\n"
+            message = f"{signal_emoji} {signal_type}:\n"
             
-            # 종목명 추가 (있는 경우)
-            if stock_name and stock_name != symbol:
-                message += f"{stock_name}\n"
+            # 종목명 표시 (종목코드를 괄호 안에 표시)
+            if stock_name:
+                message += f"{stock_name} ({symbol})\n"
+            else:
+                message += f"{symbol}\n"
             
             # 거래 가격 및 수량 정보
             message += f"현재가: {price:,.0f}원"
@@ -492,10 +501,10 @@ class KakaoSender:
                 
             # 매매 수량 및 총 보유 수량 (이전 보유량 → 현재 보유량)
             if signal_type == "BUY":
-                message += f"⬆️ 매수량: {trade_quantity:,}주\n"
+                message += f"매수량: {trade_quantity:,}주\n"
                 message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
             else:  # "SELL"
-                message += f"⬇️ 매도량: {trade_quantity:,}주\n"
+                message += f"매도량: {trade_quantity:,}주\n"
                 message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
             
             # 평균단가 (변동 있을 경우 이전 평단가 → 현재 평단가)
