@@ -289,12 +289,19 @@ class GPTAutoTrader:
                 strategy=self.strategy
             )
             
-            # 미국 주식 추천
-            us_recommendations = self.stock_selector.recommend_stocks(
-                market="US", 
-                count=self.max_positions,
-                strategy=self.strategy
-            )
+            # 미국 주식 추천 (설정이 활성화된 경우에만)
+            us_recommendations = {"recommended_stocks": []}
+            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            
+            if us_stock_trading_enabled:
+                logger.info("미국 주식 거래가 활성화되어 있습니다. 미국 주식 추천을 요청합니다.")
+                us_recommendations = self.stock_selector.recommend_stocks(
+                    market="US", 
+                    count=self.max_positions,
+                    strategy=self.strategy
+                )
+            else:
+                logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 추천을 건너뜁니다.")
             
             logger.info(f"GPT 종목 선정 완료: 한국 {len(kr_recommendations.get('recommended_stocks', []))}개, "
                       f"미국 {len(us_recommendations.get('recommended_stocks', []))}개")
@@ -339,7 +346,10 @@ class GPTAutoTrader:
             if self.notifier:
                 # 메시지 길이 제한을 고려하여 나눠서 전송
                 self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()})\n\n{kr_summary}")
-                self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()})\n\n{us_summary}")
+                
+                # 미국 주식 거래가 활성화된 경우에만 미국 종목 정보 전송
+                if us_stock_trading_enabled and self.gpt_selections['US']:
+                    self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()})\n\n{us_summary}")
                 
                 if kr_analysis:
                     self.notifier.send_message(f"🧠 시장 분석\n\n{kr_analysis[:500]}...")
@@ -770,181 +780,47 @@ class GPTAutoTrader:
             return False
     
     def run_cycle(self):
-        """GPT 자동 매매 주기 실행"""
-        if not self.is_running:
-            logger.warning("GPT 자동 매매 시스템이 실행 중이 아닙니다.")
-            return
-            
-        logger.info("----- GPT 자동 매매 사이클 시작 -----")
-        
+        """
+        트레이딩 사이클 실행 - 시간 기반으로 주식 선정 및 매매 결정
+        """
         try:
-            # 종목 선정 (필요한 경우)
+            logger.info("=== GPT 트레이딩 사이클 시작 ===")
+            
+            # 현재 시간이 거래 시간인지 확인
             now = get_current_time()
-            needs_selection = True
             
-            if self.last_selection_time:
-                hours_passed = (now - self.last_selection_time).total_seconds() / 3600
-                if hours_passed < self.selection_interval:
-                    needs_selection = False
-                    logger.info(f"마지막 종목 선정 후 {hours_passed:.1f}시간 경과 (설정: {self.selection_interval}시간). 추가 선정 필요 없음")
-            
-            if needs_selection:
-                logger.info("GPT 종목 선정 실행")
-                self._select_stocks()
-            
-            # 현재 보유 종목 로드
-            self._load_current_holdings()
-            
-            # 매도 결정 (먼저 처리)
-            sell_candidates = []
-            for symbol in self.holdings:
-                if self._should_sell(symbol):
-                    sell_candidates.append(symbol)
-            
-            # 매도 실행
-            sell_results = []
-            for symbol in sell_candidates:
-                result = self._execute_sell(symbol)
-                sell_results.append((symbol, result))
-            
-            if sell_results:
-                logger.info(f"매도 실행 결과: {len([r for s, r in sell_results if r])}/{len(sell_results)}개 성공")
-            
-            # 매수 후보 찾기
-            buy_candidates = []
-            
-            # 한국 시장이 열려있으면 한국 종목 처리
-            if is_market_open("KR"):
-                for stock in self.gpt_selections['KR']:
-                    if self._should_buy(stock):
-                        buy_candidates.append(stock)
-                        
-                        # 최대 매수 종목 수 제한
-                        if len(buy_candidates) >= 2:  # 한 번에 최대 2개 종목만 매수
-                            break
-            
-            # 미국 시장이 열려있으면 미국 종목 처리
-            if is_market_open("US") and len(buy_candidates) < 2:  # 아직 매수 가능한 경우
-                for stock in self.gpt_selections['US']:
-                    if self._should_buy(stock):
-                        buy_candidates.append(stock)
-                        
-                        # 최대 매수 종목 수 제한
-                        if len(buy_candidates) >= 2:  # 한 번에 최대 2개 종목만 매수
-                            break
-            
-            # 매수 실행
-            buy_results = []
-            for stock in buy_candidates:
-                result = self._execute_buy(stock)
-                buy_results.append((stock.get('symbol'), result))
-            
-            if buy_results:
-                logger.info(f"매수 실행 결과: {len([r for s, r in buy_results if r])}/{len(buy_results)}개 성공")
-            
-            # 실행 결과 요약
-            if sell_results or buy_results:
-                summary = f"📊 GPT 자동 매매 실행 결과 ({get_current_time_str()})\n\n"
-                
-                if sell_results:
-                    summary += "🔴 매도:\n"
-                    for symbol, result in sell_results:
-                        name = self.holdings.get(symbol, {}).get('name', symbol)
-                        status = "✅ 성공" if result else "❌ 실패"
-                        summary += f"• {name} ({symbol}): {status}\n"
-                    summary += "\n"
-                
-                if buy_results:
-                    summary += "🟢 매수:\n"
-                    for symbol, result in buy_results:
-                        # 매수 종목 찾기
-                        name = symbol
-                        for market in ['KR', 'US']:
-                            for stock in self.gpt_selections[market]:
-                                if stock.get('symbol') == symbol:
-                                    name = stock.get('name', symbol)
-                        status = "✅ 성공" if result else "❌ 실패"
-                        summary += f"• {name} ({symbol}): {status}\n"
-                
-                # 알림 전송
-                if self.notifier:
-                    self.notifier.send_message(summary)
-            
-            # 현재 포트폴리오 상태 업데이트
-            self._update_portfolio_status()
-            
-            logger.info("----- GPT 자동 매매 사이클 완료 -----")
-            
-        except Exception as e:
-            logger.error(f"GPT 자동 매매 사이클 실행 중 오류 발생: {e}")
-            if self.notifier:
-                self.notifier.send_message(f"⚠️ GPT 자동 매매 오류: {str(e)}")
-    
-    def _update_portfolio_status(self):
-        """현재 포트폴리오 상태 업데이트"""
-        try:
-            # 현재 보유 종목 로드
-            self._load_current_holdings()
-            
-            # 포트폴리오 내 종목들 현재가 업데이트
-            total_assets = 0
-            total_profit_loss = 0
-            
-            for symbol, position in self.holdings.items():
-                current_price = self.data_provider.get_current_price(symbol, position['market'])
-                if current_price:
-                    quantity = position['quantity']
-                    avg_price = position['avg_price']
-                    current_value = current_price * quantity
-                    profit_loss = (current_price - avg_price) * quantity
-                    profit_loss_pct = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
-                    
-                    # 포지션 정보 업데이트
-                    position['current_price'] = current_price
-                    position['current_value'] = current_value
-                    position['profit_loss'] = profit_loss
-                    position['profit_loss_pct'] = profit_loss_pct
-                    
-                    total_assets += current_value
-                    total_profit_loss += profit_loss
-            
-            # 계좌 잔고 확인
-            balance_info = self.broker.get_balance()
-            cash = balance_info.get('예수금', 0)
-            total_assets += cash
-            
-            # 1시간 마다 한번씩 포트폴리오 상태 알림
-            now = get_current_time()
-            current_hour = now.hour
-            
-            if hasattr(self, 'last_status_hour') and self.last_status_hour == current_hour:
+            if not self.is_trading_time(now):
+                logger.info("현재는 거래 시간이 아닙니다.")
                 return
                 
-            self.last_status_hour = current_hour
+            # 종목 선정 (필요한 경우)
+            self._select_stocks()
             
-            # 매시간 정각에만 전체 포트폴리오 상태 알림
-            if now.minute < 10 and (now.hour % 2 == 0):  # 짝수 시간대 정각에만
-                # 보유 종목이 없으면 건너뜀
-                if not self.holdings:
-                    return
-                    
-                status_message = f"📈 GPT 매매 포트폴리오 상태 ({get_current_time_str()})\n\n"
-                status_message += f"💰 총자산: {total_assets:,.0f}원\n"
-                status_message += f"💵 현금: {cash:,.0f}원\n"
-                status_message += f"📊 평가손익: {total_profit_loss:,.0f}원\n\n"
-                
-                if self.holdings:
-                    status_message += "🧩 보유종목:\n"
-                    for symbol, position in self.holdings.items():
-                        name = position.get('name', symbol)
-                        quantity = position.get('quantity', 0)
-                        profit_loss_pct = position.get('profit_loss_pct', 0)
-                        emoji = "🔴" if profit_loss_pct < 0 else "🟢"
-                        status_message += f"{emoji} {name} ({symbol}): {quantity}주, {profit_loss_pct:.2f}%\n"
-                
-                # 알림 전송
-                if self.notifier:
-                    self.notifier.send_message(status_message)
-                
+            # 보유 종목 현황 업데이트
+            self._update_positions()
+            
+            # 계좌 잔고 확인
+            balance = self.broker.get_account_balance()
+            logger.info(f"계좌 잔고: {balance:,.0f}원")
+            
+            # 매매 결정 및 실행 (한국 주식)
+            logger.info("=== 한국 주식 매매 시작 ===")
+            self._process_kr_stocks(balance)
+            
+            # 미국 주식 매매 (설정이 활성화된 경우에만)
+            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            
+            if us_stock_trading_enabled:
+                logger.info("=== 미국 주식 매매 시작 ===")
+                self._process_us_stocks(balance)
+            else:
+                logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 매매를 건너뜁니다.")
+            
+            logger.info("=== GPT 트레이딩 사이클 완료 ===")
+            
         except Exception as e:
-            logger.error(f"포트폴리오 상태 업데이트 중 오류 발생: {e}")
+            logger.error(f"GPT 트레이딩 사이클 중 오류 발생: {e}")
+            if self.notifier:
+                self.notifier.send_message(f"⚠️ GPT 트레이딩 오류: {str(e)}")
+                
+        return

@@ -50,6 +50,11 @@ setup_env()
 KST = pytz.timezone('Asia/Seoul')
 EST = pytz.timezone('US/Eastern')
 
+# 미국 주식 거래 설정
+US_STOCK_TRADING_ENABLED = os.environ.get("US_STOCK_TRADING_ENABLED", "False").lower() == "true"  # 미국 주식 거래 활성화 여부 (기본값: 비활성화)
+# 환경 변수로 설정하지 않은 경우 여기서 직접 변경 가능 (True: 활성화, False: 비활성화)
+# US_STOCK_TRADING_ENABLED = True  # 주석을 제거하고 True로 설정하면 미국 주식 거래가 활성화됩니다.
+
 # 텔레그램 설정
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # 텔레그램 봇 토큰
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # 텔레그램 채팅 ID

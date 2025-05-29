@@ -6,7 +6,7 @@ import time
 import requests
 import json
 import traceback  # traceback 모듈 추가
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import jwt  # PyJWT 라이브러리 필요
 from urllib.parse import urljoin, unquote
@@ -60,6 +60,14 @@ class KISAPI(BrokerBase):
         self.token_expired_at = None
         self.hashkey = None
         
+        # API 요청 관련 설정
+        self.max_api_retries = 3  # API 재시도 최대 횟수
+        self.api_retry_delay = 60  # 모의투자 API 장애 시 대기 시간(초)
+        
+        # 주문 로깅을 위한 설정
+        self.enable_detailed_logging = True  # 상세 로깅 활성화 여부
+        self.log_directory = getattr(config, 'LOG_DIRECTORY', 'logs')  # 로그 디렉토리
+        
         # TR ID 매핑 (실전투자/모의투자)
         self.tr_id_map = {
             "balance": {
@@ -84,6 +92,81 @@ class KISAPI(BrokerBase):
             }
         }
         
+    def _log_order_detail(self, order_type, order_data, response_data=None, success=False, error=None):
+        """
+        주문 세부 정보 로깅
+        
+        Args:
+            order_type: 주문 유형 (매수/매도/취소)
+            order_data: 주문 데이터
+            response_data: 응답 데이터
+            success: 성공 여부
+            error: 오류 메시지
+        """
+        if not self.enable_detailed_logging:
+            return
+            
+        try:
+            # 현재 시간
+            now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 주문 정보
+            code = order_data.get('PDNO', '코드 없음')
+            quantity = order_data.get('ORD_QTY', '0')
+            price = order_data.get('ORD_UNPR', '0')
+            order_div = "시장가" if order_data.get('ORD_DVSN', '') == "01" else "지정가"
+            
+            # 응답 정보
+            order_no = ""
+            msg = ""
+            if response_data:
+                if isinstance(response_data, dict):
+                    order_no = response_data.get('output', {}).get('ODNO', '')
+                    rt_cd = response_data.get('rt_cd', '')
+                    msg = response_data.get('msg1', '')
+            
+            # 로그 내용 구성
+            trading_mode = "실전투자" if self.real_trading else "모의투자"
+            log_msg = f"[{now}] [{trading_mode}] [{order_type}] "
+            
+            if success:
+                log_msg += f"성공 - 종목코드: {code}, 수량: {quantity}, 가격: {price}원, 주문유형: {order_div}"
+                if order_no:
+                    log_msg += f", 주문번호: {order_no}"
+            else:
+                log_msg += f"실패 - 종목코드: {code}, 수량: {quantity}, 가격: {price}원, 주문유형: {order_div}"
+                if error:
+                    log_msg += f", 오류: {error}"
+                if msg:
+                    log_msg += f", 메시지: {msg}"
+            
+            # 로그 기록 (콘솔과 파일에 동시 출력)
+            logger.info(log_msg)
+            
+            # 로그 파일에 기록
+            try:
+                log_dir = Path(self.log_directory)
+                log_dir.mkdir(exist_ok=True)
+                
+                # 로그 파일명 (날짜별)
+                log_file = log_dir / f"order_log_{datetime.now(KST).strftime('%Y%m%d')}.log"
+                
+                # 로그 파일에 추가 모드로 기록
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    f.write(log_msg + "\n")
+                    
+                    # 응답 데이터 상세 기록 (실패한 경우)
+                    if not success and response_data:
+                        f.write(f"응답 데이터: {json.dumps(response_data, ensure_ascii=False, indent=2)}\n")
+                    
+                    # 구분선 추가
+                    f.write("-" * 80 + "\n")
+            except Exception as e:
+                logger.error(f"로그 파일 기록 실패: {e}")
+        
+        except Exception as e:
+            logger.error(f"주문 로깅 실패: {e}")
+
     def _get_tr_id(self, tr_type):
         """
         거래 유형에 따른 TR ID 반환
@@ -257,14 +340,14 @@ class KISAPI(BrokerBase):
         """
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
-            return {}
+            return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
             
         if account_number is None:
             account_number = self.account_number
             
         if not account_number:
             logger.error("계좌번호가 설정되지 않았습니다.")
-            return {}
+            return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
             
         try:
             # 주식 잔고 조회
@@ -430,55 +513,11 @@ class KISAPI(BrokerBase):
                         balance_info["총평가금액"] = balance_info["예수금"] + balance_info["유가평가금액"]
                         logger.info(f"계산된 총평가금액: {balance_info['총평가금액']:,}원")
                 
-                # 모의투자 계좌인 경우 스크린샷 정보 확인 후 설정
-                if not self.real_trading:
-                    current_date = get_current_time().strftime("%Y-%m-%d")
-                    
-                    # 2025-05-29 날짜의 스크린샷 정보로 강제 설정 
-                    # 스크린샷 계좌 잔고 정보
-                    if current_date == "2025-05-29":
-                        logger.info("📊 스크린샷 기반 계좌 잔고 정보 적용 (2025-05-29)")
-                        
-                        # 스크린샷에 표시된 정확한 계좌 잔고 반영
-                        # 예수금: 500,000,000원
-                        # 입일정산액: 500,000,000원
-                        # D+2정산액: 500,000,000원
-                        # 주문가능액: 1,250,000,000원
-                        # 총평가금액: 500,000,000원
-                        
-                        balance_info = {
-                            "예수금": 500000000,  # 5억원
-                            "출금가능금액": 500000000,
-                            "D+2예수금": 500000000,
-                            "유가평가금액": 0,  # 보유주식 없음
-                            "총평가금액": 500000000,  
-                            "순자산금액": 500000000,
-                            "주문가능금액": 1250000000  # 12.5억원
-                        }
-                        
-                        logger.info(f"스크린샷 기반 계좌 잔고 정보: {balance_info}")
-                
                 return balance_info
             else:
                 err_code = response_data.get('rt_cd')
                 err_msg = response_data.get('msg1')
                 logger.error(f"계좌 잔고 조회 실패: [{err_code}] {err_msg}")
-                
-                # API 호출 실패 시 스크린샷 기반 데이터 사용
-                current_date = get_current_time().strftime("%Y-%m-%d")
-                
-                # 2025-05-29 날짜의 스크린샷 정보로 강제 설정
-                if current_date == "2025-05-29":
-                    logger.info("📊 API 실패 - 스크린샷 기반 계좌 잔고 정보 적용 (2025-05-29)")
-                    return {
-                        "예수금": 500000000,  # 5억원
-                        "출금가능금액": 500000000,
-                        "D+2예수금": 500000000,
-                        "유가평가금액": 0,  # 보유주식 없음
-                        "총평가금액": 500000000,  
-                        "순자산금액": 500000000,
-                        "주문가능금액": 1250000000  # 12.5억원
-                    }
                 
                 return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
                 
@@ -486,33 +525,17 @@ class KISAPI(BrokerBase):
             logger.error(f"계좌 잔고 조회 실패: {e}")
             logger.error(traceback.format_exc())
             
-            # 예외 발생 시 스크린샷 기반 데이터 사용
-            current_date = get_current_time().strftime("%Y-%m-%d")
-            
-            # 2025-05-29 날짜의 스크린샷 정보로 강제 설정
-            if current_date == "2025-05-29":
-                logger.info("📊 예외 발생 - 스크린샷 기반 계좌 잔고 정보 적용 (2025-05-29)")
-                return {
-                    "예수금": 500000000,  # 5억원
-                    "출금가능금액": 500000000,
-                    "D+2예수금": 500000000,
-                    "유가평가금액": 0,  # 보유주식 없음
-                    "총평가금액": 500000000,  
-                    "순자산금액": 500000000,
-                    "주문가능금액": 1250000000  # 12.5억원
-                }
-                
             return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
     
     def get_positions(self, account_number=None):
         """
-        보유 주식 현황 조회
+        보유 종목 조회
         
         Args:
             account_number: 계좌번호 (None인 경우 기본 계좌 사용)
             
         Returns:
-            list: 보유 주식 목록
+            list: 보유 종목 목록
         """
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
@@ -541,11 +564,10 @@ class KISAPI(BrokerBase):
             }
             
             # 모의투자 계좌번호는 8자리이므로 형식을 적절히 처리
-            # 계좌번호가 8자리인 경우, 앞 8자리를 CANO로, "01"을 ACNT_PRDT_CD로 설정
             cano = account_number
             acnt_prdt_cd = "01"
             
-            logger.info(f"보유 주식 조회 요청: {cano}-{acnt_prdt_cd}")
+            logger.info(f"보유 종목 조회 요청: {cano}-{acnt_prdt_cd}")
             
             params = {
                 "CANO": cano,
@@ -564,193 +586,126 @@ class KISAPI(BrokerBase):
             response = requests.get(url, headers=headers, params=params)
             response_data = response.json()
             
+            logger.debug(f"보유 종목 API 응답 데이터: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+            
             if response.status_code == 200 and response_data.get('rt_cd') == '0':
                 positions = []
-                # output2에 데이터가 있는지 확인
-                stock_list = response_data.get('output2', [])
                 
-                # 디버깅용 로그 추가
-                logger.debug(f"API 응답 데이터: {response_data}")
-                
-                for stock in stock_list:
-                    try:
-                        code = stock.get('pdno', '')
-                        name = stock.get('prdt_name', '')
-                        quantity = int(stock.get('hldg_qty', '0'))
-                        purchase_price = int(float(stock.get('pchs_avg_pric', '0')))
-                        current_price = int(float(stock.get('prpr', '0')))
-                        eval_amount = int(float(stock.get('evlu_amt', '0')))
-                        profit_loss = int(float(stock.get('evlu_pfls_amt', '0')))
+                if 'output2' in response_data and response_data['output2']:
+                    # 보유종목 데이터 처리
+                    for item in response_data['output2']:
+                        # 필요한 모든 가능한 필드명 미리 정의
+                        position_info = {}
                         
-                        # 0으로 나누는 오류 방지
-                        if purchase_price <= 0:
-                            purchase_price = 1  # 0 대신 1로 설정
+                        # 1. 종목 식별 정보
+                        for code_field in ['pdno', 'stock_code', 'stck_csmn', 'prdt_code', 'code', 'issue_code']:
+                            if code_field in item and not position_info.get('종목코드'):
+                                position_info['종목코드'] = item.get(code_field, '')
+                                break
                         
-                        positions.append({
-                            "종목코드": code,
-                            "종목명": name,
-                            "보유수량": quantity,
-                            "평균단가": purchase_price,
-                            "현재가": current_price,
-                            "평가금액": eval_amount,
-                            "손익금액": profit_loss
-                        })
-                    except Exception as stock_e:
-                        logger.error(f"종목 정보 처리 중 오류: {stock_e}, 데이터: {stock}")
-                        continue
-                
-                # 모의투자이고 포지션이 비어있는 경우, 스크린샷과 같은 최근 거래 내역이 있는지 확인
-                if not self.real_trading and len(positions) == 0:
-                    current_date = get_current_time().strftime("%Y-%m-%d")
-                    
-                    # 특정 계좌번호 확인
-                    if self.account_no == "50138225" and current_date == "2025-05-29":
-                        logger.info(f"📊 스크린샷 데이터 기반으로 포지션 설정 (2025-05-29)")
+                        for name_field in ['prdt_name', 'stock_name', 'hldg_stck_nmix', 'issue_name', 'name']:
+                            if name_field in item and not position_info.get('종목명'):
+                                position_info['종목명'] = item.get(name_field, '')
+                                break
                         
-                        # 스크린샷에 표시된 정확한 정보
-                        logger.info("스크린샷 기반으로 네이버 주식 포지션 추가")
-                        positions.append({
-                            "종목코드": "035420",
-                            "종목명": "NAVER",
-                            "보유수량": 5,  # 스크린샷에서 확인된 수량
-                            "평균단가": 188600,  # 스크린샷에서 확인된 평균단가
-                            "현재가": 188600,  # 현재가
-                            "평가금액": 5 * 188600,  # 평가금액 = 943,000원
-                            "손익금액": 0  # 손익금액
-                        })
+                        # 2. 수량 및 단가 정보
+                        for qty_field in ['hldg_qty', 'stck_qty', 'qty', 'nccs_qty']:
+                            if qty_field in item and 'quantity' not in position_info:
+                                try:
+                                    position_info['quantity'] = int(float(item.get(qty_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
                         
-                        # 삼성전자도 추가 (스크린샷에서 확인됨)
-                        logger.info("스크린샷 기반으로 삼성전자 주식 포지션 추가")
-                        positions.append({
-                            "종목코드": "005930",
-                            "종목명": "삼성전자",
-                            "보유수량": 70,  # 스크린샷에서 확인된 수량
-                            "평균단가": 188414,  # 스크린샷에서 확인된 평균단가
-                            "현재가": 188414,  # 현재가
-                            "평가금액": 70 * 188414,  # 평가금액 = 13,188,980원
-                            "손익금액": 70 * (188414 - 188400)  # 손익금액 계산
-                        })
-                
-                # DB에서 최근 거래 내역을 찾아보거나 로컬 캐시된 정보를 확인
-                if len(positions) == 0:
-                    try:
-                        # 로컬 캐시 파일 확인
-                        cache_path = Path(__file__).parent.parent.parent / "cache" / "recent_trades.json"
-                        if cache_path.exists():
-                            import json
-                            with open(cache_path, 'r') as f:
-                                cached_trades = json.load(f)
-                                
-                            logger.info(f"캐시된 거래 내역 사용: {len(cached_trades)}개 항목")
+                        for avg_price_field in ['pchs_avg_pric', 'avg_pric', 'pchs_prc', 'avg_urmoney']:
+                            if avg_price_field in item and 'avg_price' not in position_info:
+                                try:
+                                    position_info['avg_price'] = int(float(item.get(avg_price_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        for curr_price_field in ['prpr', 'stck_prpr', 'now_pric', 'current_price']:
+                            if curr_price_field in item and 'current_price' not in position_info:
+                                try:
+                                    position_info['current_price'] = int(float(item.get(curr_price_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        # 3. 손익 정보
+                        for eval_amt_field in ['evlu_amt', 'stck_evlu_amt', 'thdt_buy_amt', 'evalvalue']:
+                            if eval_amt_field in item and 'eval_amount' not in position_info:
+                                try:
+                                    position_info['eval_amount'] = int(float(item.get(eval_amt_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        for pnl_field in ['evlu_pfls_amt', 'evlu_pfls_rt', 'pft_rt', 'appre_rt']:
+                            if pnl_field in item and 'pnl_amount' not in position_info:
+                                try:
+                                    position_info['pnl_amount'] = int(float(item.get(pnl_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        for pnl_rate_field in ['evlu_pfls_rt', 'pft_rt', 'appre_rt', 'return_rt']:
+                            if pnl_rate_field in item and 'pnl_rate' not in position_info:
+                                try:
+                                    # 퍼센트(%) 값인 경우가 많으므로 그대로 저장
+                                    position_info['pnl_rate'] = float(item.get(pnl_rate_field, '0').replace('%', '').strip())
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        # 4. 매수/매도 가능 수량
+                        for sell_qty_field in ['sll_psbl_qty', 'sell_qty', 'ord_psbl_qty']:
+                            if sell_qty_field in item and 'sellable_quantity' not in position_info:
+                                try:
+                                    position_info['sellable_quantity'] = int(float(item.get(sell_qty_field, '0')))
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                        
+                        # 계산된 값들로 보정
+                        if 'quantity' in position_info and 'current_price' in position_info and 'eval_amount' not in position_info:
+                            position_info['eval_amount'] = position_info['quantity'] * position_info['current_price']
+                        
+                        if 'quantity' in position_info and 'avg_price' in position_info and 'current_price' in position_info:
+                            if 'pnl_amount' not in position_info:
+                                position_info['pnl_amount'] = (position_info['current_price'] - position_info['avg_price']) * position_info['quantity']
                             
-                            # 캐시에서 포지션 정보 구성
-                            for trade in cached_trades:
-                                if trade.get('status') == 'executed' and trade.get('action') == 'BUY':
-                                    code = trade.get('code', '')
-                                    name = trade.get('name', '')
-                                    quantity = trade.get('quantity', 0)
-                                    purchase_price = trade.get('price', 0)
-                                    current_price = purchase_price  # 현재가는 구매가로 임시 설정
-                                    
-                                    # 이미 포지션에 있는지 확인
-                                    existing = next((p for p in positions if p['종목코드'] == code), None)
-                                    if existing:
-                                        # 기존 포지션 업데이트
-                                        existing['보유수량'] += quantity
-                                        # 평균단가 계산
-                                        total_value = existing['평균단가'] * existing['보유수량'] + purchase_price * quantity
-                                        existing['보유수량'] += quantity
-                                        existing['평균단가'] = total_value / existing['보유수량'] if existing['보유수량'] > 0 else purchase_price
-                                    else:
-                                        # 새 포지션 추가
-                                        positions.append({
-                                            "종목코드": code,
-                                            "종목명": name,
-                                            "보유수량": quantity,
-                                            "평균단가": purchase_price,
-                                            "현재가": current_price,
-                                            "평가금액": quantity * current_price,
-                                            "손익금액": 0
-                                        })
-                    except Exception as cache_e:
-                        logger.warning(f"캐시된 거래 내역 로드 중 오류: {cache_e}")
+                            if 'pnl_rate' not in position_info and position_info['avg_price'] > 0:
+                                position_info['pnl_rate'] = ((position_info['current_price'] - position_info['avg_price']) / position_info['avg_price']) * 100
                         
-                logger.info(f"보유 주식 현황 조회 성공: {len(positions)}종목")
-                if positions:
-                    for pos in positions:
-                        logger.info(f"- {pos['종목명']}({pos['종목코드']}): {pos['보유수량']}주, 평가금액: {pos['평가금액']:,}원")
-                else:
-                    logger.warning("보유 중인 주식이 없습니다.")
+                        # 매도 가능 수량이 없으면 수량과 동일하게 설정
+                        if 'quantity' in position_info and 'sellable_quantity' not in position_info:
+                            position_info['sellable_quantity'] = position_info['quantity']
+                        
+                        # 필수 필드가 있는 경우에만 결과에 추가
+                        if ('종목코드' in position_info and '종목명' in position_info and 
+                            'quantity' in position_info and position_info.get('quantity', 0) > 0):
+                            
+                            # 수량이 있으면 보유종목으로 간주하고 목록에 추가
+                            positions.append(position_info)
+                            logger.info(f"보유종목: {position_info['종목명']} ({position_info['종목코드']}), "
+                                        f"수량: {position_info.get('quantity', 0):,}주, "
+                                        f"평균단가: {position_info.get('avg_price', 0):,}원, "
+                                        f"현재가: {position_info.get('current_price', 0):,}원, "
+                                        f"평가금액: {position_info.get('eval_amount', 0):,}원, "
+                                        f"손익률: {position_info.get('pnl_rate', 0):.2f}%")
                 
                 return positions
             else:
                 err_code = response_data.get('rt_cd')
                 err_msg = response_data.get('msg1')
-                logger.error(f"보유 주식 현황 조회 실패: [{err_code}] {err_msg}")
-                
-                # API 호출 실패 시 스크린샷 데이터 활용
-                if not self.real_trading and self.account_no == "50138225":
-                    current_date = get_current_time().strftime("%Y-%m-%d")
-                    # 현재 날짜가 2025-05-29면 스크린샷 포지션 추가
-                    if current_date == "2025-05-29":
-                        logger.info("API 호출 실패 시 스크린샷 정보로 포지션 추가")
-                        positions = [
-                            {
-                                "종목코드": "035420",
-                                "종목명": "NAVER",
-                                "보유수량": 5,  # 스크린샷에서 확인된 수량
-                                "평균단가": 188600,  # 스크린샷에서 확인된 평균단가
-                                "현재가": 188600,  # 현재가
-                                "평가금액": 5 * 188600,  # 평가금액
-                                "손익금액": 0  # 손익금액
-                            },
-                            {
-                                "종목코드": "005930",
-                                "종목명": "삼성전자",
-                                "보유수량": 70,  # 스크린샷에서 확인된 수량
-                                "평균단가": 188414,  # 스크린샷에서 확인된 평균단가
-                                "현재가": 188414,  # 현재가
-                                "평가금액": 70 * 188414,  # 평가금액
-                                "손익금액": 70 * (188414 - 188400)  # 손익금액 계산
-                            }
-                        ]
-                        logger.info(f"스크린샷 정보 기반 보유종목: {len(positions)}종목")
-                        return positions
-                
+                logger.error(f"보유종목 조회 실패: [{err_code}] {err_msg}")
                 return []
                 
         except Exception as e:
-            logger.error(f"보유 주식 현황 조회 실패: {e}")
-            
-            # 예외 발생 시 스크린샷 데이터 활용
-            if not self.real_trading and self.account_no == "50138225":
-                current_date = get_current_time().strftime("%Y-%m-%d")
-                # 현재 날짜가 2025-05-29면 스크린샷 포지션 추가
-                if current_date == "2025-05-29":
-                    logger.info("예외 발생 시 스크린샷 정보로 포지션 추가")
-                    positions = [
-                        {
-                            "종목코드": "035420",
-                            "종목명": "NAVER",
-                            "보유수량": 5,  # 스크린샷에서 확인된 수량
-                            "평균단가": 188600,  # 스크린샷에서 확인된 평균단가
-                            "현재가": 188600,  # 현재가
-                            "평가금액": 5 * 188600,  # 평가금액
-                            "손익금액": 0  # 손익금액
-                        },
-                        {
-                            "종목코드": "005930",
-                            "종목명": "삼성전자",
-                            "보유수량": 70,  # 스크린샷에서 확인된 수량
-                            "평균단가": 188414,  # 스크린샷에서 확인된 평균단가
-                            "현재가": 188414,  # 현재가
-                            "평가금액": 70 * 188414,  # 평가금액
-                            "손익금액": 70 * (188414 - 188400)  # 손익금액 계산
-                        }
-                    ]
-                    logger.info(f"스크린샷 정보 기반 보유종목: {len(positions)}종목")
-                    return positions
-            
+            logger.error(f"보유종목 조회 실패: {e}")
+            logger.error(traceback.format_exc())
             return []
     
     def buy_stock(self, code, quantity, price=0, order_type='market', account_number=None):
@@ -831,19 +786,73 @@ class KISAPI(BrokerBase):
                 "hashkey": hashkey
             }
             
-            # 주문 요청
-            response = requests.post(url, headers=headers, data=json.dumps(body))
-            response_data = response.json()
+            # API 요청 지연/실패에 대비한 재시도 로직
+            retry_count = 0
+            max_retries = self.max_api_retries
             
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                order_number = response_data.get('output', {}).get('ODNO', '')
-                logger.info(f"매수 주문 전송 성공: {code}, {quantity}주, {price}원, 주문번호: {order_number}")
-                return order_number
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"매수 주문 전송 실패: [{err_code}] {err_msg}")
-                return ""
+            while retry_count < max_retries:
+                try:
+                    # 주문 요청
+                    start_time = time.time()
+                    response = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
+                    response_time = time.time() - start_time
+                    
+                    response_data = response.json()
+                    
+                    # 응답 시간 기록 (모의투자 API 지연 모니터링용)
+                    logger.info(f"매수 주문 API 응답 시간: {response_time:.2f}초 (모의투자: {not self.real_trading})")
+                    
+                    if response.status_code == 200 and response_data.get('rt_cd') == '0':
+                        order_number = response_data.get('output', {}).get('ODNO', '')
+                        
+                        # 상세 로그 기록
+                        self._log_order_detail("매수", body, response_data, success=True)
+                        
+                        logger.info(f"매수 주문 전송 성공: {code}, {quantity}주, {price}원, 주문번호: {order_number}")
+                        return order_number
+                    else:
+                        err_code = response_data.get('rt_cd')
+                        err_msg = response_data.get('msg1')
+                        
+                        # 특정 오류 코드에 따른 재시도 여부 결정
+                        if err_code in ['38', '111', '885', 'APBK1021'] and retry_count < max_retries - 1:
+                            # 트래픽 제한, 일시적인 서비스 장애 등의 오류는 재시도
+                            logger.warning(f"매수 주문 일시적 오류 발생 [{err_code}]: {err_msg}, 재시도 중...")
+                            if not self._handle_api_delay(retry_count):
+                                break
+                            retry_count += 1
+                            continue
+                        
+                        # 재시도해도 실패하는 경우 또는 재시도 불필요한 오류
+                        self._log_order_detail("매수", body, response_data, success=False, error=f"[{err_code}] {err_msg}")
+                        logger.error(f"매수 주문 전송 실패: [{err_code}] {err_msg}")
+                        return ""
+                        
+                except requests.RequestException as e:
+                    # 네트워크 오류, 타임아웃 등의 예외 처리
+                    logger.error(f"매수 주문 요청 중 네트워크 오류: {e}")
+                    
+                    # 모의투자 환경에서만 더 긴 대기 시간 적용
+                    if not self.real_trading and retry_count < max_retries - 1:
+                        if not self._handle_api_delay(retry_count):
+                            break
+                        retry_count += 1
+                        continue
+                    else:
+                        # 실전 투자에서는 짧은 대기 후 재시도
+                        time.sleep(3)
+                        retry_count += 1
+                        continue
+                        
+                except Exception as e:
+                    # 기타 예외 처리
+                    logger.error(f"매수 주문 처리 중 예외 발생: {e}")
+                    self._log_order_detail("매수", body, None, success=False, error=str(e))
+                    return ""
+            
+            # 최대 재시도 횟수 초과
+            logger.error(f"매수 주문 최대 재시도 횟수({max_retries}회) 초과로 실패")
+            return ""
                 
         except Exception as e:
             logger.error(f"매수 주문 실패: {e}")
@@ -927,19 +936,73 @@ class KISAPI(BrokerBase):
                 "hashkey": hashkey
             }
             
-            # 주문 요청
-            response = requests.post(url, headers=headers, data=json.dumps(body))
-            response_data = response.json()
+            # API 요청 지연/실패에 대비한 재시도 로직
+            retry_count = 0
+            max_retries = self.max_api_retries
             
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                order_number = response_data.get('output', {}).get('ODNO', '')
-                logger.info(f"매도 주문 전송 성공: {code}, {quantity}주, {price}원, 주문번호: {order_number}")
-                return order_number
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"매도 주문 전송 실패: [{err_code}] {err_msg}")
-                return ""
+            while retry_count < max_retries:
+                try:
+                    # 주문 요청
+                    start_time = time.time()
+                    response = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
+                    response_time = time.time() - start_time
+                    
+                    response_data = response.json()
+                    
+                    # 응답 시간 기록 (모의투자 API 지연 모니터링용)
+                    logger.info(f"매도 주문 API 응답 시간: {response_time:.2f}초 (모의투자: {not self.real_trading})")
+                    
+                    if response.status_code == 200 and response_data.get('rt_cd') == '0':
+                        order_number = response_data.get('output', {}).get('ODNO', '')
+                        
+                        # 상세 로그 기록
+                        self._log_order_detail("매도", body, response_data, success=True)
+                        
+                        logger.info(f"매도 주문 전송 성공: {code}, {quantity}주, {price}원, 주문번호: {order_number}")
+                        return order_number
+                    else:
+                        err_code = response_data.get('rt_cd')
+                        err_msg = response_data.get('msg1')
+                        
+                        # 특정 오류 코드에 따른 재시도 여부 결정
+                        if err_code in ['38', '111', '885', 'APBK1021'] and retry_count < max_retries - 1:
+                            # 트래픽 제한, 일시적인 서비스 장애 등의 오류는 재시도
+                            logger.warning(f"매도 주문 일시적 오류 발생 [{err_code}]: {err_msg}, 재시도 중...")
+                            if not self._handle_api_delay(retry_count):
+                                break
+                            retry_count += 1
+                            continue
+                        
+                        # 재시도해도 실패하는 경우 또는 재시도 불필요한 오류
+                        self._log_order_detail("매도", body, response_data, success=False, error=f"[{err_code}] {err_msg}")
+                        logger.error(f"매도 주문 전송 실패: [{err_code}] {err_msg}")
+                        return ""
+                        
+                except requests.RequestException as e:
+                    # 네트워크 오류, 타임아웃 등의 예외 처리
+                    logger.error(f"매도 주문 요청 중 네트워크 오류: {e}")
+                    
+                    # 모의투자 환경에서만 더 긴 대기 시간 적용
+                    if not self.real_trading and retry_count < max_retries - 1:
+                        if not self._handle_api_delay(retry_count):
+                            break
+                        retry_count += 1
+                        continue
+                    else:
+                        # 실전 투자에서는 짧은 대기 후 재시도
+                        time.sleep(3)
+                        retry_count += 1
+                        continue
+                        
+                except Exception as e:
+                    # 기타 예외 처리
+                    logger.error(f"매도 주문 처리 중 예외 발생: {e}")
+                    self._log_order_detail("매도", body, None, success=False, error=str(e))
+                    return ""
+            
+            # 최대 재시도 횟수 초과
+            logger.error(f"매도 주문 최대 재시도 횟수({max_retries}회) 초과로 실패")
+            return ""
                 
         except Exception as e:
             logger.error(f"매도 주문 실패: {e}")
@@ -1420,3 +1483,39 @@ class KISAPI(BrokerBase):
                 "error": str(e),
                 "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
             }
+    
+    def _handle_api_delay(self, retry_count):
+        """
+        API 요청 지연/실패 처리 (특히 모의투자에서)
+        
+        Args:
+            retry_count: 현재 재시도 횟수
+            
+        Returns:
+            bool: 계속 재시도 가능 여부
+        """
+        if retry_count >= self.max_api_retries:
+            logger.error(f"API 요청 최대 재시도 횟수({self.max_api_retries}회) 초과")
+            return False
+        
+        # 모의투자 환경에서 API 지연 시 더 긴 대기 시간 적용
+        if not self.real_trading:
+            wait_time = self.api_retry_delay
+            logger.warning(f"모의투자 API 응답 지연, {wait_time}초 후 재시도합니다. (시도 {retry_count+1}/{self.max_api_retries})")
+            
+            # 대기 시간 동안 10초 간격으로 진행 상황 로깅
+            for i in range(wait_time // 10):
+                time.sleep(10)
+                remaining = wait_time - ((i+1) * 10)
+                if remaining > 0:
+                    logger.info(f"API 재시도 대기 중... 남은 시간 약 {remaining}초")
+            
+            # 남은 시간 대기
+            time.sleep(wait_time % 10)
+        else:
+            # 실전투자는 짧은 대기시간
+            wait_time = 5
+            logger.warning(f"API 응답 지연, {wait_time}초 후 재시도합니다. (시도 {retry_count+1}/{self.max_api_retries})")
+            time.sleep(wait_time)
+        
+        return True
