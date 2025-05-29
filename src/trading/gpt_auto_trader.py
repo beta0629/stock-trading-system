@@ -846,3 +846,110 @@ class GPTAutoTrader:
                 self.notifier.send_message(f"⚠️ GPT 트레이딩 오류: {str(e)}")
                 
         return
+    
+    def _process_kr_stocks(self, available_cash):
+        """
+        한국 주식 매매 처리
+        
+        Args:
+            available_cash: 주문 가능 현금
+            
+        Returns:
+            bool: 처리 성공 여부
+        """
+        try:
+            # 1. 매도 결정
+            sell_candidates = []
+            for symbol in list(self.holdings.keys()):
+                position = self.holdings[symbol]
+                if position.get('market') == 'KR':
+                    if self._should_sell(symbol):
+                        sell_candidates.append(symbol)
+            
+            # 매도 실행
+            for symbol in sell_candidates:
+                logger.info(f"{symbol} 매도 진행")
+                self._execute_sell(symbol)
+            
+            # 2. 매수 결정
+            kr_recommendations = self.gpt_selections.get('KR', [])
+            buy_candidates = []
+            
+            for stock_data in kr_recommendations:
+                if self._should_buy(stock_data):
+                    buy_candidates.append(stock_data)
+            
+            # 매수 실행 (자금 상황 고려)
+            for stock_data in buy_candidates:
+                if available_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
+                    logger.info(f"남은 자금({available_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
+                    break
+                
+                symbol = stock_data.get('symbol')
+                logger.info(f"{symbol} 매수 진행")
+                if self._execute_buy(stock_data):
+                    # 매수 성공 시 가용 자금 업데이트
+                    updated_balance = self.broker.get_balance()
+                    available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"한국 주식 처리 중 오류 발생: {e}")
+            return False
+            
+    def _process_us_stocks(self, available_cash):
+        """
+        미국 주식 매매 처리
+        
+        Args:
+            available_cash: 주문 가능 현금
+            
+        Returns:
+            bool: 처리 성공 여부
+        """
+        try:
+            # 미국 시장 거래 시간인지 확인
+            if not self.is_trading_time("US"):
+                logger.info("현재는 미국 시장 거래 시간이 아닙니다.")
+                return False
+                
+            # 1. 매도 결정
+            sell_candidates = []
+            for symbol in list(self.holdings.keys()):
+                position = self.holdings[symbol]
+                if position.get('market') == 'US':
+                    if self._should_sell(symbol):
+                        sell_candidates.append(symbol)
+            
+            # 매도 실행
+            for symbol in sell_candidates:
+                logger.info(f"{symbol} 매도 진행")
+                self._execute_sell(symbol)
+            
+            # 2. 매수 결정
+            us_recommendations = self.gpt_selections.get('US', [])
+            buy_candidates = []
+            
+            for stock_data in us_recommendations:
+                if self._should_buy(stock_data):
+                    buy_candidates.append(stock_data)
+            
+            # 매수 실행 (자금 상황 고려)
+            for stock_data in buy_candidates:
+                if available_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
+                    logger.info(f"남은 자금({available_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
+                    break
+                
+                symbol = stock_data.get('symbol')
+                logger.info(f"{symbol} 매수 진행")
+                if self._execute_buy(stock_data):
+                    # 매수 성공 시 가용 자금 업데이트
+                    updated_balance = self.broker.get_balance()
+                    available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"미국 주식 처리 중 오류 발생: {e}")
+            return False
