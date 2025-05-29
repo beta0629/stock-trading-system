@@ -57,6 +57,9 @@ class AutoTrader:
             strategy_provider: 트레이딩 전략 제공자
             notifier: 알림 발송 객체 (선택적)
         """
+        # 로거 설정
+        self.logger = logging.getLogger('AutoTrader')
+        
         self.config = config
         self.broker = broker
         self.data_provider = data_provider
@@ -94,9 +97,9 @@ class AutoTrader:
         self.max_buy_ratio = 0.5  # 최대 매수 비율 (기본 50%)
         self._load_account_balance()
         
-        logger.info("자동매매 시스템 초기화 완료")
+        self.logger.info("자동매매 시스템 초기화 완료")
         if self.simulation_mode:
-            logger.warning("!! 시뮬레이션 모드로 실행 중. 실제 거래는 발생하지 않습니다 !!")
+            self.logger.warning("!! 시뮬레이션 모드로 실행 중. 실제 거래는 발생하지 않습니다 !!")
     
     def _load_account_balance(self, force_refresh=False):
         """
