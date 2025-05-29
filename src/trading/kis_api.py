@@ -56,6 +56,9 @@ class KISAPI(BrokerBase):
         self.account_number = self.account_no
         self.cano = self.account_no
         
+        # 상품 코드 설정 (주식: 01)
+        self.product_code = "01"
+        
         # 계좌번호 로깅
         logger.info(f"계좌번호 설정 완료 - account_no: {self.account_no}, cano: {self.cano}")
         
@@ -349,7 +352,10 @@ class KISAPI(BrokerBase):
             
         try:
             url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
-            headers = self._get_headers("TTTC8434R")
+            
+            # 하드코딩된 TR ID를 대신 _get_tr_id 사용해 모드에 맞는 TR ID 가져오기
+            tr_id = self._get_tr_id("balance")
+            headers = self._get_headers(tr_id)
             
             # 캐시 무효화를 위한 타임스탬프 파라미터
             if timestamp is None:
@@ -388,50 +394,56 @@ class KISAPI(BrokerBase):
             if response.status_code == 200:
                 data = response.json()
                 
+                # API 응답 전체 로그에 출력 - INFO 레벨로 변경하여 항상 출력되게 함
+                self.logger.info(f"계좌 잔고 API 응답 전체: {json.dumps(data, indent=2, ensure_ascii=False)}")
+                
+                # output2 필드 확인 - 있는 경우 별도로 출력
+                if 'output2' in data:
+                    self.logger.info(f"output2 데이터: {json.dumps(data['output2'], indent=2, ensure_ascii=False)}")
+                else:
+                    self.logger.info("output2 필드가 응답에 없습니다")
+                
                 # 오류 응답인 경우
                 if data.get("rt_cd") != "0":
                     error_msg = data.get("msg_cd", "") + " " + data.get("msg1", "")
                     self.logger.error(f"잔고 조회 오류: {error_msg}")
                     return {"error": error_msg}
                 
-                # 응답 데이터에서 잔고 정보 추출
-                balance_output = data.get("output1", [])[0] if data.get("output1") else {}
-                outputs = data.get("output2", [])
+                # 응답 데이터에서 잔고 정보 추출 (모의투자와 실전투자 API 응답 구조 차기 처리)
+                # 모의투자일 경우 output1이 비어있고 output2에 잔고 정보가 있을 수 있음
+                balance_output = {}
                 
-                # 계좌 기본 정보 추출
+                if data.get("output1") and len(data.get("output1")) > 0:
+                    # 실전투자 또는 기존 구조
+                    balance_output = data.get("output1", [])[0] if data.get("output1") else {}
+                elif data.get("output2") and len(data.get("output2")) > 0:
+                    # 모의투자 - output2에 계좌 정보가 있고 종목 정보가 별도 API로 제공될 수 있음
+                    balance_output = data.get("output2", [])[0] if data.get("output2") else {}
+                
+                # 계좌 기본 정보 추출 (필드명이 모의투자와 실전투자 간에 다를 수 있으므로 대응)
+                deposit = int(balance_output.get("prvs_rcdl_excc_amt", 0))  # 예수금
+                available_deposit = int(balance_output.get("nxdy_excc_amt", 0))  # 출금가능금액
+                total_eval = int(balance_output.get("tot_evlu_amt", 0))  # 총평가금액
+                d2_deposit = int(balance_output.get("d2_auto_rdpt_amt", 0))  # D+2예수금
+                
                 account_info = {
-                    "예수금": int(balance_output.get("prvs_rcdl_excc_amt", 0)),
-                    "D+2예수금": int(balance_output.get("d2_auto_rdpt_amt", 0)),
-                    "출금가능금액": int(balance_output.get("aval_amt", 0)),
-                    "주문가능금액": int(balance_output.get("ord_psbl_cash", 0)) or int(balance_output.get("prvs_rcdl_excc_amt", 0)),
-                    "총평가금액": int(balance_output.get("tot_evlu_amt", 0)),
+                    "예수금": deposit,
+                    "D+2예수금": d2_deposit,
+                    "출금가능금액": available_deposit,
+                    "주문가능금액": deposit,  # 모의투자는 주문가능금액이 예수금과 동일한 경우가 많음
+                    "총평가금액": total_eval,
                     "timestamp": timestamp
                 }
                 
                 # 잔고 상세 정보 로깅
-                self.logger.debug(f"계좌 잔고 조회 성공: 예수금 {account_info['예수금']:,}원, "
+                self.logger.info(f"계좌 잔고 조회 성공: 예수금 {account_info['예수금']:,}원, "
                                f"주문가능금액 {account_info['주문가능금액']:,}원, "
                                f"총평가금액 {account_info['총평가금액']:,}원")
                 
                 # 보유 종목 정보 처리
                 stocks = []
-                for output in outputs:
-                    stock = {
-                        "종목코드": output.get("pdno", ""),
-                        "종목명": output.get("prdt_name", ""),
-                        "보유수량": int(output.get("hldg_qty", 0)),
-                        "평균단가": int(output.get("pchs_avg_pric", 0)),
-                        "현재가": int(output.get("prpr", 0)),
-                        "평가손익": int(output.get("evlu_pfls_amt", 0)),
-                        "수익률": float(output.get("evlu_pfls_rt", 0))
-                    }
-                    stocks.append(stock)
-                    
-                    self.logger.debug(f"보유종목: {stock['종목명']} ({stock['종목코드']}), "
-                                   f"수량: {stock['보유수량']}주, "
-                                   f"평균단가: {stock['평균단가']:,}원, "
-                                   f"현재가: {stock['현재가']:,}원, "
-                                   f"손익: {stock['평가손익']:,}원 ({stock['수익률']}%)")
+                # 모의투자는 output2에 계좌 정보만 있고, 종목 정보는 별도 API를 통해 가져와야 할 수 있음
+                # 따라서 보유 종목 정보는 별도로 처리하지 않고 빈 배열 반환
                 
                 account_info["stocks"] = stocks
                 return account_info
@@ -1282,1126 +1294,325 @@ class KISAPI(BrokerBase):
             if order_number:
                 logger.info(f"매수 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
                 
-                # 주문 결과 반환
-                return {
+                # 주문 결과 생성
+                result = {
                     "success": True,
                     "order_no": order_number,
                     "message": f"매수 주문이 접수되었습니다. (주문번호: {order_number})"
                 }
+                
+                # 카카오톡 메시지 전송
+                try:
+                    from src.notification.kakao_sender import KakaoSender
+                    
+                    # config가 있으면 카카오톡 메시지 전송
+                    if hasattr(self, 'config') and self.config:
+                        # 카카오톡 메시지 전송 활성화 여부 확인
+                        kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                        if kakao_enabled:
+                            kakao_sender = KakaoSender(self.config)
+                            
+                            # 현재가 확인
+                            current_price = 0
+                            try:
+                                current_price = self.get_current_price(symbol)
+                            except:
+                                # 현재가 조회 실패 시 price 값 사용
+                                current_price = price if price > 0 else 0
+                            
+                            # 종목명 확인
+                            stock_name = ""
+                            if hasattr(self, 'get_stock_name'):
+                                try:
+                                    stock_name = self.get_stock_name(symbol)
+                                except:
+                                    pass
+                            
+                            # 카카오톡 메시지 내용 구성
+                            message = f"💰 매수 주문 완료\n\n"
+                            message += f"• 종목: {stock_name or symbol}\n"
+                            message += f"• 수량: {quantity}주\n"
+                            if current_price > 0:
+                                message += f"• 가격: {current_price:,}원\n"
+                            if price > 0 and order_type_str == 'limit':
+                                message += f"• 지정가: {price:,}원\n"
+                            message += f"• 주문번호: {order_number}\n"
+                            message += f"• 시장: {'국내' if market == 'KR' else '미국'}\n"
+                            message += f"• 모드: {'모의투자' if not self.real_trading else '실전투자'}"
+                            
+                            # 메시지 전송
+                            kakao_sender.send_message(message)
+                            logger.info("매수 주문 카카오톡 알림 전송 완료")
+                except Exception as e:
+                    logger.warning(f"카카오톡 알림 전송 중 오류 발생: {e}")
+                
+                # 매매 후 로직 처리 (예: 잔고 업데이트, 포지션 기록 등)
+                try:
+                    # 1. 강제 대기 - API 서버에서 주문 처리 시간 확보
+                    import time
+                    time.sleep(1)
+                    
+                    # 2. 잔고 업데이트 확인
+                    updated_balance = self.get_balance(force_refresh=True)
+                    logger.info(f"매수 후 계좌 잔고: {updated_balance.get('예수금', 0):,}원")
+                    
+                    # 3. ChatGPT 분석기에게 매매 실행 결과 전달 (향후 확장을 위한 자리)
+                    if hasattr(self.config, 'NOTIFY_CHATGPT') and self.config.NOTIFY_CHATGPT:
+                        logger.info(f"ChatGPT에게 매매 실행 결과를 전달합니다: {symbol} 매수 완료")
+                    
+                except Exception as e:
+                    logger.warning(f"매수 후 추가 로직 처리 중 오류 발생: {e}")
+                
+                return result
             else:
                 logger.error(f"매수 주문 실패: {symbol}")
-                return {
+                result = {
                     "success": False,
                     "order_no": "",
                     "error": "매수 주문 처리 실패",
                     "message": "매수 주문을 처리할 수 없습니다."
                 }
                 
+                # 카카오톡 오류 메시지 전송
+                try:
+                    from src.notification.kakao_sender import KakaoSender
+                    
+                    # config가 있으면 카카오톡 메시지 전송
+                    if hasattr(self, 'config') and self.config:
+                        # 카카오톡 메시지 전송 활성화 여부 확인
+                        kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                        if kakao_enabled:
+                            kakao_sender = KakaoSender(self.config)
+                            kakao_sender.send_message(f"⚠️ 매수 주문 실패: {symbol}, {quantity}주\n\n실패 사유: 주문 처리 중 오류 발생")
+                except Exception as e:
+                    logger.warning(f"카카오톡 오류 알림 전송 중 오류 발생: {e}")
+                
+                return result
+                
         except Exception as e:
             logger.error(f"매수 주문 중 예외 발생: {e}")
-            return {
+            result = {
                 "success": False,
                 "order_no": "",
                 "error": str(e),
                 "message": f"매수 주문 중 오류가 발생했습니다: {str(e)}"
             }
-    
-    def sell(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
-        """
-        매도 주문 실행
-        
-        Args:
-            symbol: 종목 코드
-            quantity: 매도 수량
-            price: 매도 희망 가격 (시장가 주문시 0)
-            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
-            market: 시장 구분 ('KR': 국내, 'US': 미국)
             
-        Returns:
-            dict: 매도 주문 결과
-        """
-        try:
-            # 모의투자에서의 시장 제한 확인
-            if not self.real_trading:
-                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
-                if market == 'US':
-                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
-                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
-                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 허용된 시장 확인
-                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
-                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-            
-            order_type_str = order_type.lower()
-            
-            # 종목코드 처리
-            if market == 'KR':
-                if not symbol.startswith('A'):
-                    trade_symbol = 'A' + symbol
-                else:
-                    trade_symbol = symbol
-            else:  # 미국 주식인 경우
-                trade_symbol = symbol
-
-            # 매도 주문 실행
-            order_number = self.sell_stock(
-                trade_symbol, quantity, price, 
-                'market' if order_type_str == 'market' else 'limit'
-            )
-            
-            if order_number:
-                logger.info(f"매도 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
-                
-                # 주문 결과 반환
-                return {
-                    "success": True,
-                    "order_no": order_number,
-                    "message": f"매도 주문이 접수되었습니다. (주문번호: {order_number})"
-                }
-            else:
-                logger.error(f"매도 주문 실패: {symbol}")
-                return {
-                    "success": False,
-                    "order_no": "",
-                    "error": "매도 주문 처리 실패",
-                    "message": "매도 주문을 처리할 수 없습니다."
-                }
-                
-        except Exception as e:
-            logger.error(f"매도 주문 중 예외 발생: {e}")
-            return {
-                "success": False,
-                "order_no": "",
-                "error": str(e),
-                "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
-            }
-    
-    def cancel_order(self, order_number, code, quantity=0, price=0, order_type='market', account_number=None):
-        """
-        주문 취소
-        
-        Args:
-            order_number: 주문번호
-            code: 종목코드
-            quantity: 취소수량 (0이면 전체 취소)
-            price: 가격 (시장가 주문인 경우 무시)
-            order_type: 주문 유형 (market: 시장가, limit: 지정가)
-            account_number: 계좌번호 (None인 경우 기본 계좌 사용)
-            
-        Returns:
-            bool: 취소 성공 여부
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return False
-            
-        if account_number is None:
-            account_number = self.account_number
-            
-        if not account_number:
-            logger.error("계좌번호가 설정되지 않았습니다.")
-            return False
-            
-        try:
-            # 주문 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/order-rvsecncl")
-            
-            # 계좌번호 형식 처리 (수정)
-            cano = self.cano  # 계좌번호 앞부분
-            acnt_prdt_cd = "01"  # 상품코드 (01: 주식)
-            
-            # 주문 유형 처리
-            if order_type == 'market':
-                # 시장가 주문
-                order_division = "01"  # 시장가
-            else:
-                # 지정가 주문
-                order_division = "00"  # 지정가
-            
-            # 종목코드에서 'A' 제거
-            if code.startswith('A'):
-                code = code[1:]
-                
-            # 주문 취소 데이터
-            body = {
-                "CANO": cano,
-                "ACNT_PRDT_CD": acnt_prdt_cd,
-                "KRX_FWDG_ORD_ORGNO": "",  # 한국거래소 전송 주문조직번호
-                "ORGN_ODNO": order_number,  # 원주문번호
-                "ORD_DVSN": order_division,
-                "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (02: 취소)
-                "ORD_QTY": str(quantity),
-                "ORD_UNPR": str(int(price)) if price > 0 else "0",
-                "QTY_ALL_ORD_YN": "Y" if quantity == 0 else "N"  # 잔량전부주문여부
-            }
-            
-            # 해시키 생성
-            hashkey = self._get_hashkey(body)
-            if not hashkey:
-                logger.error("해시키 생성 실패")
-                return False
-            
-            # TR ID 가져오기
-            tr_id = self._get_tr_id("cancel")
-            
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": tr_id,
-                "custtype": "P",
-                "hashkey": hashkey
-            }
-            
-            # 취소 요청
-            response = requests.post(url, headers=headers, data=json.dumps(body))
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                logger.info(f"주문 취소 요청 성공: 원주문번호 {order_number}")
-                return True
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"주문 취소 요청 실패: [{err_code}] {err_msg}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"주문 취소 요청 실패: {e}")
-            return False
-    
-    def get_current_price(self, code):
-        """
-        현재가 조회
-        
-        Args:
-            code: 종목 코드
-            
-        Returns:
-            int: 현재가
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return 0
-            
-        try:
-            # 현재가 조회 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/quotations/inquire-price")
-            
-            # 종목코드에서 'A' 제거
-            if code.startswith('A'):
-                code = code[1:]
-                
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": "FHKST01010100"
-            }
-            
-            # 요청 파라미터
-            params = {
-                "FID_COND_MRKT_DIV_CODE": "J",  # 시장분류코드(J: 주식)
-                "FID_INPUT_ISCD": code  # 종목코드
-            }
-            
-            # 요청 보내기
-            response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                current_price = int(response_data.get('output', {}).get('stck_prpr', '0'))
-                logger.info(f"현재가 조회 성공: {code}, {current_price}원")
-                return current_price
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"현재가 조회 실패: [{err_code}] {err_msg}")
-                return 0
-                
-        except Exception as e:
-            logger.error(f"현재가 조회 실패: {e}")
-            return 0
-    
-    def get_order_status(self, order_number, account_number=None):
-        """
-        주문 상태 조회
-        
-        Args:
-            order_number: 주문번호
-            account_number: 계좌번호 (None인 경우 기본 계좌 사용)
-            
-        Returns:
-            dict: 주문 상태 정보
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return {}
-            
-        if account_number is None:
-            account_number = self.account_number
-            
-        if not account_number:
-            logger.error("계좌번호가 설정되지 않았습니다.")
-            return {}
-            
-        try:
-            # 주문 조회 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl")
-            
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
-            
-            # TR ID 가져오기
-            tr_id = self._get_tr_id("order_status")
-            
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": tr_id
-            }
-            
-            # 요청 파라미터
-            params = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": "",
-                "INQR_DVSN_1": "0",
-                "INQR_DVSN_2": "0"
-            }
-            
-            # 요청 보내기
-            response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                order_info = {}
-                orders = response_data.get('output', [])
-                
-                # 주문번호로 일치하는 주문 찾기
-                for order in orders:
-                    if order.get('odno') == order_number:
-                        code = order.get('pdno', '')
-                        name = order.get('prdt_name', '')
-                        order_status = "접수완료" if order.get('rmn_qty', '0') == order.get('ord_qty', '0') else "일부체결"
-                        order_quantity = int(order.get('ord_qty', '0'))
-                        executed_quantity = order_quantity - int(order.get('rmn_qty', '0'))
-                        remaining_quantity = int(order.get('rmn_qty', '0'))
-                        order_price = int(order.get('ord_unpr', '0'))
-                        
-                        order_info = {
-                            "주문번호": order_number,
-                            "종목코드": code,
-                            "종목명": name,
-                            "주문상태": order_status,
-                            "주문수량": order_quantity,
-                            "체결수량": executed_quantity,
-                            "미체결수량": remaining_quantity,
-                            "주문가격": order_price
-                        }
-                        
-                        logger.info(f"주문 상태 조회 성공: {order_info}")
-                        return order_info
-                
-                logger.warning(f"해당 주문번호({order_number})의 주문 정보를 찾을 수 없습니다.")
-                return {}
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"주문 상태 조회 실패: [{err_code}] {err_msg}")
-                return {}
-                
-        except Exception as e:
-            logger.error(f"주문 상태 조회 실패: {e}")
-            return {}
-            
-    def switch_to_real(self):
-        """실전투자로 전환"""
-        if self.real_trading:
-            logger.info("이미 실전투자 모드입니다.")
-            return True
-            
-        logger.info("실전투자 모드로 전환합니다.")
-        self.real_trading = True
-        self.base_url = "https://openapi.koreainvestment.com:9443"
-        self.app_key = self.config.KIS_APP_KEY
-        self.app_secret = self.config.KIS_APP_SECRET
-        self.account_no = self.config.KIS_ACCOUNT_NO
-        self.account_number = self.account_no
-        
-        # 토큰 재발급
-        self.disconnect()
-        return self.connect()
-        
-    def switch_to_virtual(self):
-        """모의투자로 전환"""
-        if not self.real_trading:
-            logger.info("이미 모의투자 모드입니다.")
-            return True
-            
-        logger.info("모의투자 모드로 전환합니다.")
-        self.real_trading = False
-        self.base_url = self.config.KIS_VIRTUAL_URL
-        self.app_key = self.config.KIS_VIRTUAL_APP_KEY
-        self.app_secret = self.config.KIS_VIRTUAL_APP_SECRET
-        self.account_no = self.config.KIS_VIRTUAL_ACCOUNT_NO
-        self.account_number = self.account_no
-        
-        # 토큰 재발급
-        self.disconnect()
-        return self.connect()
-        
-    def get_trading_mode(self):
-        """현재 거래 모드 반환"""
-        return "실전투자" if self.real_trading else "모의투자"
-    
-    def buy(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
-        """
-        매수 주문 실행
-        
-        Args:
-            symbol: 종목 코드
-            quantity: 매수 수량
-            price: 매수 희망 가격 (시장가 주문시 0)
-            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
-            market: 시장 구분 ('KR': 국내, 'US': 미국)
-            
-        Returns:
-            dict: 매수 주문 결과
-        """
-        try:
-            # 모의투자에서의 시장 제한 확인
-            if not self.real_trading:
-                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
-                if market == 'US':
-                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
-                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
-                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 허용된 시장 확인
-                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
-                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-            
-            order_type_str = order_type.lower()
-            
-            # 종목코드 처리
-            if market == 'KR':
-                if not symbol.startswith('A'):
-                    trade_symbol = 'A' + symbol
-                else:
-                    trade_symbol = symbol
-            else:  # 미국 주식인 경우
-                trade_symbol = symbol
-
-            # 매수 주문 실행
-            order_number = self.buy_stock(
-                trade_symbol, quantity, price, 
-                'market' if order_type_str == 'market' else 'limit'
-            )
-            
-            if order_number:
-                logger.info(f"매수 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
-                
-                # 주문 결과 반환
-                return {
-                    "success": True,
-                    "order_no": order_number,
-                    "message": f"매수 주문이 접수되었습니다. (주문번호: {order_number})"
-                }
-            else:
-                logger.error(f"매수 주문 실패: {symbol}")
-                return {
-                    "success": False,
-                    "order_no": "",
-                    "error": "매수 주문 처리 실패",
-                    "message": "매수 주문을 처리할 수 없습니다."
-                }
-                
-        except Exception as e:
-            logger.error(f"매수 주문 중 예외 발생: {e}")
-            return {
-                "success": False,
-                "order_no": "",
-                "error": str(e),
-                "message": f"매수 주문 중 오류가 발생했습니다: {str(e)}"
-            }
-    
-    def sell(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
-        """
-        매도 주문 실행
-        
-        Args:
-            symbol: 종목 코드
-            quantity: 매도 수량
-            price: 매도 희망 가격 (시장가 주문시 0)
-            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
-            market: 시장 구분 ('KR': 국내, 'US': 미국)
-            
-        Returns:
-            dict: 매도 주문 결과
-        """
-        try:
-            # 모의투자에서의 시장 제한 확인
-            if not self.real_trading:
-                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
-                if market == 'US':
-                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
-                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
-                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 허용된 시장 확인
-                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
-                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-            
-            order_type_str = order_type.lower()
-            
-            # 종목코드 처리
-            if market == 'KR':
-                if not symbol.startswith('A'):
-                    trade_symbol = 'A' + symbol
-                else:
-                    trade_symbol = symbol
-            else:  # 미국 주식인 경우
-                trade_symbol = symbol
-
-            # 매도 주문 실행
-            order_number = self.sell_stock(
-                trade_symbol, quantity, price, 
-                'market' if order_type_str == 'market' else 'limit'
-            )
-            
-            if order_number:
-                logger.info(f"매도 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
-                
-                # 주문 결과 반환
-                return {
-                    "success": True,
-                    "order_no": order_number,
-                    "message": f"매도 주문이 접수되었습니다. (주문번호: {order_number})"
-                }
-            else:
-                logger.error(f"매도 주문 실패: {symbol}")
-                return {
-                    "success": False,
-                    "order_no": "",
-                    "error": "매도 주문 처리 실패",
-                    "message": "매도 주문을 처리할 수 없습니다."
-                }
-                
-        except Exception as e:
-            logger.error(f"매도 주문 중 예외 발생: {e}")
-            return {
-                "success": False,
-                "order_no": "",
-                "error": str(e),
-                "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
-            }
-    
-    def cancel_order(self, order_number, code, quantity=0, price=0, order_type='market', account_number=None):
-        """
-        주문 취소
-        
-        Args:
-            order_number: 주문번호
-            code: 종목코드
-            quantity: 취소수량 (0이면 전체 취소)
-            price: 가격 (시장가 주문인 경우 무시)
-            order_type: 주문 유형 (market: 시장가, limit: 지정가)
-            account_number: 계좌번호 (None인 경우 기본 계좌 사용)
-            
-        Returns:
-            bool: 취소 성공 여부
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return False
-            
-        if account_number is None:
-            account_number = self.account_number
-            
-        if not account_number:
-            logger.error("계좌번호가 설정되지 않았습니다.")
-            return False
-            
-        try:
-            # 주문 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/order-rvsecncl")
-            
-            # 계좌번호 형식 처리 (수정)
-            cano = self.cano  # 계좌번호 앞부분
-            acnt_prdt_cd = "01"  # 상품코드 (01: 주식)
-            
-            # 주문 유형 처리
-            if order_type == 'market':
-                # 시장가 주문
-                order_division = "01"  # 시장가
-            else:
-                # 지정가 주문
-                order_division = "00"  # 지정가
-            
-            # 종목코드에서 'A' 제거
-            if code.startswith('A'):
-                code = code[1:]
-                
-            # 주문 취소 데이터
-            body = {
-                "CANO": cano,
-                "ACNT_PRDT_CD": acnt_prdt_cd,
-                "KRX_FWDG_ORD_ORGNO": "",  # 한국거래소 전송 주문조직번호
-                "ORGN_ODNO": order_number,  # 원주문번호
-                "ORD_DVSN": order_division,
-                "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (02: 취소)
-                "ORD_QTY": str(quantity),
-                "ORD_UNPR": str(int(price)) if price > 0 else "0",
-                "QTY_ALL_ORD_YN": "Y" if quantity == 0 else "N"  # 잔량전부주문여부
-            }
-            
-            # 해시키 생성
-            hashkey = self._get_hashkey(body)
-            if not hashkey:
-                logger.error("해시키 생성 실패")
-                return False
-            
-            # TR ID 가져오기
-            tr_id = self._get_tr_id("cancel")
-            
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": tr_id,
-                "custtype": "P",
-                "hashkey": hashkey
-            }
-            
-            # 취소 요청
-            response = requests.post(url, headers=headers, data=json.dumps(body))
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                logger.info(f"주문 취소 요청 성공: 원주문번호 {order_number}")
-                return True
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"주문 취소 요청 실패: [{err_code}] {err_msg}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"주문 취소 요청 실패: {e}")
-            return False
-    
-    def get_current_price(self, code):
-        """
-        현재가 조회
-        
-        Args:
-            code: 종목 코드
-            
-        Returns:
-            int: 현재가
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return 0
-            
-        try:
-            # 현재가 조회 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/quotations/inquire-price")
-            
-            # 종목코드에서 'A' 제거
-            if code.startswith('A'):
-                code = code[1:]
-                
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": "FHKST01010100"
-            }
-            
-            # 요청 파라미터
-            params = {
-                "FID_COND_MRKT_DIV_CODE": "J",  # 시장분류코드(J: 주식)
-                "FID_INPUT_ISCD": code  # 종목코드
-            }
-            
-            # 요청 보내기
-            response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                current_price = int(response_data.get('output', {}).get('stck_prpr', '0'))
-                logger.info(f"현재가 조회 성공: {code}, {current_price}원")
-                return current_price
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"현재가 조회 실패: [{err_code}] {err_msg}")
-                return 0
-                
-        except Exception as e:
-            logger.error(f"현재가 조회 실패: {e}")
-            return 0
-    
-    def get_order_status(self, order_number, account_number=None):
-        """
-        주문 상태 조회
-        
-        Args:
-            order_number: 주문번호
-            account_number: 계좌번호 (None인 경우 기본 계좌 사용)
-            
-        Returns:
-            dict: 주문 상태 정보
-        """
-        if not self._check_token():
-            logger.error("API 연결이 되지 않았습니다.")
-            return {}
-            
-        if account_number is None:
-            account_number = self.account_number
-            
-        if not account_number:
-            logger.error("계좌번호가 설정되지 않았습니다.")
-            return {}
-            
-        try:
-            # 주문 조회 URL
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl")
-            
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
-            
-            # TR ID 가져오기
-            tr_id = self._get_tr_id("order_status")
-            
-            # API 헤더
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": tr_id
-            }
-            
-            # 요청 파라미터
-            params = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": "",
-                "INQR_DVSN_1": "0",
-                "INQR_DVSN_2": "0"
-            }
-            
-            # 요청 보내기
-            response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                order_info = {}
-                orders = response_data.get('output', [])
-                
-                # 주문번호로 일치하는 주문 찾기
-                for order in orders:
-                    if order.get('odno') == order_number:
-                        code = order.get('pdno', '')
-                        name = order.get('prdt_name', '')
-                        order_status = "접수완료" if order.get('rmn_qty', '0') == order.get('ord_qty', '0') else "일부체결"
-                        order_quantity = int(order.get('ord_qty', '0'))
-                        executed_quantity = order_quantity - int(order.get('rmn_qty', '0'))
-                        remaining_quantity = int(order.get('rmn_qty', '0'))
-                        order_price = int(order.get('ord_unpr', '0'))
-                        
-                        order_info = {
-                            "주문번호": order_number,
-                            "종목코드": code,
-                            "종목명": name,
-                            "주문상태": order_status,
-                            "주문수량": order_quantity,
-                            "체결수량": executed_quantity,
-                            "미체결수량": remaining_quantity,
-                            "주문가격": order_price
-                        }
-                        
-                        logger.info(f"주문 상태 조회 성공: {order_info}")
-                        return order_info
-                
-                logger.warning(f"해당 주문번호({order_number})의 주문 정보를 찾을 수 없습니다.")
-                return {}
-            else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"주문 상태 조회 실패: [{err_code}] {err_msg}")
-                return {}
-                
-        except Exception as e:
-            logger.error(f"주문 상태 조회 실패: {e}")
-            return {}
-            
-    def switch_to_real(self):
-        """실전투자로 전환"""
-        if self.real_trading:
-            logger.info("이미 실전투자 모드입니다.")
-            return True
-            
-        logger.info("실전투자 모드로 전환합니다.")
-        self.real_trading = True
-        self.base_url = "https://openapi.koreainvestment.com:9443"
-        self.app_key = self.config.KIS_APP_KEY
-        self.app_secret = self.config.KIS_APP_SECRET
-        self.account_no = self.config.KIS_ACCOUNT_NO
-        self.account_number = self.account_no
-        
-        # 토큰 재발급
-        self.disconnect()
-        return self.connect()
-        
-    def switch_to_virtual(self):
-        """모의투자로 전환"""
-        if not self.real_trading:
-            logger.info("이미 모의투자 모드입니다.")
-            return True
-            
-        logger.info("모의투자 모드로 전환합니다.")
-        self.real_trading = False
-        self.base_url = self.config.KIS_VIRTUAL_URL
-        self.app_key = self.config.KIS_VIRTUAL_APP_KEY
-        self.app_secret = self.config.KIS_VIRTUAL_APP_SECRET
-        self.account_no = self.config.KIS_VIRTUAL_ACCOUNT_NO
-        self.account_number = self.account_no
-        
-        # 토큰 재발급
-        self.disconnect()
-        return self.connect()
-        
-    def get_trading_mode(self):
-        """현재 거래 모드 반환"""
-        return "실전투자" if self.real_trading else "모의투자"
-    
-    def buy(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
-        """
-        매수 주문 실행
-        
-        Args:
-            symbol: 종목 코드
-            quantity: 매수 수량
-            price: 매수 희망 가격 (시장가 주문시 0)
-            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
-            market: 시장 구분 ('KR': 국내, 'US': 미국)
-            
-        Returns:
-            dict: 매수 주문 결과
-        """
-        try:
-            # 모의투자에서의 시장 제한 확인
-            if not self.real_trading:
-                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
-                if market == 'US':
-                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
-                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
-                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 허용된 시장 확인
-                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
-                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-            
-            order_type_str = order_type.lower()
-            
-            # 종목코드 처리
-            if market == 'KR':
-                if not symbol.startswith('A'):
-                    trade_symbol = 'A' + symbol
-                else:
-                    trade_symbol = symbol
-            else:  # 미국 주식인 경우
-                trade_symbol = symbol
-
-            # 매수 주문 실행
-            order_number = self.buy_stock(
-                trade_symbol, quantity, price, 
-                'market' if order_type_str == 'market' else 'limit'
-            )
-            
-            if order_number:
-                logger.info(f"매수 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
-                
-                # 주문 결과 반환
-                return {
-                    "success": True,
-                    "order_no": order_number,
-                    "message": f"매수 주문이 접수되었습니다. (주문번호: {order_number})"
-                }
-            else:
-                logger.error(f"매수 주문 실패: {symbol}")
-                return {
-                    "success": False,
-                    "order_no": "",
-                    "error": "매수 주문 처리 실패",
-                    "message": "매수 주문을 처리할 수 없습니다."
-                }
-                
-        except Exception as e:
-            logger.error(f"매수 주문 중 예외 발생: {e}")
-            return {
-                "success": False,
-                "order_no": "",
-                "error": str(e),
-                "message": f"매수 주문 중 오류가 발생했습니다: {str(e)}"
-            }
-    
-    def sell(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
-        """
-        매도 주문 실행
-        
-        Args:
-            symbol: 종목 코드
-            quantity: 매도 수량
-            price: 매도 희망 가격 (시장가 주문시 0)
-            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
-            market: 시장 구분 ('KR': 국내, 'US': 미국)
-            
-        Returns:
-            dict: 매도 주문 결과
-        """
-        try:
-            # 모의투자에서의 시장 제한 확인
-            if not self.real_trading:
-                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
-                if market == 'US':
-                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
-                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
-                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-                
-                # 허용된 시장 확인
-                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
-                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
-                    logger.error(error_msg)
-                    return {
-                        "success": False,
-                        "order_no": "",
-                        "error": error_msg,
-                        "message": error_msg
-                    }
-            
-            order_type_str = order_type.lower()
-            
-            # 종목코드 처리
-            if market == 'KR':
-                if not symbol.startswith('A'):
-                    trade_symbol = 'A' + symbol
-                else:
-                    trade_symbol = symbol
-            else:  # 미국 주식인 경우
-                trade_symbol = symbol
-
-            # 매도 주문 실행
-            order_number = self.sell_stock(
-                trade_symbol, quantity, price, 
-                'market' if order_type_str == 'market' else 'limit'
-            )
-            
-            if order_number:
-                logger.info(f"매도 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
-                
-                # 주문 결과 반환
-                return {
-                    "success": True,
-                    "order_no": order_number,
-                    "message": f"매도 주문이 접수되었습니다. (주문번호: {order_number})"
-                }
-            else:
-                logger.error(f"매도 주문 실패: {symbol}")
-                return {
-                    "success": False,
-                    "order_no": "",
-                    "error": "매도 주문 처리 실패",
-                    "message": "매도 주문을 처리할 수 없습니다."
-                }
-                
-        except Exception as e:
-            logger.error(f"매도 주문 중 예외 발생: {e}")
-            return {
-                "success": False,
-                "order_no": "",
-                "error": str(e),
-                "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
-            }
-    
-    def _handle_api_delay(self, retry_count):
-        """
-        API 지연 상황 처리 함수
-        
-        Args:
-            retry_count: 현재 재시도 횟수
-            
-        Returns:
-            bool: 재시도 가능 여부
-        """
-        # 모의투자 API 호출 제한 대응을 위한 지수 백오프 적용
-        if not self.real_trading:
-            # 모의투자 API는 호출 제한이 있으므로 재시도 간격을 지수적으로 늘림
-            wait_time = min(self.api_retry_delay * (2 ** retry_count), 300)  # 최대 5분
-            self.logger.warning(f"모의투자 API 응답 지연으로 {wait_time}초 대기 후 재시도합니다...")
-            
+            # 카카오톡 오류 메시지 전송
             try:
-                time.sleep(wait_time)
-                return True
-            except KeyboardInterrupt:
-                self.logger.warning("사용자에 의해 API 재시도가 중단되었습니다.")
-                return False
-        else:
-            # 실전투자는 짧은 대기 시간 적용
-            time.sleep(3)
-            return True
+                from src.notification.kakao_sender import KakaoSender
+                
+                # config가 있으면 카카오톡 메시지 전송
+                if hasattr(self, 'config') and self.config:
+                    # 카카오톡 메시지 전송 활성화 여부 확인
+                    kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                    if kakao_enabled:
+                        kakao_sender = KakaoSender(self.config)
+                        kakao_sender.send_message(f"⚠️ 매수 주문 중 오류: {symbol}, {quantity}주\n\n오류 내용: {str(e)}")
+            except Exception as notify_err:
+                logger.warning(f"카카오톡 오류 알림 전송 중 오류 발생: {notify_err}")
+            
+            return result
     
-    def _get_headers(self, tr_id=None):
+    def sell(self, symbol, quantity, price=0, order_type='MARKET', market='KR'):
         """
-        API 요청에 사용할 헤더 생성
+        매도 주문 실행
         
         Args:
-            tr_id: 트랜잭션 ID (직접 지정하는 경우)
-        
-        Returns:
-            dict: API 요청 헤더
-        """
-        if not self._check_token():
-            logger.error("토큰이 유효하지 않거나 만료되었습니다.")
-            return {}
-        
-        headers = {
-            "content-type": "application/json",
-            "authorization": f"Bearer {self.access_token}",
-            "appkey": self.app_key,
-            "appsecret": self.app_secret,
-        }
-        
-        # TR ID가 지정된 경우 헤더에 추가
-        if tr_id:
-            headers["tr_id"] = tr_id
+            symbol: 종목 코드
+            quantity: 매도 수량
+            price: 매도 희망 가격 (시장가 주문시 0)
+            order_type: 주문 유형 ('MARKET': 시장가, 'LIMIT': 지정가)
+            market: 시장 구분 ('KR': 국내, 'US': 미국)
             
-        return headers
+        Returns:
+            dict: 매도 주문 결과
+        """
+        try:
+            # 모의투자에서의 시장 제한 확인
+            if not self.real_trading:
+                # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
+                if market == 'US':
+                    error_msg = "모의투자에서는 미국 주식 거래가 지원되지 않습니다. 실전투자 계좌에서만 미국 주식 거래가 가능합니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
+                # 모의투자에서 국내주식만 거래 가능하도록 제한 설정 확인
+                if hasattr(self.config, 'VIRTUAL_TRADING_KR_ONLY') and self.config.VIRTUAL_TRADING_KR_ONLY and market != 'KR':
+                    error_msg = "모의투자에서는 국내주식만 거래 가능합니다. 해외주식은 실전투자에서만 거래할 수 있습니다."
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+                
+                # 허용된 시장 확인
+                if hasattr(self.config, 'ALLOWED_VIRTUAL_MARKETS') and market not in self.config.ALLOWED_VIRTUAL_MARKETS:
+                    error_msg = f"모의투자에서는 {market} 시장 거래가 허용되지 않습니다. 허용된 시장: {self.config.ALLOWED_VIRTUAL_MARKETS}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "order_no": "",
+                        "error": error_msg,
+                        "message": error_msg
+                    }
+            
+            order_type_str = order_type.lower()
+            
+            # 종목코드 처리
+            if market == 'KR':
+                if not symbol.startswith('A'):
+                    trade_symbol = 'A' + symbol
+                else:
+                    trade_symbol = symbol
+            else:  # 미국 주식인 경우
+                trade_symbol = symbol
+
+            # 매도 주문 실행
+            order_number = self.sell_stock(
+                trade_symbol, quantity, price, 
+                'market' if order_type_str == 'market' else 'limit'
+            )
+            
+            if order_number:
+                logger.info(f"매도 주문 성공: {symbol}, {quantity}주, 주문번호: {order_number}")
+                
+                # 주문 결과 생성
+                result = {
+                    "success": True,
+                    "order_no": order_number,
+                    "message": f"매도 주문이 접수되었습니다. (주문번호: {order_number})"
+                }
+                
+                # 카카오톡 메시지 전송
+                try:
+                    from src.notification.kakao_sender import KakaoSender
+                    
+                    # config가 있으면 카카오톡 메시지 전송
+                    if hasattr(self, 'config') and self.config:
+                        # 카카오톡 메시지 전송 활성화 여부 확인
+                        kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                        if kakao_enabled:
+                            kakao_sender = KakaoSender(self.config)
+                            
+                            # 현재가 확인
+                            current_price = 0
+                            try:
+                                current_price = self.get_current_price(symbol)
+                            except:
+                                # 현재가 조회 실패 시 price 값 사용
+                                current_price = price if price > 0 else 0
+                            
+                            # 종목명 확인
+                            stock_name = ""
+                            if hasattr(self, 'get_stock_name'):
+                                try:
+                                    stock_name = self.get_stock_name(symbol)
+                                except:
+                                    pass
+                            
+                            # 카카오톡 메시지 내용 구성
+                            message = f"💸 매도 주문 완료\n\n"
+                            message += f"• 종목: {stock_name or symbol}\n"
+                            message += f"• 수량: {quantity}주\n"
+                            if current_price > 0:
+                                message += f"• 가격: {current_price:,}원\n"
+                            if price > 0 and order_type_str == 'limit':
+                                message += f"• 지정가: {price:,}원\n"
+                            message += f"• 주문번호: {order_number}\n"
+                            message += f"• 시장: {'국내' if market == 'KR' else '미국'}\n"
+                            message += f"• 모드: {'모의투자' if not self.real_trading else '실전투자'}"
+                            
+                            # 메시지 전송
+                            kakao_sender.send_message(message)
+                            logger.info("매도 주문 카카오톡 알림 전송 완료")
+                except Exception as e:
+                    logger.warning(f"카카오톡 알림 전송 중 오류 발생: {e}")
+                
+                # 매매 후 로직 처리 (예: 잔고 업데이트, 포지션 기록 등)
+                try:
+                    # 1. 강제 대기 - API 서버에서 주문 처리 시간 확보
+                    import time
+                    time.sleep(1)
+                    
+                    # 2. 잔고 업데이트 확인
+                    updated_balance = self.get_balance(force_refresh=True)
+                    logger.info(f"매도 후 계좌 잔고: {updated_balance.get('예수금', 0):,}원")
+                    
+                    # 3. 보유 종목 업데이트 확인
+                    positions = self.get_positions()
+                    has_position = False
+                    for pos in positions:
+                        if pos.get('종목코드', '').strip() == symbol.strip():
+                            has_position = True
+                            remaining_qty = pos.get('quantity', 0)
+                            logger.info(f"매도 후 보유 수량: {remaining_qty}주 ({symbol})")
+                            break
+                    
+                    if not has_position:
+                        logger.info(f"매도 완료: {symbol} 종목을 모두 매도했습니다.")
+                    
+                    # 4. ChatGPT 분석기에게 매매 실행 결과 전달 (향후 확장을 위한 자리)
+                    if hasattr(self.config, 'NOTIFY_CHATGPT') and self.config.NOTIFY_CHATGPT:
+                        logger.info(f"ChatGPT에게 매매 실행 결과를 전달합니다: {symbol} 매도 완료")
+                    
+                except Exception as e:
+                    logger.warning(f"매도 후 추가 로직 처리 중 오류 발생: {e}")
+                
+                return result
+            else:
+                logger.error(f"매도 주문 실패: {symbol}")
+                result = {
+                    "success": False,
+                    "order_no": "",
+                    "error": "매도 주문 처리 실패",
+                    "message": "매도 주문을 처리할 수 없습니다."
+                }
+                
+                # 카카오톡 오류 메시지 전송
+                try:
+                    from src.notification.kakao_sender import KakaoSender
+                    
+                    # config가 있으면 카카오톡 메시지 전송
+                    if hasattr(self, 'config') and self.config:
+                        # 카카오톡 메시지 전송 활성화 여부 확인
+                        kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                        if kakao_enabled:
+                            kakao_sender = KakaoSender(self.config)
+                            kakao_sender.send_message(f"⚠️ 매도 주문 실패: {symbol}, {quantity}주\n\n실패 사유: 주문 처리 중 오류 발생")
+                except Exception as e:
+                    logger.warning(f"카카오톡 오류 알림 전송 중 오류 발생: {e}")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"매도 주문 중 예외 발생: {e}")
+            result = {
+                "success": False,
+                "order_no": "",
+                "error": str(e),
+                "message": f"매도 주문 중 오류가 발생했습니다: {str(e)}"
+            }
+            
+            # 카카오톡 오류 메시지 전송
+            try:
+                from src.notification.kakao_sender import KakaoSender
+                
+                # config가 있으면 카카오톡 메시지 전송
+                if hasattr(self, 'config') and self.config:
+                    # 카카오톡 메시지 전송 활성화 여부 확인
+                    kakao_enabled = getattr(self.config, 'KAKAO_MSG_ENABLED', False)
+                    if kakao_enabled:
+                        kakao_sender = KakaoSender(self.config)
+                        kakao_sender.send_message(f"⚠️ 매도 주문 중 오류: {symbol}, {quantity}주\n\n오류 내용: {str(e)}")
+            except Exception as notify_err:
+                logger.warning(f"카카오톡 오류 알림 전송 중 오류 발생: {notify_err}")
+            
+            return result
