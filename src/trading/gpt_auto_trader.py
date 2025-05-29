@@ -1184,7 +1184,8 @@ class GPTAutoTrader:
                     for stock in recommended_stocks:
                         symbol = stock.get('symbol', '')
                         name = stock.get('name', symbol)
-                        weight = stock.get('suggested_weight', 0)
+                        # 비중 값 확인 (명시적으로 가져오기)
+                        weight = stock.get('suggested_weight', 20)  # 기본값 20%로 설정
                         logger.info(f"캐시 파일 종목: {name}({symbol}), 비중: {weight}%")
                     
                     # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
@@ -1205,7 +1206,7 @@ class GPTAutoTrader:
                                 continue
                                 
                             # 종목 데이터 검증 및 기본값 설정
-                            if not stock_copy.get('suggested_weight'):
+                            if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
                                 # 비중이 없거나 0인 경우 기본값 설정
                                 stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
                                 logger.info(f"{symbol} 종목에 기본 비중 20% 설정")
@@ -1262,7 +1263,7 @@ class GPTAutoTrader:
                                 continue
                                 
                             # 종목 데이터 검증 및 기본값 설정
-                            if not stock_copy.get('suggested_weight'):
+                            if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
                                 stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
                             
                             if not stock_copy.get('risk_level'):
