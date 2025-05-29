@@ -153,7 +153,36 @@ class StockData:
             self.get_us_stock_data(symbol)
             
         logger.info("모든 주식 데이터 업데이트 완료")
+    
+    def get_historical_data(self, symbol, market="KR", days=90):
+        """
+        기존 주식 데이터 반환 또는 신규 수집
         
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            days: 데이터를 가져올 기간 (일)
+            
+        Returns:
+            DataFrame: 주가 데이터
+        """
+        try:
+            # 이미 데이터가 있는지 확인
+            data_dict = self.kr_data if market == "KR" else self.us_data
+            
+            if symbol in data_dict and not data_dict[symbol].empty:
+                logger.info(f"{symbol}({market}) 기존 데이터 반환. 데이터 크기: {len(data_dict[symbol])}")
+                return data_dict[symbol]
+            
+            # 데이터가 없으면 새로 가져오기
+            if market == "KR":
+                return self.get_korean_stock_data(symbol, days)
+            else:
+                return self.get_us_stock_data(symbol, days)
+        except Exception as e:
+            logger.error(f"{symbol}({market}) 기록 데이터 조회 중 오류 발생: {e}")
+            return None
+    
     def get_latest_data(self, symbol, market="KR"):
         """
         최신 주식 데이터 조회
