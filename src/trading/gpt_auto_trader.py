@@ -379,24 +379,66 @@ class GPTAutoTrader:
             elif isinstance(positions, list):
                 logger.debug("List 형태의 positions 처리")
                 for position in positions:
-                    symbol = position.get('symbol')
-                    if not symbol:  # symbol이 없으면 건너뜀
-                        continue
-                    
-                    self.holdings[symbol] = {
-                        'symbol': symbol,
-                        'name': position.get('name', symbol),
-                        'quantity': position.get('quantity', 0),
-                        'avg_price': position.get('avg_price', 0),
-                        'current_price': position.get('current_price', 0),
-                        'market': position.get('market', 'KR'),
-                        'entry_time': position.get('entry_time', get_current_time().isoformat())
-                    }
+                    # KISAPI의 응답 형식 처리 추가
+                    if "종목코드" in position:
+                        # KISAPI 응답 형식 (한글 키)
+                        symbol = position.get("종목코드", "")
+                        if symbol:
+                            # 종목코드 앞에 'A' 추가 (필요시)
+                            if len(symbol) == 6 and symbol.isdigit():
+                                symbol_key = symbol  # 원본 종목코드를 키로 사용
+                            else:
+                                symbol_key = symbol
+                                
+                            self.holdings[symbol_key] = {
+                                'symbol': symbol,
+                                'name': position.get("종목명", symbol),
+                                'quantity': position.get("보유수량", 0),
+                                'avg_price': position.get("평균단가", 0),
+                                'current_price': position.get("현재가", 0),
+                                'market': 'KR',  # 한국투자증권 API는 국내 주식만 제공
+                                'entry_time': get_current_time().isoformat()
+                            }
+                    elif "pdno" in position or "PDNO" in position:
+                        # KISAPI 모의투자 응답 형식 (영문 키)
+                        symbol = position.get("pdno", position.get("PDNO", ""))
+                        if symbol:
+                            self.holdings[symbol] = {
+                                'symbol': symbol,
+                                'name': position.get("prdt_name", position.get("PRDT_NAME", symbol)),
+                                'quantity': int(position.get("hldg_qty", position.get("HLDG_QTY", "0"))),
+                                'avg_price': int(float(position.get("pchs_avg_pric", position.get("PCHS_AVG_PRIC", "0")))),
+                                'current_price': int(float(position.get("prpr", position.get("PRPR", "0")))),
+                                'market': 'KR',
+                                'entry_time': get_current_time().isoformat()
+                            }
+                    else:
+                        # 일반 형식
+                        symbol = position.get('symbol')
+                        if not symbol:  # symbol이 없으면 건너뜀
+                            continue
+                        
+                        self.holdings[symbol] = {
+                            'symbol': symbol,
+                            'name': position.get('name', symbol),
+                            'quantity': position.get('quantity', 0),
+                            'avg_price': position.get('avg_price', 0),
+                            'current_price': position.get('current_price', 0),
+                            'market': position.get('market', 'KR'),
+                            'entry_time': position.get('entry_time', get_current_time().isoformat())
+                        }
             else:
                 # 예상치 않은 형태
                 logger.warning(f"예상치 않은 positions 형식: {type(positions)}")
                 
             logger.info(f"보유 종목 로드 완료: {len(self.holdings)}개")
+            
+            # 디버깅: 보유 종목 상세 정보 출력
+            if self.holdings:
+                for symbol, data in self.holdings.items():
+                    logger.debug(f"보유종목 상세: {symbol}, 이름: {data.get('name')}, "
+                               f"수량: {data.get('quantity')}, 평단가: {data.get('avg_price'):,}원")
+            
             return True
             
         except Exception as e:
