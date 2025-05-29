@@ -52,6 +52,7 @@ class GPTAutoTrader:
         self.max_investment_per_stock = getattr(config, 'GPT_MAX_INVESTMENT_PER_STOCK', 5000000)
         self.strategy = getattr(config, 'GPT_STRATEGY', 'balanced')
         self.monitoring_interval = getattr(config, 'GPT_TRADING_MONITOR_INTERVAL', 30)  # 분
+        self.use_dynamic_selection = getattr(config, 'GPT_USE_DYNAMIC_SELECTION', False)  # 동적 종목 선정 사용 여부
         
         # 상태 변수
         self.is_running = False
@@ -65,7 +66,7 @@ class GPTAutoTrader:
         self.holdings = {}  # {symbol: {quantity, avg_price, market, entry_time, ...}}
         self.trade_history = []  # 매매 기록
         
-        logger.info("GPT 자동 매매 시스템 초기화 완료")
+        logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'})")
         
     def is_trading_time(self, market="KR"):
         """
@@ -278,6 +279,11 @@ class GPTAutoTrader:
         try:
             now = get_current_time()
             
+            # 동적 종목 선정이 비활성화되어 있고, 이미 이전에 선정된 종목이 있다면 종목 선정 건너뜀
+            if not self.use_dynamic_selection and (self.gpt_selections['KR'] or self.gpt_selections['US']):
+                logger.info("동적 종목 선정이 비활성화되어 있고 이미 선정된 종목이 있어 종목 선정 건너뜀")
+                return
+                
             # 마지막 선정 후 설정된 간격이 지나지 않았으면 건너뜀
             if self.last_selection_time:
                 hours_passed = (now - self.last_selection_time).total_seconds() / 3600
@@ -322,8 +328,13 @@ class GPTAutoTrader:
             self.gpt_selections['KR'] = kr_recommendations.get('recommended_stocks', [])
             self.gpt_selections['US'] = us_recommendations.get('recommended_stocks', [])
             
-            # 설정 업데이트 (config.py에 저장)
-            self.stock_selector.update_config_stocks(kr_recommendations, us_recommendations)
+            # 동적 종목 선정이 활성화된 경우에만 config.py 업데이트
+            if self.use_dynamic_selection:
+                # 설정 업데이트 (config.py에 저장)
+                self.stock_selector.update_config_stocks(kr_recommendations, us_recommendations)
+                logger.info("동적 종목 선정 활성화: config.py의 종목 리스트를 업데이트했습니다.")
+            else:
+                logger.info("동적 종목 선정 비활성화: config.py의 종목 리스트를 유지합니다.")
             
             # 마지막 선정 시간 업데이트
             self.last_selection_time = now
@@ -357,11 +368,12 @@ class GPTAutoTrader:
             # 알림 전송
             if self.notifier:
                 # 메시지 길이 제한을 고려하여 나눠서 전송
-                self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()})\n\n{kr_summary}")
+                selection_mode = "동적" if self.use_dynamic_selection else "고정"
+                self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드\n\n{kr_summary}")
                 
                 # 미국 주식 거래가 활성화된 경우에만 미국 종목 정보 전송
                 if us_stock_trading_enabled and self.gpt_selections['US']:
-                    self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()})\n\n{us_summary}")
+                    self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드\n\n{us_summary}")
                 
                 if kr_analysis:
                     self.notifier.send_message(f"🧠 시장 분석\n\n{kr_analysis[:500]}...")

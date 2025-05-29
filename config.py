@@ -127,11 +127,12 @@ RSI_OVERBOUGHT = 70  # RSI 과매수 기준
 # GPT 자동 매매 설정
 GPT_AUTO_TRADING = True  # GPT 자동 매매 활성화 여부
 GPT_STOCK_SELECTION_INTERVAL = 24  # 종목 선정 간격 (시간)
-GPT_TRADING_MAX_POSITIONS = 5  # 최대 포지션 수
+GPT_TRADING_MAX_POSITIONS = 10  # 최대 포지션 수 (5에서 10으로 증가)
 GPT_TRADING_CONF_THRESHOLD = 0.7  # 매매 신뢰도 임계값
 GPT_MAX_INVESTMENT_PER_STOCK = 1000000  # 종목당 최대 투자금액 (원)
 GPT_STRATEGY = "balanced"  # 기본 전략 (balanced, growth, value, dividend)
 GPT_TRADING_MONITOR_INTERVAL = 30  # 모니터링 간격 (분)
+GPT_USE_DYNAMIC_SELECTION = True  # 하드코딩 대신 GPT가 동적으로 종목 선정 (추가된 옵션)
 
 # 미국 주식 종목 설정
 US_STOCKS = ["AAPL", "MSFT", "GOOGL", "AMZN"]
@@ -158,13 +159,23 @@ MYSQL_DB = os.environ.get("MYSQL_DB", "stock_trading")
 FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true"  # 강제로 시장을 열림 상태로 간주
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
+# GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
 KR_STOCK_INFO = [
     {'code': '005930', 'name': '삼성전자'}, 
     {'code': '000660', 'name': 'SK하이닉스'}, 
     {'code': '051910', 'name': 'LG화학'}, 
     {'code': '035420', 'name': 'NAVER'}, 
     {'code': '096770', 'name': 'SK이노베이션'}, 
-    {'code': '005380', 'name': '현대차'}
+    {'code': '005380', 'name': '현대차'},
+    {'code': '035720', 'name': '카카오'},
+    {'code': '068270', 'name': '셀트리온'}, 
+    {'code': '207940', 'name': '삼성바이오로직스'},
+    {'code': '006400', 'name': '삼성SDI'},
+    {'code': '018260', 'name': '삼성에스디에스'},
+    {'code': '000270', 'name': '기아'},
+    {'code': '005490', 'name': 'POSCO홀딩스'},
+    {'code': '036570', 'name': 'NCsoft'},
+    {'code': '055550', 'name': '신한지주'}
 ]
 
 # 종목 코드 리스트 생성
