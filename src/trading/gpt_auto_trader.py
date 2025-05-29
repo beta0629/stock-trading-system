@@ -54,6 +54,11 @@ class GPTAutoTrader:
         self.monitoring_interval = getattr(config, 'GPT_TRADING_MONITOR_INTERVAL', 30)  # 분
         self.use_dynamic_selection = getattr(config, 'GPT_USE_DYNAMIC_SELECTION', False)  # 동적 종목 선정 사용 여부
         
+        # 기술적 지표 최적화 설정 로드
+        self.optimize_technical_indicators = getattr(config, 'GPT_OPTIMIZE_TECHNICAL_INDICATORS', True)
+        self.technical_optimization_interval = getattr(config, 'GPT_TECHNICAL_OPTIMIZATION_INTERVAL', 168)  # 시간 (기본 1주일)
+        self.last_technical_optimization_time = None
+        
         # 상태 변수
         self.is_running = False
         self.last_selection_time = None
@@ -66,7 +71,7 @@ class GPTAutoTrader:
         self.holdings = {}  # {symbol: {quantity, avg_price, market, entry_time, ...}}
         self.trade_history = []  # 매매 기록
         
-        logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'})")
+        logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'}, 기술적 지표 최적화: {'활성화' if self.optimize_technical_indicators else '비활성화'})")
         
     def is_trading_time(self, market="KR"):
         """
@@ -826,6 +831,10 @@ class GPTAutoTrader:
                 logger.info("현재는 거래 시간이 아닙니다.")
                 return
             
+            # 기술적 지표 최적화 실행 (필요한 경우)
+            if self.optimize_technical_indicators:
+                self._optimize_technical_indicators()
+            
             # 캐시된 GPT 추천 정보 로드 (GPT 선정 데이터가 없을 경우 대비)
             self._load_cached_recommendations()
                 
@@ -873,6 +882,14 @@ class GPTAutoTrader:
             bool: 처리 성공 여부
         """
         try:
+            # 디버그: 캐시된 추천 종목 로그
+            logger.info("=== KR 추천 종목 목록 로그 확인 ===")
+            for stock in self.gpt_selections.get('KR', []):
+                symbol = stock.get('symbol', '')
+                weight = stock.get('suggested_weight', 0)
+                name = stock.get('name', symbol)
+                logger.info(f"추천 종목: {name}({symbol}), 추천 비중: {weight}%")
+            
             # 1. 매도 결정
             sell_candidates = []
             for symbol in list(self.holdings.keys()):
@@ -890,6 +907,26 @@ class GPTAutoTrader:
             kr_recommendations = self.gpt_selections.get('KR', [])
             buy_candidates = []
             
+            # 현재 시장에 있는 종목 코드와 추천 종목 코드가 일치하는지 확인
+            # 추천 종목 코드를 정규화 (숫자만 추출)
+            normalized_recommendations = []
+            for stock in kr_recommendations:
+                symbol = stock.get('symbol', '')
+                
+                # 종목코드에서 숫자만 추출 (예: "005930(삼성전자)" -> "005930")
+                if '(' in symbol:
+                    symbol = symbol.split('(')[0].strip()
+                
+                # 원래 데이터 복사 후 정규화된 종목 코드로 교체
+                stock_copy = stock.copy()
+                stock_copy['symbol'] = symbol
+                normalized_recommendations.append(stock_copy)
+                
+                logger.info(f"정규화된 종목코드: {symbol}, 추천 비중: {stock.get('suggested_weight', 0)}%")
+            
+            # 정규화된 추천 목록으로 교체
+            kr_recommendations = normalized_recommendations
+            
             for stock_data in kr_recommendations:
                 if self._should_buy(stock_data):
                     buy_candidates.append(stock_data)
@@ -901,7 +938,10 @@ class GPTAutoTrader:
                     break
                 
                 symbol = stock_data.get('symbol')
-                logger.info(f"{symbol} 매수 진행")
+                name = stock_data.get('name', symbol)
+                weight = stock_data.get('suggested_weight', 0)
+                logger.info(f"{symbol}({name}) 매수 진행 - 추천 비중: {weight}%")
+                
                 if self._execute_buy(stock_data):
                     # 매수 성공 시 가용 자금 업데이트
                     updated_balance = self.broker.get_balance()
@@ -1172,4 +1212,95 @@ class GPTAutoTrader:
             return True
         except Exception as e:
             logger.error(f"캐시된 종목 추천 정보 로드 중 오류 발생: {e}")
+            return False
+    
+    def _optimize_technical_indicators(self):
+        """GPT를 사용하여 기술적 지표 설정 최적화"""
+        try:
+            now = get_current_time()
+            
+            # 기술적 지표 최적화가 비활성화된 경우 건너뜀
+            if not self.optimize_technical_indicators:
+                logger.info("기술적 지표 최적화가 비활성화되어 있습니다.")
+                return False
+                
+            # 마지막 최적화 후 설정된 간격이 지나지 않았으면 건너뜀
+            if self.last_technical_optimization_time:
+                hours_passed = (now - self.last_technical_optimization_time).total_seconds() / 3600
+                if hours_passed < self.technical_optimization_interval:
+                    logger.info(f"마지막 기술적 지표 최적화 후 {hours_passed:.1f}시간 경과 (설정: {self.technical_optimization_interval}시간). 최적화 건너뜀")
+                    return False
+                    
+            # OpenAI API 키 유효성 확인
+            if not self.stock_selector.is_api_key_valid():
+                logger.warning("유효한 OpenAI API 키가 없어 기술적 지표 최적화를 건너뜁니다.")
+                if self.notifier:
+                    self.notifier.send_message("⚠️ OpenAI API 키 오류로 GPT 기술적 지표 최적화 실패. 기본 설정을 계속 사용합니다.")
+                return False
+            
+            logger.info("GPT 기술적 지표 최적화 시작")
+            
+            # 한국 시장 기술적 지표 최적화
+            kr_technical_settings = self.stock_selector.optimize_technical_indicators(market="KR")
+            
+            # 미국 시장 기술적 지표 최적화
+            us_technical_settings = None
+            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            
+            if us_stock_trading_enabled:
+                logger.info("미국 주식 거래가 활성화되어 있습니다. 미국 시장 기술적 지표 최적화를 요청합니다.")
+                us_technical_settings = self.stock_selector.optimize_technical_indicators(market="US")
+            
+            # 설정 업데이트 (config.py에 저장)
+            if kr_technical_settings:
+                self.stock_selector.update_config_technical_indicators(kr_technical_settings)
+                logger.info("한국 시장에 대한 기술적 지표 설정이 업데이트되었습니다.")
+            
+            # 마지막 최적화 시간 업데이트
+            self.last_technical_optimization_time = now
+            
+            # 최적화 결과 요약
+            kr_settings = kr_technical_settings.get("recommended_settings", {})
+            kr_analysis = kr_technical_settings.get("market_analysis", "")
+            kr_explanation = kr_technical_settings.get("explanation", {})
+            trading_strategy = kr_technical_settings.get("trading_strategy", "")
+            
+            # 알림 전송
+            if self.notifier:
+                # 최적화 결과 요약 메시지
+                message = f"📊 GPT 기술적 지표 최적화 완료 ({get_current_time_str()})\n\n"
+                
+                # 주요 설정값 추가
+                message += "🔧 최적화된 주요 설정값:\n"
+                message += f"• RSI 기간: {kr_settings.get('RSI_PERIOD', 14)}, 과매수: {kr_settings.get('RSI_OVERBOUGHT', 70)}, 과매도: {kr_settings.get('RSI_OVERSOLD', 30)}\n"
+                message += f"• MACD: Fast {kr_settings.get('MACD_FAST', 12)}, Slow {kr_settings.get('MACD_SLOW', 26)}, Signal {kr_settings.get('MACD_SIGNAL', 9)}\n"
+                message += f"• 이동평균선: 단기 {kr_settings.get('MA_SHORT', 5)}일, 중기 {kr_settings.get('MA_MEDIUM', 20)}일, 장기 {kr_settings.get('MA_LONG', 60)}일\n"
+                message += f"• 볼린저밴드: 기간 {kr_settings.get('BOLLINGER_PERIOD', 20)}, 표준편차 {kr_settings.get('BOLLINGER_STD', 2.0)}\n\n"
+                
+                # 시장 분석 요약 추가
+                if kr_analysis:
+                    # 첫 100자만 전송 (너무 길면 메시지가 잘릴 수 있음)
+                    message += f"📈 시장 분석 요약:\n{kr_analysis[:200]}...\n\n"
+                
+                # 매매 전략 추가
+                if trading_strategy:
+                    message += f"💡 추천 매매 전략:\n{trading_strategy[:200]}...\n"
+                
+                # 알림 전송
+                self.notifier.send_message(message)
+                
+                # RSI 설정 변경 이유 알림 (별도 메시지로 전송)
+                if "RSI" in kr_explanation:
+                    self.notifier.send_message(f"🔍 RSI 설정 최적화 설명:\n{kr_explanation['RSI'][:500]}...")
+                
+                # MACD 설정 변경 이유 알림 (별도 메시지로 전송)
+                if "MACD" in kr_explanation:
+                    self.notifier.send_message(f"🔍 MACD 설정 최적화 설명:\n{kr_explanation['MACD'][:500]}...")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"기술적 지표 최적화 중 오류 발생: {e}")
+            if self.notifier:
+                self.notifier.send_message(f"⚠️ 기술적 지표 최적화 중 오류 발생: {str(e)}")
             return False

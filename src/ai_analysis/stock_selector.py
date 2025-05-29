@@ -701,3 +701,263 @@ class StockSelector:
         except Exception as e:
             logger.error(f"설정 업데이트 중 오류 발생: {e}")
             return False
+    
+    def optimize_technical_indicators(self, market: str = "KR") -> Dict[str, Any]:
+        """
+        GPT를 사용하여 기술적 지표 설정 최적화
+        
+        Args:
+            market: 시장 코드 ("KR": 한국, "US": 미국)
+            
+        Returns:
+            최적화된 기술적 지표 설정값이 포함된 딕셔너리
+        """
+        logger.info(f"{market} 시장에 대한 기술적 지표 최적화 시작")
+        
+        # API 키 유효성 확인
+        if not self.is_api_key_valid():
+            logger.warning("유효하지 않은 OpenAI API 키로 인해 기본 기술적 지표 설정을 사용합니다.")
+            return self._get_default_technical_indicators()
+        
+        # 현재 날짜/시간 정보 가져오기
+        now = get_current_time()
+        current_date = get_current_time_str("%Y년 %m월 %d일")
+        
+        # 시장에 따라 다른 프롬프트 사용
+        market_info = {
+            "KR": {
+                "name": "한국",
+                "index": "KOSPI",
+                "currency": "원"
+            },
+            "US": {
+                "name": "미국",
+                "index": "S&P 500",
+                "currency": "달러"
+            }
+        }.get(market, {})
+        
+        if not market_info:
+            logger.error(f"지원하지 않는 시장 코드: {market}")
+            return {"error": "지원하지 않는 시장 코드입니다."}
+            
+        # 시장 민감도 설정 가져오기
+        market_sensitivity = getattr(self.config, 'GPT_TECHNICAL_MARKET_SENSITIVITY', 'balanced')
+        
+        sensitivity_description = {
+            "market_sensitive": "시장 변화에 민감하게 반응하는 적극적인 매매 전략",
+            "balanced": "안정적인 성과를 내면서도 시장 기회를 활용하는 균형 잡힌 매매 전략",
+            "conservative": "리스크를 최소화하고 안정적인 수익을 추구하는 보수적인 매매 전략"
+        }.get(market_sensitivity, "균형 잡힌 매매 전략")
+        
+        # 현재 사용 중인 기술적 지표 설정 가져오기
+        current_settings = {
+            "RSI_PERIOD": getattr(self.config, 'RSI_PERIOD', 14),
+            "RSI_OVERSOLD": getattr(self.config, 'RSI_OVERSOLD', 30),
+            "RSI_OVERBOUGHT": getattr(self.config, 'RSI_OVERBOUGHT', 70),
+            "MACD_FAST": getattr(self.config, 'MACD_FAST', 12),
+            "MACD_SLOW": getattr(self.config, 'MACD_SLOW', 26),
+            "MACD_SIGNAL": getattr(self.config, 'MACD_SIGNAL', 9),
+            "BOLLINGER_PERIOD": getattr(self.config, 'BOLLINGER_PERIOD', 20),
+            "BOLLINGER_STD": getattr(self.config, 'BOLLINGER_STD', 2.0),
+            "MA_SHORT": getattr(self.config, 'MA_SHORT', 5),
+            "MA_MEDIUM": getattr(self.config, 'MA_MEDIUM', 20),
+            "MA_LONG": getattr(self.config, 'MA_LONG', 60)
+        }
+        
+        # GPT 프롬프트 구성
+        prompt = f"""당신은 주식 기술적 분석 전문가입니다. 오늘 날짜는 {current_date}입니다.
+현재 {market_info['name']} 주식 시장 상황과 글로벌 경제 환경을 고려하여, {sensitivity_description}에 최적화된 기술적 지표 설정값을 제안해주세요.
+
+현재 사용 중인 기술적 지표 설정은 다음과 같습니다:
+- RSI 기간: {current_settings['RSI_PERIOD']} (일반적으로 9-25 사이)
+- RSI 과매도 기준: {current_settings['RSI_OVERSOLD']} (일반적으로 20-40 사이)
+- RSI 과매수 기준: {current_settings['RSI_OVERBOUGHT']} (일반적으로 60-80 사이)
+- MACD 빠른 이동평균: {current_settings['MACD_FAST']} (일반적으로 8-13 사이)
+- MACD 느린 이동평균: {current_settings['MACD_SLOW']} (일반적으로 21-30 사이)
+- MACD 시그널: {current_settings['MACD_SIGNAL']} (일반적으로 5-12 사이)
+- 볼린저밴드 기간: {current_settings['BOLLINGER_PERIOD']} (일반적으로 10-30 사이)
+- 볼린저밴드 표준편차: {current_settings['BOLLINGER_STD']} (일반적으로 1.5-3.0 사이)
+- 단기 이동평균: {current_settings['MA_SHORT']} (일반적으로 3-10 사이)
+- 중기 이동평균: {current_settings['MA_MEDIUM']} (일반적으로 15-30 사이)
+- 장기 이동평균: {current_settings['MA_LONG']} (일반적으로 50-200 사이)
+
+현재 {market_info['name']} 시장의 특성과 경제 환경을 고려하여, 각 기술적 지표의 최적 설정값을 제안해주세요.
+또한 각 설정값을 변경한 이유와 그에 따른 매매 전략에 대한 조언도 제공해주세요.
+
+응답은 다음과 같은 JSON 형식으로 제공해주세요:
+{{
+  "market_analysis": "현재 {market_info['name']} 시장 상황 분석...",
+  "recommended_settings": {{
+    "RSI_PERIOD": 14,
+    "RSI_OVERSOLD": 30,
+    "RSI_OVERBOUGHT": 70,
+    "MACD_FAST": 12,
+    "MACD_SLOW": 26,
+    "MACD_SIGNAL": 9,
+    "BOLLINGER_PERIOD": 20,
+    "BOLLINGER_STD": 2.0,
+    "MA_SHORT": 5,
+    "MA_MEDIUM": 20,
+    "MA_LONG": 60
+  }},
+  "explanation": {{
+    "RSI": "RSI 설정값 변경 이유 설명...",
+    "MACD": "MACD 설정값 변경 이유 설명...",
+    "BOLLINGER": "볼린저밴드 설정값 변경 이유 설명...",
+    "MA": "이동평균 설정값 변경 이유 설명..."
+  }},
+  "trading_strategy": "제안된 설정값을 사용할 때의 매매 전략 조언..."
+}}"""
+
+        try:
+            # OpenAI API 호출
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "당신은 주식 기술적 분석 전문가입니다. 항상 JSON 형식으로 응답하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30  # 타임아웃 설정
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
+                # API 호출 실패 시 기본 설정값 반환
+                return self._get_default_technical_indicators()
+                
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # JSON 파싱
+            technical_settings = json.loads(content)
+            logger.info("기술적 지표 설정 최적화 완료")
+            
+            # 최적화 결과 캐싱
+            cache_file = os.path.join(self.cache_dir, f'{market.lower()}_technical_indicators.json')
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(technical_settings, f, ensure_ascii=False, indent=2)
+                logger.info(f"최적화된 기술적 지표 설정이 캐시 파일({cache_file})에 저장되었습니다.")
+            except Exception as e:
+                logger.error(f"기술적 지표 설정 캐싱 중 오류 발생: {e}")
+            
+            return technical_settings
+            
+        except Exception as e:
+            logger.error(f"기술적 지표 최적화 중 오류 발생: {e}")
+            # 오류 발생 시 기본 설정값 반환
+            return self._get_default_technical_indicators()
+    
+    def _get_default_technical_indicators(self) -> Dict[str, Any]:
+        """기본 기술적 지표 설정을 반환합니다."""
+        return {
+            "market_analysis": "API 호출 실패로 인해 기본 설정을 사용합니다.",
+            "recommended_settings": {
+                "RSI_PERIOD": getattr(self.config, 'RSI_PERIOD', 14),
+                "RSI_OVERSOLD": getattr(self.config, 'RSI_OVERSOLD', 30),
+                "RSI_OVERBOUGHT": getattr(self.config, 'RSI_OVERBOUGHT', 70),
+                "MACD_FAST": getattr(self.config, 'MACD_FAST', 12),
+                "MACD_SLOW": getattr(self.config, 'MACD_SLOW', 26),
+                "MACD_SIGNAL": getattr(self.config, 'MACD_SIGNAL', 9),
+                "BOLLINGER_PERIOD": getattr(self.config, 'BOLLINGER_PERIOD', 20),
+                "BOLLINGER_STD": getattr(self.config, 'BOLLINGER_STD', 2.0),
+                "MA_SHORT": getattr(self.config, 'MA_SHORT', 5),
+                "MA_MEDIUM": getattr(self.config, 'MA_MEDIUM', 20),
+                "MA_LONG": getattr(self.config, 'MA_LONG', 60)
+            },
+            "explanation": {
+                "default": "기본 설정값을 사용합니다."
+            },
+            "trading_strategy": "기본 설정을 사용한 표준 매매 전략을 적용합니다."
+        }
+    
+    def update_config_technical_indicators(self, technical_settings: Dict[str, Any]) -> bool:
+        """
+        최적화된 기술적 지표 설정을 config 파일에 업데이트
+        
+        Args:
+            technical_settings: 최적화된 기술적 지표 설정
+            
+        Returns:
+            업데이트 성공 여부
+        """
+        try:
+            logger.info("config에 기술적 지표 설정 업데이트 시작")
+            
+            if not technical_settings or "recommended_settings" not in technical_settings:
+                logger.error("유효하지 않은 기술적 지표 설정 형식")
+                return False
+                
+            settings = technical_settings["recommended_settings"]
+            
+            # 기술적 지표 설정 업데이트
+            for key, value in settings.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+                    logger.info(f"{key} = {value} 설정 업데이트됨")
+            
+            # config 파일 경로 설정
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'config.py')
+            
+            # 파일 내용 읽기
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as file:
+                    config_content = file.read()
+                
+                # 각 설정값 업데이트
+                for key, value in settings.items():
+                    value_str = str(value)
+                    
+                    if key in config_content:
+                        # 정규식 대신 간단한 문자열 치환 사용
+                        start_idx = config_content.find(key + " = ")
+                        if start_idx != -1:
+                            line_end = config_content.find("\n", start_idx)
+                            old_line = config_content[start_idx:line_end]
+                            new_line = f"{key} = {value_str}"
+                            config_content = config_content.replace(old_line, new_line)
+                    else:
+                        # 없으면 기술적 지표 섹션에 추가
+                        if "# 기술적 지표 계산을 위한 설정" in config_content:
+                            insert_idx = config_content.find("# 기술적 지표 계산을 위한 설정")
+                            line_end = config_content.find("\n", insert_idx)
+                            next_line = config_content.find("\n", line_end + 1)
+                            
+                            # 코멘트 아래 라인에 삽입
+                            config_content = (
+                                config_content[:next_line + 1] + 
+                                f"{key} = {value_str}  # GPT에 의해 최적화된 설정\n" + 
+                                config_content[next_line + 1:]
+                            )
+                        else:
+                            # 기술적 지표 섹션이 없으면 파일 끝에 추가
+                            config_content += f"\n\n# GPT에 의해 최적화된 기술적 지표 설정\n{key} = {value_str}\n"
+                
+                # 파일 쓰기
+                with open(config_path, 'w', encoding='utf-8') as file:
+                    file.write(config_content)
+                
+                logger.info(f"설정 파일({config_path})에 기술적 지표 설정이 성공적으로 업데이트되었습니다.")
+                return True
+            else:
+                logger.error(f"설정 파일을 찾을 수 없습니다: {config_path}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"기술적 지표 설정 업데이트 중 오류 발생: {e}")
+            return False

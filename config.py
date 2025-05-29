@@ -120,6 +120,11 @@ SHORT_TERM_MA = MA_SHORT  # 단기 이동평균 별칭
 MEDIUM_TERM_MA = MA_MEDIUM  # 중기 이동평균 별칭
 LONG_TERM_MA = MA_LONG  # 장기 이동평균 별칭
 
+# GPT 기술적 지표 최적화 설정
+GPT_OPTIMIZE_TECHNICAL_INDICATORS = True  # GPT가 기술적 지표 설정 최적화 여부
+GPT_TECHNICAL_OPTIMIZATION_INTERVAL = 168  # 기술적 지표 최적화 간격 (시간, 기본값 1주일)
+GPT_TECHNICAL_MARKET_SENSITIVITY = "balanced"  # market_sensitive(시장 민감), balanced(균형), conservative(보수적)
+
 # RSI 매수/매도 임계값
 RSI_OVERSOLD = 30  # RSI 과매도 기준
 RSI_OVERBOUGHT = 70  # RSI 과매수 기준
