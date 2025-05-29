@@ -9,6 +9,7 @@ import traceback  # traceback 모듈 추가
 from datetime import datetime, timedelta
 import hashlib
 import jwt  # PyJWT 라이브러리 필요
+import uuid  # uuid 모듈 추가
 from urllib.parse import urljoin, unquote
 import pandas as pd
 from pathlib import Path  # Path 추가
@@ -328,12 +329,13 @@ class KISAPI(BrokerBase):
             logger.error(f"계좌 목록 조회 실패: {e}")
             return []
     
-    def get_balance(self, account_number=None):
+    def get_balance(self, force_refresh=False, timestamp=None):
         """
         계좌 잔고 조회
         
         Args:
-            account_number: 계좌번호 (None인 경우 기본 계좌 사용)
+            force_refresh (bool): 캐시된 데이터 무시하고 강제 새로고침
+            timestamp (int): API 캐시 무효화를 위한 타임스탬프
             
         Returns:
             dict: 계좌 잔고 정보
@@ -342,176 +344,105 @@ class KISAPI(BrokerBase):
             logger.error("API 연결이 되지 않았습니다.")
             return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
             
-        if account_number is None:
-            account_number = self.account_number
-            
-        if not account_number:
-            logger.error("계좌번호가 설정되지 않았습니다.")
-            return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
-            
         try:
-            # 주식 잔고 조회
-            url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/inquire-balance")
+            # 목 거래 모드에서는 내부 잔고 정보 반환
+            if self.mock_trading:
+                return self._get_mock_balance()
+                
+            url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
+            headers = self._get_headers("TTTC8434R")
             
-            # TR ID 가져오기
-            tr_id = self._get_tr_id("balance")
+            # 캐시 무효화를 위한 타임스탬프 파라미터
+            if timestamp is None:
+                timestamp = int(time.time() * 1000)
             
-            headers = {
-                "content-type": "application/json",
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": tr_id
-            }
-            
-            # 모의투자 계좌번호는 8자리이므로 형식을 적절히 처리
-            # 계좌번호가 8자리인 경우, 앞 8자리를 CANO로, "01"을 ACNT_PRDT_CD로 설정
-            cano = account_number
-            acnt_prdt_cd = "01"
-            
-            logger.info(f"계좌 조회 요청: {cano}-{acnt_prdt_cd}")
-            
+            # API 요청 파라미터
             params = {
-                "CANO": cano,
-                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "CANO": self.account_number,
+                "ACNT_PRDT_CD": self.product_code,
                 "AFHR_FLPR_YN": "N",
-                "OFL_YN": "",
+                "OFL_YN": "N",
                 "INQR_DVSN": "02",
                 "UNPR_DVSN": "01",
                 "FUND_STTL_ICLD_YN": "N",
                 "FNCG_AMT_AUTO_RDPT_YN": "N",
                 "PRCS_DVSN": "01",
                 "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": ""
+                "CTX_AREA_NK100": "",
+                "_ts": timestamp  # 캐시 무효화용 타임스탬프
             }
             
+            # 강제 새로고침이 필요한 경우 추가 처리
+            if force_refresh:
+                # 헤더에 캐시 제어 관련 값 추가
+                headers["Cache-Control"] = "no-cache, no-store"
+                headers["Pragma"] = "no-cache"
+                
+                # 요청 파라미터에 임의 값 추가하여 캐시된 응답을 방지
+                params["_nonce"] = str(uuid.uuid4())
+                
+                self.logger.debug("계좌 잔고 강제 새로고침 요청")
+            
             response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
             
-            # 디버깅을 위해 전체 응답 로깅 (상세 출력)
-            logger.info(f"계좌 잔고 API 응답 데이터 (상세): {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-            
-            # output1과 output2 필드의 모든 키 출력 (모의투자와 실전의 필드명 차이 확인용)
-            if 'output1' in response_data and response_data['output1'] and len(response_data['output1']) > 0:
-                logger.info(f"output1 필드 키 목록: {list(response_data['output1'][0].keys())}")
-            
-            if 'output2' in response_data and response_data['output2'] and len(response_data['output2']) > 0:
-                logger.info(f"output2 필드 키 목록: {list(response_data['output2'][0].keys())}")
-            
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                # 잔고 정보 초기화
-                balance_info = {
-                    "예수금": 0,
-                    "출금가능금액": 0,
-                    "D+2예수금": 0,
-                    "유가평가금액": 0,
-                    "총평가금액": 0,
-                    "순자산금액": 0,
-                    "주문가능금액": 0  # 주문가능금액 필드 추가
+            # API 응답 처리
+            if response.status_code == 200:
+                data = response.json()
+                
+                # 오류 응답인 경우
+                if data.get("rt_cd") != "0":
+                    error_msg = data.get("msg_cd", "") + " " + data.get("msg1", "")
+                    self.logger.error(f"잔고 조회 오류: {error_msg}")
+                    return {"error": error_msg}
+                
+                # 응답 데이터에서 잔고 정보 추출
+                balance_output = data.get("output1", [])[0] if data.get("output1") else {}
+                outputs = data.get("output2", [])
+                
+                # 계좌 기본 정보 추출
+                account_info = {
+                    "예수금": int(balance_output.get("prvs_rcdl_excc_amt", 0)),
+                    "D+2예수금": int(balance_output.get("d2_auto_rdpt_amt", 0)),
+                    "출금가능금액": int(balance_output.get("aval_amt", 0)),
+                    "주문가능금액": int(balance_output.get("ord_psbl_cash", 0)) or int(balance_output.get("prvs_rcdl_excc_amt", 0)),
+                    "총평가금액": int(balance_output.get("tot_evlu_amt", 0)),
+                    "timestamp": timestamp
                 }
                 
-                # output1에 데이터가 있는지 확인
-                if 'output1' in response_data and response_data['output1']:
-                    data = response_data.get('output1', [{}])[0]
+                # 잔고 상세 정보 로깅
+                self.logger.debug(f"계좌 잔고 조회 성공: 예수금 {account_info['예수금']:,}원, "
+                               f"주문가능금액 {account_info['주문가능금액']:,}원, "
+                               f"총평가금액 {account_info['총평가금액']:,}원")
+                
+                # 보유 종목 정보 처리
+                stocks = []
+                for output in outputs:
+                    stock = {
+                        "종목코드": output.get("pdno", ""),
+                        "종목명": output.get("prdt_name", ""),
+                        "보유수량": int(output.get("hldg_qty", 0)),
+                        "평균단가": int(output.get("pchs_avg_pric", 0)),
+                        "현재가": int(output.get("prpr", 0)),
+                        "평가손익": int(output.get("evlu_pfls_amt", 0)),
+                        "수익률": float(output.get("evlu_pfls_rt", 0))
+                    }
+                    stocks.append(stock)
                     
-                    # 모의투자와 실전투자 API의 응답 필드명이 다를 수 있으므로 각 필드 존재 여부 확인
-                    
-                    # 예수금 관련 정보 - 다양한 필드명 확인
-                    for field in ['dnca_tot_amt', 'prvs_rcdl_excc_amt', 'cash_amt']:
-                        if field in data and balance_info["예수금"] == 0:
-                            balance_info["예수금"] = int(data.get(field, '0'))
-                            logger.info(f"예수금 필드 '{field}' 사용: {balance_info['예수금']:,}원")
-                            break
+                    self.logger.debug(f"보유종목: {stock['종목명']} ({stock['종목코드']}), "
+                                   f"수량: {stock['보유수량']}주, "
+                                   f"평균단가: {stock['평균단가']:,}원, "
+                                   f"현재가: {stock['현재가']:,}원, "
+                                   f"손익: {stock['평가손익']:,}원 ({stock['수익률']}%)")
                 
-                    # 출금가능금액
-                    for field in ['magt_rt_amt', 'ord_psbl_cash_amt']:
-                        if field in data and balance_info["출금가능금액"] == 0:
-                            balance_info["출금가능금액"] = int(data.get(field, '0'))
-                            logger.info(f"출금가능금액 필드 '{field}' 사용: {balance_info['출금가능금액']:,}원")
-                            break
-                
-                    # D+2예수금
-                    for field in ['d2_dncl_amt', 'thdt_buy_amt', 'd2_auto_rdpt_amt']:
-                        if field in data and balance_info["D+2예수금"] == 0:
-                            balance_info["D+2예수금"] = int(data.get(field, '0'))
-                            logger.info(f"D+2예수금 필드 '{field}' 사용: {balance_info['D+2예수금']:,}원")
-                            break
-                
-                    # 평가 금액 정보
-                    for field in ['scts_evlu_amt', 'tot_asst_amt', 'stck_evlu_amt']:
-                        if field in data and balance_info["유가평가금액"] == 0:
-                            balance_info["유가평가금액"] = int(data.get(field, '0'))
-                            logger.info(f"유가평가금액 필드 '{field}' 사용: {balance_info['유가평가금액']:,}원")
-                            break
-                
-                    for field in ['tot_evlu_amt', 'tot_loan_amt']:
-                        if field in data and balance_info["총평가금액"] == 0:
-                            balance_info["총평가금액"] = int(data.get(field, '0'))
-                            logger.info(f"총평가금액 필드 '{field}' 사용: {balance_info['총평가금액']:,}원")
-                            break
-                
-                    for field in ['tot_asst_amt', 'asst_icdc_amt']:
-                        if field in data and balance_info["순자산금액"] == 0:
-                            balance_info["순자산금액"] = int(data.get(field, '0'))
-                            logger.info(f"순자산금액 필드 '{field}' 사용: {balance_info['순자산금액']:,}원")
-                            break
-                
-                    # 주문가능금액 별도 처리 (모의투자에서 중요한 필드)
-                    for field in ['ord_psbl_cash_amt', 'psbl_buy_amt', 'nass_amt', 'dnca_tot_amt', 'tot_evlu_amt']:
-                        if field in data:
-                            value = int(data.get(field, '0'))
-                            if value > 0:  # 0보다 큰 값이 있는 경우에만 업데이트
-                                balance_info["주문가능금액"] = value
-                                logger.info(f"주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
-                                break
-            
-            # output2에서 추가 정보 확인 (필요시)
-            if 'output2' in response_data and response_data['output2'] and balance_info["주문가능금액"] == 0:
-                # 모의투자에서는 output2에 데이터를 반환하는 경우가 있음
-                data = response_data.get('output2', [{}])[0]
-                
-                # 주문가능금액 필드 확인
-                for field in ['nass_amt', 'dnca_tot_amt', 'tot_evlu_amt', 'prvs_rcdl_excc_amt', 'nxdy_excc_amt']:
-                    if field in data:
-                        value = int(data.get(field, '0'))
-                        if value > 0:  # 0보다 큰 값이 있는 경우에만 업데이트
-                            balance_info["주문가능금액"] = value
-                            logger.info(f"output2에서 주문가능금액 필드 '{field}' 사용: {balance_info['주문가능금액']:,}원")
-                            break
-                
-                # 예수금이 설정되지 않은 경우, output2에서 찾음
-                if balance_info["예수금"] == 0:
-                    for field in ['dnca_tot_amt', 'prvs_rcdl_excc_amt', 'nxdy_excc_amt']:
-                        if field in data:
-                            value = int(data.get(field, '0'))
-                            if value > 0:
-                                balance_info["예수금"] = value
-                                logger.info(f"output2에서 예수금 필드 '{field}' 사용: {balance_info['예수금']:,}원")
-                                break
-                
-                # 총평가금액이 설정되지 않은 경우, output2에서 찾음
-                if balance_info["총평가금액"] == 0:
-                    for field in ['tot_evlu_amt', 'nass_amt']:
-                        if field in data:
-                            value = int(data.get(field, '0'))
-                            if value > 0:
-                                balance_info["총평가금액"] = value
-                                logger.info(f"output2에서 총평가금액 필드 '{field}' 사용: {balance_info['총평가금액']:,}원")
-                                break
-                        
-                return balance_info
+                account_info["stocks"] = stocks
+                return account_info
             else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"계좌 잔고 조회 실패: [{err_code}] {err_msg}")
-                
-                return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
-                
+                self.logger.error(f"잔고 조회 실패: HTTP {response.status_code} - {response.text}")
+                return {"error": f"HTTP {response.status_code} - {response.text}"}
+        
         except Exception as e:
-            logger.error(f"계좌 잔고 조회 실패: {e}")
-            logger.error(traceback.format_exc())
-            
-            return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
+            self.logger.exception(f"계좌 잔고 조회 중 예외 발생: {e}")
+            return {"error": str(e)}
     
     def get_positions(self, account_number=None):
         """

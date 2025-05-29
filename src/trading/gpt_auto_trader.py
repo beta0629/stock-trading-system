@@ -953,3 +953,154 @@ class GPTAutoTrader:
         except Exception as e:
             logger.error(f"미국 주식 처리 중 오류 발생: {e}")
             return False
+    
+    def _execute_buy_decision(self, stock_data):
+        """
+        매수 결정에 따른 매수 실행
+        
+        Args:
+            stock_data: GPT 추천 종목 데이터
+            
+        Returns:
+            bool: 매수 성공 여부
+        """
+        try:
+            symbol = stock_data.get('symbol')
+            market = stock_data.get('market', 'KR')
+            if not market:
+                market = "KR" if len(symbol) == 6 and symbol.isdigit() else "US"
+                
+            name = stock_data.get('name', symbol)
+            target_price = stock_data.get('target_price', 0)
+            
+            # 현재가 확인
+            current_price = self.data_provider.get_current_price(symbol, market)
+            if not current_price:
+                logger.warning(f"{symbol} 현재가를 가져올 수 없습니다.")
+                return False
+                
+            # 계좌 잔고 확인 (매수 전 잔고)
+            initial_balance_info = self.broker.get_balance()
+            available_cash = initial_balance_info.get('주문가능금액', initial_balance_info.get('예수금', 0))
+            
+            logger.info(f"사용 가능 현금(주문가능금액): {available_cash:,}원")
+            
+            if available_cash < 100000:
+                logger.warning(f"주문가능금액({available_cash:,}원)이 부족하여 매수할 수 없습니다.")
+                return False
+                
+            # 투자 금액 결정
+            investment_ratio = stock_data.get('suggested_weight', 10) / 100
+            investment_amount = min(self.max_investment_per_stock, available_cash * investment_ratio)
+            
+            # 최소 100만원 확인
+            if investment_amount < 1000000:
+                investment_amount = 1000000
+                
+            # 투자 금액이 주문가능금액을 초과하는지 확인
+            if investment_amount > available_cash:
+                investment_amount = available_cash
+                
+            # 매수 수량 계산
+            quantity = int(investment_amount / current_price)
+            
+            # 최소 1주 확인
+            if quantity < 1:
+                logger.warning(f"{symbol} 현재가({current_price:,}원)로 최소 1주도 구매할 수 없습니다.")
+                return False
+                
+            # 실제 투자 금액 재계산
+            actual_investment = quantity * current_price
+            
+            # 매수 실행
+            logger.info(f"매수 주문 실행: {name} ({symbol}), {quantity}주, 현재가 {current_price:,}원, 총 투자금액: {actual_investment:,}원")
+            
+            # 알림 데이터 준비
+            if self.notifier:
+                logger.info(f"알림 데이터 확인: symbol={symbol}, name={name}")
+                self.notifier.send_stock_alert(
+                    symbol=symbol,
+                    stock_name=name,
+                    action="BUY",
+                    quantity=quantity,
+                    price=current_price,
+                    reason=f"GPT 추천 종목 ({stock_data.get('suggested_weight', 0)}% 비중)",
+                    target_price=target_price
+                )
+                
+            # 시뮬레이션 모드 확인
+            if getattr(self.auto_trader, 'simulation_mode', False):
+                logger.info(f"시뮬레이션 모드: 실제 매수는 실행되지 않습니다.")
+                return True
+                
+            # 주문 실행
+            order_result = self.auto_trader.buy(symbol, quantity, market=market)
+            
+            if order_result.get('success', False):
+                # 주문 성공 로그
+                logger.info(f"{symbol} 매수 주문 체결 완료")
+                
+                # 주문 처리 후 잠시 대기하여 API 서버에 반영될 시간을 줌
+                time.sleep(2)
+                
+                # 주문 후 잔고 강제 리프레시 (최대 3회 시도)
+                refreshed = False
+                for i in range(3):
+                    try:
+                        # 잔고 업데이트 강제 시도
+                        updated_balance = self.broker.get_balance()
+                        updated_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
+                        
+                        logger.info(f"주문 후 잔고 확인 (시도 {i+1}/3): {updated_cash:,}원")
+                        
+                        # 잔고가 변경되었는지 확인
+                        if updated_cash < available_cash:
+                            logger.info(f"잔고 업데이트 확인됨: {available_cash:,}원 -> {updated_cash:,}원 (차액: {available_cash - updated_cash:,}원)")
+                            refreshed = True
+                            break
+                        
+                        # 잔고가 변경되지 않은 경우 더 긴 대기 후 재시도
+                        logger.warning(f"잔고가 업데이트되지 않았습니다. 더 대기 후 재시도합니다.")
+                        time.sleep(3 * (i + 1))  # 점진적으로 대기 시간 증가
+                    except Exception as e:
+                        logger.error(f"잔고 업데이트 확인 중 오류: {e}")
+                        time.sleep(1)
+                
+                # 잔고 업데이트 여부에 따른 처리
+                if not refreshed:
+                    logger.warning("모의투자 환경에서 잔고 업데이트가 즉시 반영되지 않았습니다. 이는 모의투자 API의 제한사항일 수 있습니다.")
+                    
+                    # 거래 정보 저장
+                    self.trade_history.append({
+                        'timestamp': get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                        'symbol': symbol,
+                        'name': name,
+                        'action': 'BUY',
+                        'quantity': quantity,
+                        'price': current_price,
+                        'amount': actual_investment,
+                        'success': True,
+                        'order_id': order_result.get('order_no', '')
+                    })
+                    
+                    # 강제로 현재 보유 종목에 추가
+                    if symbol not in self.holdings:
+                        self.holdings[symbol] = {
+                            'symbol': symbol,
+                            'name': name,
+                            'quantity': quantity,
+                            'avg_price': current_price,
+                            'current_price': current_price,
+                            'market': market,
+                            'entry_time': get_current_time().isoformat()
+                        }
+                        logger.info(f"{symbol} 보유 종목 목록에 수동 추가됨")
+                    
+                return True
+            else:
+                logger.error(f"{symbol} 매수 주문 실패: {order_result.get('error', '알 수 없는 오류')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"매수 실행 중 오류 발생: {e}")
+            return False

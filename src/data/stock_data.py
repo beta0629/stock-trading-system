@@ -10,6 +10,8 @@ from ..utils.time_utils import (
     get_current_time, get_current_time_str, KST,
     get_date_days_ago, format_timestamp
 )
+from ..database.db_manager import DatabaseManager
+import datetime
 import logging
 import sys
 
@@ -36,6 +38,10 @@ class StockData:
         self.config = config
         self.kr_data = {}  # 국내 주식 데이터를 저장할 딕셔너리
         self.us_data = {}  # 미국 주식 데이터를 저장할 딕셔너리
+        
+        # 데이터베이스 매니저 초기화
+        self.db_manager = DatabaseManager.get_instance(config)
+        
         logger.info("StockData 클래스 초기화 완료")
     
     def get_korean_stock_data(self, symbol, days=90):
@@ -141,22 +147,27 @@ class StockData:
             return pd.DataFrame()
     
     def update_all_data(self):
-        """모든 주식 데이터 업데이트"""
+        """모든 주식 데이터 업데이트 및 DB에 저장"""
         logger.info("모든 주식 데이터 업데이트 시작")
         
         # 한국 주식 데이터 업데이트
         for symbol in self.config.KR_STOCKS:
-            self.get_korean_stock_data(symbol)
+            df = self.get_korean_stock_data(symbol)
+            if df is not None and not df.empty:
+                self._save_data_to_db(symbol, "KR", df)
         
         # 미국 주식 데이터 업데이트
         for symbol in self.config.US_STOCKS:
-            self.get_us_stock_data(symbol)
+            df = self.get_us_stock_data(symbol)
+            if df is not None and not df.empty:
+                self._save_data_to_db(symbol, "US", df)
             
-        logger.info("모든 주식 데이터 업데이트 완료")
+        logger.info("모든 주식 데이터 업데이트 및 DB 저장 완료")
     
     def get_historical_data(self, symbol, market="KR", days=90):
         """
         기존 주식 데이터 반환 또는 신규 수집
+        데이터베이스에서 먼저 검색하고, 없으면 API에서 가져와 DB에 저장
         
         Args:
             symbol: 주식 코드/티커
@@ -167,21 +178,90 @@ class StockData:
             DataFrame: 주가 데이터
         """
         try:
-            # 이미 데이터가 있는지 확인
+            # 1. 메모리에 이미 데이터가 있는지 확인
             data_dict = self.kr_data if market == "KR" else self.us_data
             
             if symbol in data_dict and not data_dict[symbol].empty:
-                logger.info(f"{symbol}({market}) 기존 데이터 반환. 데이터 크기: {len(data_dict[symbol])}")
+                logger.info(f"{symbol}({market}) 메모리에서 데이터 반환. 데이터 크기: {len(data_dict[symbol])}")
                 return data_dict[symbol]
             
-            # 데이터가 없으면 새로 가져오기
+            # 2. 데이터베이스에서 데이터 조회
+            end_date = get_current_time(timezone=KST if market == "KR" else None)
+            start_date = get_date_days_ago(days, timezone=KST if market == "KR" else None)
+            
+            cache_df = self.db_manager.get_cached_price_data(
+                symbol, 
+                market, 
+                start_date.strftime('%Y-%m-%d'),
+                end_date.strftime('%Y-%m-%d')
+            )
+            
+            # 데이터베이스에서 가져온 데이터가 있고 충분하면 사용
+            if cache_df is not None and len(cache_df) > days * 0.7:  # 요청 기간의 70% 이상 데이터가 있으면 사용
+                logger.info(f"{symbol}({market}) DB에서 데이터 반환. 데이터 크기: {len(cache_df)}")
+                
+                # 데이터 형식 변환
+                df = pd.DataFrame()
+                df['Open'] = cache_df['open_price']
+                df['High'] = cache_df['high_price']
+                df['Low'] = cache_df['low_price']
+                df['Close'] = cache_df['close_price']
+                df['Volume'] = cache_df['volume']
+                df.index = pd.to_datetime(cache_df['date'])
+                
+                # 기술적 지표 계산
+                df = calculate_indicators(df, self.config)
+                
+                # 메모리에 저장
+                if market == "KR":
+                    self.kr_data[symbol] = df
+                else:
+                    self.us_data[symbol] = df
+                    
+                return df
+            
+            # 3. API를 통해 데이터 가져오기
+            logger.info(f"{symbol}({market}) API를 통해 데이터 가져오기 시작")
             if market == "KR":
-                return self.get_korean_stock_data(symbol, days)
+                df = self.get_korean_stock_data(symbol, days)
             else:
-                return self.get_us_stock_data(symbol, days)
+                df = self.get_us_stock_data(symbol, days)
+            
+            # 4. 가져온 데이터를 DB에 저장
+            if df is not None and not df.empty:
+                self._save_data_to_db(symbol, market, df)
+                
+            return df
+                
         except Exception as e:
             logger.error(f"{symbol}({market}) 기록 데이터 조회 중 오류 발생: {e}")
             return None
+    
+    def _save_data_to_db(self, symbol, market, df):
+        """
+        데이터프레임을 DB에 저장
+        
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            df: 저장할 데이터프레임
+        """
+        try:
+            for date, row in df.iterrows():
+                date_str = date.strftime('%Y-%m-%d')
+                self.db_manager.cache_price_data(
+                    symbol=symbol,
+                    market=market,
+                    date=date_str,
+                    open_price=float(row['Open']),
+                    high_price=float(row['High']),
+                    low_price=float(row['Low']),
+                    close_price=float(row['Close']),
+                    volume=int(row['Volume'])
+                )
+            logger.info(f"{symbol}({market}) 데이터 {len(df)}개 DB 저장 완료")
+        except Exception as e:
+            logger.error(f"{symbol}({market}) 데이터 DB 저장 중 오류 발생: {e}")
     
     def get_latest_data(self, symbol, market="KR"):
         """

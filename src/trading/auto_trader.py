@@ -13,7 +13,7 @@ import datetime  # datetime 모듈 추가
 from enum import Enum
 import traceback
 
-# 시간 유틸리티 추가
+# 시간 유틸리티 모듈
 from src.utils.time_utils import (
     get_current_time, get_current_time_str, is_market_open,
     format_timestamp, get_market_hours, KST, EST, parse_time
@@ -98,62 +98,47 @@ class AutoTrader:
         if self.simulation_mode:
             logger.warning("!! 시뮬레이션 모드로 실행 중. 실제 거래는 발생하지 않습니다 !!")
     
-    def _load_account_balance(self):
+    def _load_account_balance(self, force_refresh=False):
         """
-        계좌 잔고 정보를 가져와서 설정
+        계좌 잔고 정보를 불러와서 현재 상태 업데이트
+        
+        Args:
+            force_refresh (bool): 강제로 잔고 갱신 여부
+        
+        Returns:
+            dict: 계좌 잔고 정보
         """
-        try:
-            # 계좌 정보 가져오기
-            account_info = self.broker.get_balance()
-            logger.info(f"계좌 정보 조회: {account_info}")
+        # API에서 계좌 잔고 가져오기
+        max_attempts = 3 if force_refresh else 1
+        delay_seconds = 1
+        
+        for attempt in range(max_attempts):
+            # 타임스탬프 추가하여 캐시 방지
+            timestamp = int(time.time() * 1000)
             
-            if not account_info:
-                logger.error("계좌 정보를 불러올 수 없습니다.")
-                return
+            if attempt > 0:
+                self.logger.info(f"계좌 잔고 새로고침 시도 {attempt+1}/{max_attempts}")
+                time.sleep(delay_seconds)
+                # 시도마다 지연시간 증가
+                delay_seconds *= 1.5
+            
+            balance = self.broker.get_balance(force_refresh=force_refresh, timestamp=timestamp)
+            
+            if "error" not in balance:
+                self.balance = balance
+                self.available_cash = balance.get("주문가능금액", 0)
                 
-            # 모의 투자 계좌일 경우의 처리 향상
-            if not self.broker.real_trading:
-                logger.info("모의 투자 계좌 잔고 설정 중...")
-                
-                # 총평가금액이 존재하면 그대로 사용
-                if "총평가금액" in account_info and account_info["총평가금액"] > 0:
-                    self.account_balance = account_info["총평가금액"]
-                    logger.info(f"모의 계좌 총평가금액으로 설정: {self.account_balance:,}원")
-                
-                # D+2예수금과 유가평가금액의 합으로 설정
-                elif "D+2예수금" in account_info and "유가평가금액" in account_info:
-                    self.account_balance = account_info["D+2예수금"] + account_info["유가평가금액"]
-                    logger.info(f"모의 계좌 D+2예수금({account_info['D+2예수금']:,}원) + 유가평가금액({account_info['유가평가금액']:,}원) = {self.account_balance:,}원")
-                
-                # 예수금과 유가평가금액의 합으로 설정
-                elif "예수금" in account_info and "유가평가금액" in account_info:
-                    self.account_balance = account_info["예수금"] + account_info["유가평가금액"]
-                    logger.info(f"모의 계좌 예수금({account_info['예수금']:,}원) + 유가평가금액({account_info['유가평가금액']:,}원) = {self.account_balance:,}원")
-                
-                # 순자산금액으로 설정
-                elif "순자산금액" in account_info and account_info["순자산금액"] > 0:
-                    self.account_balance = account_info["순자산금액"]
-                    logger.info(f"모의 계좌 순자산금액으로 설정: {self.account_balance:,}원")
-                
-                # 예수금만 설정 (최후의 방법)
+                # 최신 잔고 정보로 업데이트됐는지 확인
+                if "timestamp" in balance and balance["timestamp"] == timestamp:
+                    self.logger.info(f"계좌 잔고 갱신 성공: 주문가능금액 {self.available_cash:,}원")
+                    return balance
                 else:
-                    self.account_balance = account_info.get("예수금", 0)
-                    logger.info(f"모의 계좌 예수금으로 설정: {self.account_balance:,}원")
-            else:
-                # 실제 투자 계좌는 기존 방식 유지
-                self.account_balance = account_info.get("예수금", 0)
-                logger.info(f"실제 계좌 예수금으로 설정: {self.account_balance:,}원")
-                
-            # 사용 가능 현금 설정
-            self._update_available_cash(account_info)
-            
-            # 계좌 정보 로깅
-            logger.info(f"계좌 잔고: {self.account_balance:,}원, 사용 가능 현금: {self.available_cash:,}원")
-            
-        except Exception as e:
-            logger.error(f"계좌 잔고 로드 실패: {e}")
-            logger.error(traceback.format_exc())
-    
+                    self.logger.info(f"잔고 정보가 최신 상태로 확인됨: {self.available_cash:,}원")
+                    return balance
+        
+        self.logger.warning("계좌 잔고 새로고침 시도 후에도 최신 정보를 가져오지 못했습니다")
+        return balance
+
     def _update_available_cash(self, account_info):
         """
         사용 가능한 현금(매수 가능 금액) 업데이트
@@ -569,6 +554,12 @@ class AutoTrader:
                 order_info["executed_quantity"] = quantity
                 order_info["trade_info"] = trade_info  # 거래 정보 추가
                 
+                # 시뮬레이션 모드에서도 계좌 잔고 강제 갱신
+                if action == TradeAction.BUY:
+                    # 매수 후 잔고를 즉시 업데이트
+                    logger.info(f"[시뮬레이션] 매수 후 계좌 잔고 강제 갱신...")
+                    self._load_account_balance(force_refresh=True)
+                
             else:
                 # 실제 주문 실행
                 logger.info(f"주문 실행: {action.value} {stock_name}({symbol}) x {quantity}주")
@@ -624,13 +615,40 @@ class AutoTrader:
                 
                 # 거래 후 정보 조회
                 try:
-                    # 3초 정도 기다린 후 거래 후 정보 확인
-                    time.sleep(3)
+                    # 최소 5초 이상 대기하여 API 캐싱 이슈 방지
+                    logger.info(f"계좌 정보 갱신 대기 중 (5초)...")
+                    time.sleep(5)
                     
-                    # 거래 후 잔고 및 포지션 정보
-                    account_info = self.broker.get_balance()
-                    balance_after = account_info.get('예수금', 0)
+                    # 거래 후 잔고 정보 강제 갱신 (여러번 시도)
+                    account_info = None
+                    retry_count = 0
+                    max_retries = 3
+                    while retry_count < max_retries:
+                        try:
+                            # 캐시를 회피하기 위한 추가 파라미터 사용 (타임스탬프)
+                            account_info = self.broker.get_balance(force_refresh=True, timestamp=int(time.time()))
+                            balance_after = account_info.get('예수금', 0)
+                            
+                            # 잔고 정보가 갱신되었는지 확인 (매수인 경우 감소, 매도인 경우 증가)
+                            if action == TradeAction.BUY:
+                                if balance_before > balance_after:
+                                    logger.info(f"계좌 잔고 변경 확인: {balance_before:,}원 -> {balance_after:,}원 (차이: {balance_before - balance_after:,}원)")
+                                    break
+                            else:  # SELL
+                                if balance_before < balance_after:
+                                    logger.info(f"계좌 잔고 변경 확인: {balance_before:,}원 -> {balance_after:,}원 (차이: {balance_after - balance_before:,}원)")
+                                    break
+                                
+                            # 변경이 감지되지 않으면 재시도
+                            logger.warning(f"계좌 잔고 변경이 감지되지 않음: {balance_before:,}원 -> {balance_after:,}원")
+                            retry_count += 1
+                            time.sleep(2)  # 2초 대기 후 재시도
+                        except Exception as e:
+                            logger.error(f"계좌 잔고 조회 재시도 중 오류: {e}")
+                            retry_count += 1
+                            time.sleep(2)
                     
+                    # 포지션 정보 갱신
                     updated_positions = self.broker.get_positions()
                     
                     total_quantity = 0
@@ -683,6 +701,9 @@ class AutoTrader:
                         "order_no": order_no,
                         "transaction_time": get_current_time().strftime("%Y-%m-%d %H:%M:%S")
                     }
+                
+                # 주문 완료 후 계좌 잔고 강제 갱신 (매수/매도 모두)
+                self._load_account_balance(force_refresh=True)
             
             # 주문 이력에 추가
             self.order_history.append(order_info)
@@ -1265,7 +1286,7 @@ class AutoTrader:
             dict: 거래 요약 정보
         """
         try:
-            # 요약 정보 딕셔너리
+            # 요약 정보 딕셔리
             summary = {
                 "오늘의거래": {},
                 "계좌정보": {},
@@ -1336,3 +1357,72 @@ class AutoTrader:
                 "계좌정보": {},
                 "보유종목": []
             }
+    
+    def place_order(self, code, order_type, quantity, price, order_type_name=None):
+        """
+        주식 주문 실행
+        
+        Args:
+            code (str): 종목코드
+            order_type (str): 주문유형 (buy, sell)
+            quantity (int): 주문수량
+            price (float): 주문가격
+            order_type_name (str, optional): 주문유형명 (지정가, 시장가 등)
+            
+        Returns:
+            dict: 주문 결과
+        """
+        logger.info(f"주문 시작: {code} {order_type} {quantity}주 {price}원")
+        
+        try:
+            # 현재 잔고 확인
+            pre_balance = self.broker_api.get_balance()
+            available_cash = pre_balance.get('주문가능금액', 0)
+            
+            logger.info(f"주문 전 계좌 잔고: {available_cash:,}원")
+            
+            # 매수 시 주문가능금액 확인
+            if order_type == 'buy':
+                required_amount = quantity * price
+                if available_cash < required_amount:
+                    logger.warning(f"주문가능금액 부족: 필요 {required_amount:,}원, 보유 {available_cash:,}원")
+                    return {"success": False, "message": "주문가능금액 부족", "error_code": "INSUFFICIENT_BALANCE"}
+            
+            # 주문 실행
+            order_result = self.broker_api.place_order(code, order_type, quantity, price, order_type_name)
+            
+            if order_result.get('success', False):
+                order_no = order_result.get('order_no', '')
+                logger.info(f"주문 성공: {order_no}")
+                
+                # 주문 성공 후 잔고 갱신을 위한 대기
+                time.sleep(2)
+                
+                # 주문 후 강제로 잔고 갱신 (최대 3회 시도)
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    logger.info(f"주문 후 잔고 갱신 시도 ({attempt}/{max_attempts})")
+                    time.sleep(1 * attempt)  # 시도마다 대기 시간 증가
+                    
+                    # 강제로 최신 잔고 정보 가져오기
+                    post_balance = self.broker_api.get_balance(force_refresh=True)
+                    updated_cash = post_balance.get('주문가능금액', 0)
+                    
+                    # 잔고가 변경되었는지 확인
+                    if order_type == 'buy' and updated_cash != available_cash:
+                        logger.info(f"잔고 갱신 성공: {updated_cash:,}원 (이전: {available_cash:,}원)")
+                        break
+                    elif attempt == max_attempts:
+                        logger.warning(f"잔고 갱신 실패: 여전히 {updated_cash:,}원 (API 지연 또는 캐싱 문제)")
+                
+                return order_result
+            else:
+                error_message = order_result.get('message', '알 수 없는 오류')
+                error_code = order_result.get('error_code', 'UNKNOWN_ERROR')
+                logger.error(f"주문 실패: {error_message} (코드: {error_code})")
+                return order_result
+                
+        except Exception as e:
+            logger.error(f"주문 처리 중 오류 발생: {e}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e), "error_code": "EXCEPTION"}
