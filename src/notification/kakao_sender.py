@@ -7,7 +7,7 @@ import os
 import json
 import time
 import re
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 # time_utils 모듈 import
 from ..utils.time_utils import get_current_time, get_current_time_str, parse_time, get_adjusted_time
@@ -30,6 +30,10 @@ class KakaoSender:
         self.refresh_token = None
         self.token_expire_at = None
         self.initialized = False
+        
+        # 토큰 갱신 요청 제한을 위한 변수 추가
+        self.last_token_refresh_attempt = None
+        self.token_refresh_cooldown = 3600  # 1시간 (초 단위)
         
         # CI 환경인지 확인
         self.is_ci_env = os.environ.get('CI') == 'true'
@@ -82,23 +86,30 @@ class KakaoSender:
                 try:
                     expire_time = parse_time(self.token_expire_at)
                     current_time = get_current_time()
+                    # 만료된 경우에만 갱신 요청
                     if current_time >= expire_time:
                         logger.info("카카오톡 토큰이 만료되었습니다. 갱신을 시도합니다.")
-                        if not self.refresh_auth_token():
+                        if not self._can_refresh_token():
+                            logger.warning("토큰 갱신 요청 제한 시간(1시간) 내에 있습니다. 토큰 갱신을 건너뜁니다.")
+                        elif not self.refresh_auth_token():
                             logger.error("토큰 갱신 실패")
                             return False
                 except Exception as e:
                     logger.error(f"토큰 만료 시간 확인 중 오류: {e}")
             
-            # 토큰 유효성 테스트
-            if self.test_token():
+            # 토큰 유효성 테스트 (테스트는 반드시 한 번만 실행)
+            token_valid = self.test_token()
+            if token_valid:
                 logger.info("카카오톡 API 초기화 완료")
                 self.initialized = True
                 return True
             else:
+                # 토큰 테스트 실패 시 갱신 시도 (제한 시간 검사 후)
                 logger.warning("카카오톡 API 토큰이 유효하지 않습니다. 갱신을 시도합니다.")
-                # 토큰 갱신 시도
-                if self.refresh_auth_token():
+                if not self._can_refresh_token():
+                    logger.warning("토큰 갱신 요청 제한 시간(1시간) 내에 있습니다. 갱신을 건너뜁니다.")
+                    return False
+                elif self.refresh_auth_token():
                     logger.info("카카오톡 API 토큰 갱신 성공")
                     self.initialized = True
                     return True
@@ -111,6 +122,24 @@ class KakaoSender:
         except Exception as e:
             logger.error(f"카카오톡 API 초기화 실패: {e}")
             return False
+    
+    def _can_refresh_token(self):
+        """
+        토큰 갱신 요청이 가능한지 검사 (rate limit 방지)
+        
+        Returns:
+            bool: 갱신 요청 가능 여부
+        """
+        # 최근 갱신 요청 시간이 없으면 가능
+        if self.last_token_refresh_attempt is None:
+            return True
+            
+        # 현재 시간과 최근 갱신 요청 시간의 차이 계산
+        current_time = time.time()
+        time_diff = current_time - self.last_token_refresh_attempt
+        
+        # 제한 시간(cooldown) 이후면 가능
+        return time_diff >= self.token_refresh_cooldown
     
     def test_token(self):
         """
@@ -175,6 +204,9 @@ class KakaoSender:
         Returns:
             bool: 토큰 갱신 성공 여부
         """
+        # 갱신 요청 시간 기록 (요청 성공 여부와 무관하게)
+        self.last_token_refresh_attempt = time.time()
+
         try:
             url = "https://kauth.kakao.com/oauth/token"
             
@@ -225,11 +257,34 @@ class KakaoSender:
         """토큰이 유효한지 확인하고, 필요시 갱신"""
         if not self.initialized:
             return self.initialize()
-            
-        # 토큰 테스트
+        
+        # 토큰 만료 시간 확인 - 실제 만료된 경우에만 갱신 시도
+        if self.token_expire_at:
+            try:
+                expire_time = parse_time(self.token_expire_at)
+                current_time = get_current_time()
+                if current_time >= expire_time:
+                    logger.info("토큰이 만료되었습니다. 갱신을 시도합니다.")
+                    if self._can_refresh_token():
+                        return self.refresh_auth_token()
+                    else:
+                        logger.warning("토큰 갱신 요청 제한 시간 내에 있습니다. 현재 토큰을 계속 사용합니다.")
+                        # 이미 만료되었지만 갱신 요청 제한으로 인해 갱신하지 못할 때는, 
+                        # 기존 토큰으로라도 메시지 전송 시도
+                        return True
+                # 만료되지 않았으면 현재 토큰 사용
+                return True
+            except Exception as e:
+                logger.error(f"토큰 만료 시간 확인 중 오류: {e}")
+        
+        # 만료 시간 정보가 없으면 토큰 테스트 후 필요시 갱신
         if not self.test_token():
-            logger.info("토큰이 유효하지 않습니다. 갱신을 시도합니다.")
-            return self.refresh_auth_token()
+            logger.info("토큰 테스트 실패. 갱신을 시도합니다.")
+            if self._can_refresh_token():
+                return self.refresh_auth_token()
+            else:
+                logger.warning("토큰 갱신 요청 제한 시간 내에 있습니다. 갱신을 건너뜁니다.")
+                return False
         return True
     
     def send_message(self, message):

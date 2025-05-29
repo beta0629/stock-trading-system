@@ -172,7 +172,17 @@ class StockAnalysisSystem:
             
             # GPT 자동 매매 기능 초기화
             gpt_auto_trading = getattr(self.config, 'GPT_AUTO_TRADING', True)
+            logger.info(f"GPT 자동 매매 설정: {gpt_auto_trading}")
+            
             if gpt_auto_trading:
+                # OpenAI API 키 검증
+                openai_api_key = getattr(self.config, 'OPENAI_API_KEY', None)
+                if not openai_api_key or len(openai_api_key) < 10:  # 기본적인 길이 체크
+                    logger.warning("OpenAI API 키가 설정되지 않았거나 유효하지 않습니다.")
+                    if notifier:
+                        notifier.send_message("⚠️ OpenAI API 키가 설정되지 않아 GPT 자동 매매 기능이 제한됩니다.")
+                
+                # GPT 자동 매매 객체 초기화
                 self.gpt_auto_trader = GPTAutoTrader(
                     config=self.config,
                     broker=self.broker_api,
@@ -180,6 +190,9 @@ class StockAnalysisSystem:
                     notifier=notifier
                 )
                 logger.info("GPT 기반 자동 매매 시스템 초기화 완료")
+            else:
+                logger.info("GPT 자동 매매 기능이 비활성화되어 있습니다.")
+                self.gpt_auto_trader = None
             
             # CI 환경에서 시뮬레이션 모드로 강제 설정
             if is_ci:
