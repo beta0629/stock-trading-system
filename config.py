@@ -72,6 +72,7 @@ US_MARKET_CLOSE_TIME = "16:00"  # 미국 시장 폐장 시간 (EST)
 # 자동 매매 설정
 AUTO_TRADING_ENABLED = True  # 자동 매매 활성화 여부
 USE_MARKET_ORDER = False  # 시장가 주문 사용 여부 (False: 지정가 사용)
+SIMULATION_MODE = True  # 시뮬레이션 모드 활성화 여부 (API 연결 실패시 기본 동작)
 
 # 증권사 API 설정
 BROKER_TYPE = "KIS"  # 사용할 증권사 API (KIS: 한국투자증권)

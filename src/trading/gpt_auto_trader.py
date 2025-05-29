@@ -73,11 +73,11 @@ class GPTAutoTrader:
         
         if self.is_running:
             logger.warning("GPT 자동 매매가 이미 실행 중입니다.")
-            return
+            return True  # 이미 실행 중이면 성공으로 처리
             
         if not self.gpt_trading_enabled:
             logger.warning("GPT 자동 매매 기능이 비활성화되어 있습니다. config.py에서 GPT_AUTO_TRADING을 True로 설정하세요.")
-            return
+            return False
         
         # 디버그: 설정 상태 확인
         logger.info(f"GPT 자동 매매 설정 상태: enabled={self.gpt_trading_enabled}, max_positions={self.max_positions}, interval={self.monitoring_interval}")
@@ -92,137 +92,96 @@ class GPTAutoTrader:
         except Exception as e:
             logger.error(f"OpenAI API 키 검증 중 오류 발생: {e}. 캐시된 종목 목록을 사용합니다.")
         
-        # 증권사 API 연결 및 기능 테스트
-        logger.info("증권사 API 연결 테스트를 시작합니다.")
-        
-        # 브로커 객체 확인 - 시뮬레이션 모드로 대체 가능하도록 수정
-        broker_initialized = True
+        # 시뮬레이션 모드 설정 (명시적으로 읽어온 다음 로그에 기록)
         simulation_mode = getattr(self.config, 'SIMULATION_MODE', False)
+        logger.info(f"시뮬레이션 모드 설정: {simulation_mode}")
         
+        # 브로커 객체 확인 및 시뮬레이션 모드 활성화
         if not self.broker:
-            logger.error("증권사 API 객체(broker)가 없습니다.")
-            if self.notifier:
-                self.notifier.send_message("⚠️ 증권사 API 객체 초기화 실패")
-            
-            # 시뮬레이션 모드로 전환 가능한지 확인
+            logger.warning("증권사 API 객체(broker)가 없습니다.")
             if simulation_mode:
                 logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
-                broker_initialized = True
             else:
                 logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
                 return False
-        
+                
         try:
-            # API 테스트는 시뮬레이션 모드가 아닐 때만 수행
+            # API 테스트는 시뮬레이션 모드가 아니고 브로커가 있을 때만 수행
             if self.broker and not simulation_mode:
                 # 1. API 연결 테스트
-                if not self.broker.connect():
-                    logger.error("증권사 API 연결에 실패했습니다.")
-                    if self.notifier:
-                        self.notifier.send_message("⚠️ 증권사 API 연결 실패")
-                    
-                    # 시뮬레이션 모드로 전환 가능한지 확인
-                    if simulation_mode:
-                        logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
-                    else:
-                        logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
-                        return False
-                
-                logger.info("증권사 API 연결 성공")
-                
-                # 2. 로그인 테스트
-                if not self.broker.login():
-                    logger.error("증권사 API 로그인에 실패했습니다.")
-                    if self.notifier:
-                        self.notifier.send_message("⚠️ 증권사 API 로그인 실패")
-                    
-                    # 시뮬레이션 모드로 전환 가능한지 확인
-                    if simulation_mode:
-                        logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
-                    else:
-                        logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
-                        return False
-                
-                logger.info("증권사 API 로그인 성공")
-                
-                # 3. 계좌 잔고 조회 테스트
                 try:
-                    balance = self.broker.get_balance()
-                    if balance is None:
-                        raise ValueError("계좌 잔고 정보를 얻을 수 없습니다.")
-                    logger.info(f"계좌 잔고 조회 성공: 예수금 {balance.get('예수금', 0):,}원")
+                    connect_result = self.broker.connect()
+                    if not connect_result:
+                        logger.error("증권사 API 연결에 실패했습니다.")
+                        if self.notifier:
+                            self.notifier.send_message("⚠️ 증권사 API 연결 실패")
+                        
+                        if getattr(self.config, 'SIMULATION_MODE', False):
+                            logger.info("config.py에 SIMULATION_MODE=True로 설정되어 있어 시뮬레이션 모드로 실행합니다.")
+                            simulation_mode = True
+                        else:
+                            logger.error("시뮬레이션 모드가 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
+                            return False
                 except Exception as e:
-                    logger.error(f"계좌 잔고 조회 실패: {e}")
-                    if self.notifier:
-                        self.notifier.send_message("⚠️ 계좌 잔고 조회에 실패했습니다.")
-                    
-                    # 시뮬레이션 모드로 전환 가능한지 확인
-                    if simulation_mode:
-                        logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
+                    logger.error(f"증권사 API 연결 중 오류 발생: {e}")
+                    if getattr(self.config, 'SIMULATION_MODE', False):
+                        logger.info("config.py에 SIMULATION_MODE=True로 설정되어 있어 시뮬레이션 모드로 실행합니다.")
+                        simulation_mode = True
                     else:
-                        logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
+                        logger.error("시뮬레이션 모드가 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
                         return False
                 
-                # 4. 보유종목 조회 테스트
-                try:
-                    positions = self.broker.get_positions()
-                    position_count = len(positions)
-                    logger.info(f"보유종목 조회 성공: {position_count}개 종목 보유 중")
-                except Exception as e:
-                    logger.error(f"보유종목 조회 실패: {e}")
-                    if self.notifier:
-                        self.notifier.send_message("⚠️ 보유종목 조회에 실패했습니다.")
+                if not simulation_mode:
+                    logger.info("증권사 API 연결 성공")
                     
-                    # 시뮬레이션 모드로 전환 가능한지 확인
-                    if simulation_mode:
-                        logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
-                    else:
-                        logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
-                        return False
-                
-                # 5. 시장 데이터 조회 테스트 (삼성전자 현재가 조회)
-                test_symbol = "005930"  # 삼성전자
-                try:
-                    current_price = self.data_provider.get_current_price(test_symbol, "KR")
-                    if current_price <= 0:
-                        raise ValueError("현재가가 0 이하입니다.")
-                    logger.info(f"시장 데이터 조회 성공: 삼성전자 현재가 {current_price:,}원")
-                except Exception as e:
-                    logger.error(f"시장 데이터 조회 실패: {e}")
-                    if self.notifier:
-                        self.notifier.send_message("⚠️ 시장 데이터 조회에 실패했습니다.")
+                    # 2. 로그인 테스트
+                    try:
+                        login_result = self.broker.login()
+                        if not login_result:
+                            logger.error("증권사 API 로그인에 실패했습니다.")
+                            if self.notifier:
+                                self.notifier.send_message("⚠️ 증권사 API 로그인 실패")
+                            
+                            if getattr(self.config, 'SIMULATION_MODE', False):
+                                logger.info("config.py에 SIMULATION_MODE=True로 설정되어 있어 시뮬레이션 모드로 실행합니다.")
+                                simulation_mode = True
+                            else:
+                                logger.error("시뮬레이션 모드가 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
+                                return False
+                    except Exception as e:
+                        logger.error(f"증권사 API 로그인 중 오류 발생: {e}")
+                        if getattr(self.config, 'SIMULATION_MODE', False):
+                            logger.info("config.py에 SIMULATION_MODE=True로 설정되어 있어 시뮬레이션 모드로 실행합니다.")
+                            simulation_mode = True
+                        else:
+                            logger.error("시뮬레이션 모드가 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
+                            return False
                     
-                    # 시뮬레이션 모드로 전환 가능한지 확인
-                    if simulation_mode:
-                        logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
-                    else:
-                        logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
-                        return False
-                
-                logger.info("증권사 API 기능 테스트 완료: 모든 테스트 통과")
+                    if not simulation_mode:
+                        logger.info("증권사 API 로그인 성공")
             else:
-                # 시뮬레이션 모드일 경우
-                logger.info("시뮬레이션 모드로 실행 중입니다. API 테스트를 건너뜁니다.")
+                # 브로커가 없거나 시뮬레이션 모드인 경우
+                if not self.broker:
+                    logger.info("브로커 객체가 없어 시뮬레이션 모드로 실행합니다.")
+                    simulation_mode = True
+                else:
+                    logger.info("시뮬레이션 모드로 설정되어 API 테스트를 건너뜁니다.")
         except Exception as e:
             logger.error(f"증권사 API 테스트 중 예외 발생: {e}")
             if self.notifier:
                 self.notifier.send_message(f"⚠️ 증권사 API 테스트 중 오류 발생: {str(e)}")
                 
-            # 시뮬레이션 모드로 전환 가능한지 확인
-            if simulation_mode:
-                logger.info("시뮬레이션 모드로 대체하여 실행합니다.")
+            # 시뮬레이션 모드 확인 및 활성화
+            if getattr(self.config, 'SIMULATION_MODE', False):
+                logger.info("config.py에 SIMULATION_MODE=True로 설정되어 있어 시뮬레이션 모드로 실행합니다.")
+                simulation_mode = True
             else:
-                logger.error("시뮬레이션 모드도 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
+                logger.error("시뮬레이션 모드가 비활성화되어 있어 자동 매매를 시작할 수 없습니다.")
                 return False
         
-        # 테스트 결과 알림 (성공 또는 시뮬레이션 모드)
-        if self.notifier:
-            if simulation_mode:
-                message = f"✅ GPT 자동 매매 시작 (시뮬레이션 모드)\n"
-                message += f"• 최대 포지션 수: {self.max_positions}개\n"
-                message += f"• 종목당 최대 투자금: {self.max_investment_per_stock:,}원\n"
-                self.notifier.send_message(message)
-            else:
+        # 테스트 결과 알림
+        if self.notifier and not simulation_mode:
+            try:
                 balance = self.broker.get_balance() if self.broker else {"예수금": 0}
                 positions = self.broker.get_positions() if self.broker else {}
                 current_price = self.data_provider.get_current_price("005930", "KR") if self.data_provider else 0
@@ -232,24 +191,42 @@ class GPTAutoTrader:
                 message += f"• 보유종목 수: {len(positions)}개\n"
                 message += f"• 삼성전자 현재가: {current_price:,}원\n"
                 self.notifier.send_message(message)
+            except Exception as e:
+                logger.error(f"API 테스트 결과 알림 생성 중 오류 발생: {e}")
+        
+        # 시뮬레이션 모드 설정
+        if simulation_mode:
+            # AutoTrader에 시뮬레이션 모드 설정
+            if self.auto_trader:
+                self.auto_trader.simulation_mode = True
+                logger.info("AutoTrader를 시뮬레이션 모드로 설정했습니다.")
+            
+            # 시뮬레이션 모드 알림
+            if self.notifier:
+                self.notifier.send_message("🔧 GPT 자동 매매가 시뮬레이션 모드로 실행됩니다.")
         
         self.is_running = True
         logger.info("GPT 자동 매매 시스템을 시작합니다.")
         
-        # AutoTrader 시작 (자체적으로 시뮬레이션 모드 처리)
+        # AutoTrader 시작
         if self.auto_trader:
-            # 시뮬레이션 모드 설정
-            if simulation_mode:
-                self.auto_trader.simulation_mode = True
-                logger.info("AutoTrader를 시뮬레이션 모드로 시작합니다.")
-            
             self.auto_trader.start_trading_session()
+            logger.info(f"AutoTrader 시작 상태: {self.auto_trader.is_running}")
         
         # 초기 종목 선정 실행
-        self._select_stocks()
+        try:
+            self._select_stocks()
+            logger.info("초기 종목 선정 완료")
+        except Exception as e:
+            logger.error(f"초기 종목 선정 중 오류 발생: {e}")
+            # 오류가 발생해도 계속 진행
         
         # 포지션 로드
-        self._load_current_holdings()
+        try:
+            self._load_current_holdings()
+        except Exception as e:
+            logger.error(f"보유 종목 로드 중 오류 발생: {e}")
+            # 오류가 발생해도 계속 진행
         
         # 알림 전송
         if self.notifier:
@@ -262,6 +239,7 @@ class GPTAutoTrader:
             message += f"• 모드: {'시뮬레이션' if simulation_mode else '실거래'}\n"
             self.notifier.send_message(message)
             
+        logger.info("GPT 자동 매매 시스템이 성공적으로 시작되었습니다.")
         return True
         
     def stop(self):
