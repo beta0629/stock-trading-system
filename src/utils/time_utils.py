@@ -246,8 +246,44 @@ def parse_time(time_str, format_str='%Y-%m-%d %H:%M:%S', timezone=KST):
         except pytz.exceptions.UnknownTimeZoneError:
             timezone = KST
             
-    dt = datetime.datetime.strptime(time_str, format_str)
-    return timezone.localize(dt)
+    try:
+        # 먼저 ISO 형식 확인 (2025-06-27T10:00:48.152276+09:00)
+        if 'T' in time_str and ('+' in time_str or 'Z' in time_str or '-' in time_str.split('T')[1]):
+            try:
+                # ISO 형식 문자열은 datetime.fromisoformat() 사용 (Python 3.7+)
+                dt = datetime.datetime.fromisoformat(time_str)
+                
+                # 이미 시간대 정보가 있으면 변환만 수행
+                if dt.tzinfo:
+                    return dt.astimezone(timezone)
+                # 시간대 정보가 없으면 지정된 시간대 설정
+                return timezone.localize(dt)
+            except (ValueError, AttributeError):
+                # Python 3.6 이하 또는 다른 오류 발생 시 대체 방법
+                import dateutil.parser
+                dt = dateutil.parser.parse(time_str)
+                if dt.tzinfo:
+                    return dt.astimezone(timezone)
+                return timezone.localize(dt)
+        
+        # 표준 형식 파싱
+        dt = datetime.datetime.strptime(time_str, format_str)
+        return timezone.localize(dt)
+        
+    except ValueError as e:
+        # 파싱 오류 발생 시 원래 오류 메시지와 함께 다시 발생
+        logger.error(f"시간 문자열 '{time_str}' 파싱 오류: {e}")
+        
+        # 최후 대안으로 dateutil.parser 사용
+        try:
+            import dateutil.parser
+            dt = dateutil.parser.parse(time_str)
+            if dt.tzinfo:
+                return dt.astimezone(timezone)
+            return timezone.localize(dt)
+        except Exception as e2:
+            logger.error(f"dateutil로도 파싱 실패: {e2}")
+            raise ValueError(f"시간 문자열 '{time_str}'을 파싱할 수 없습니다.") from e
 
 def is_market_open(market="KR", config=None):
     """
