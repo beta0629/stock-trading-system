@@ -173,3 +173,36 @@ class StockData:
                 return self.us_data[symbol].iloc[-1]
         
         return None
+    
+    def get_current_price(self, symbol, market="KR"):
+        """
+        현재 주식 가격 조회
+        
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            
+        Returns:
+            float: 현재 주가 (종가)
+        """
+        try:
+            latest_data = self.get_latest_data(symbol, market)
+            if latest_data is not None and 'Close' in latest_data:
+                return latest_data['Close']
+            
+            # 데이터가 없는 경우 필요에 따라 데이터 가져오기
+            if market == "KR":
+                df = self.get_korean_stock_data(symbol)
+                if not df.empty:
+                    return df['Close'].iloc[-1]
+            else:
+                df = self.get_us_stock_data(symbol)
+                if not df.empty:
+                    return df['Close'].iloc[-1]
+            
+            logger.warning(f"{market} 시장의 {symbol} 종목의 현재 가격을 가져올 수 없습니다.")
+            return 0
+            
+        except Exception as e:
+            logger.error(f"현재 주가 조회 중 오류 발생: {e}")
+            return 0
