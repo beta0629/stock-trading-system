@@ -821,19 +821,20 @@ class GPTAutoTrader:
             self._update_positions()
             
             # 계좌 잔고 확인
-            balance = self.broker.get_account_balance()
-            logger.info(f"계좌 잔고: {balance:,.0f}원")
+            balance_info = self.broker.get_balance()
+            available_cash = balance_info.get('주문가능금액', balance_info.get('예수금', 0))
+            logger.info(f"계좌 잔고: {available_cash:,.0f}원")
             
             # 매매 결정 및 실행 (한국 주식)
             logger.info("=== 한국 주식 매매 시작 ===")
-            self._process_kr_stocks(balance)
+            self._process_kr_stocks(available_cash)
             
             # 미국 주식 매매 (설정이 활성화된 경우에만)
             us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
             
             if us_stock_trading_enabled:
                 logger.info("=== 미국 주식 매매 시작 ===")
-                self._process_us_stocks(balance)
+                self._process_us_stocks(available_cash)
             else:
                 logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 매매를 건너뜁니다.")
             
