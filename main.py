@@ -1010,7 +1010,24 @@ class StockAnalysisSystem:
     
     def _initialize_stock_lists(self):
         """종목 리스트 초기화 및 확인"""
-        # KR_STOCKS와 US_STOCKS가 없거나 비어있으면 캐시 파일에서 로드
+        # 데이터베이스에서 종목 정보를 불러오기
+        from src.database.db_manager import DatabaseManager
+        db_manager = DatabaseManager.get_instance(self.config)
+        
+        # DB 초기화 및 기본 종목 정보 설정 (첫 실행 시에만)
+        db_manager.init_kr_stock_info()
+        
+        # 데이터베이스에서 종목 정보 불러오기
+        kr_stock_info = db_manager.get_kr_stock_info()
+        
+        if kr_stock_info:
+            # 데이터베이스에서 불러온 종목 정보로 설정
+            self.config.KR_STOCK_INFO = kr_stock_info
+            self.config.KR_STOCKS = [stock["code"] for stock in kr_stock_info]
+            logger.info(f"데이터베이스에서 한국 종목 정보 {len(kr_stock_info)}개를 불러왔습니다.")
+            return
+            
+        # 데이터베이스에 정보가 없으면 기존 로직 실행
         kr_stocks = getattr(self.config, 'KR_STOCKS', [])
         us_stocks = getattr(self.config, 'US_STOCKS', [])
         
@@ -1051,6 +1068,10 @@ class StockAnalysisSystem:
                                 self.config.KR_STOCKS = kr_stock_codes
                                 self.config.KR_STOCK_INFO = kr_stock_info
                                 logger.info(f"캐시에서 한국 종목 {len(kr_stock_codes)}개를 로드했습니다.")
+                                
+                                # 데이터베이스에 저장
+                                db_manager.save_kr_stock_info(kr_stock_info)
+                                logger.info(f"한국 종목 정보 {len(kr_stock_info)}개를 데이터베이스에 저장했습니다.")
                     except Exception as e:
                         logger.error(f"한국 종목 캐시 로드 실패: {e}")
                 
@@ -1068,6 +1089,10 @@ class StockAnalysisSystem:
                     self.config.KR_STOCK_INFO = default_kr_stocks
                     self.config.KR_STOCKS = [stock["code"] for stock in default_kr_stocks]
                     logger.info(f"기본 한국 종목 {len(self.config.KR_STOCKS)}개를 설정했습니다.")
+                    
+                    # 데이터베이스에 저장
+                    db_manager.save_kr_stock_info(default_kr_stocks)
+                    logger.info(f"기본 한국 종목 정보 {len(default_kr_stocks)}개를 데이터베이스에 저장했습니다.")
             
             # 미국 종목 로드
             if not us_stocks:

@@ -31,7 +31,7 @@ class TradeAction(Enum):
 logger = logging.getLogger('KISAPI')
 
 # API 호출 관련 상수
-API_RATE_LIMIT_DELAY = 0.5  # 초당 API 호출 최대 횟수를 고려한 딜레이 (초)
+API_RATE_LIMIT_DELAY = 1.0  # 초당 API 호출 최대 횟수를 고려한 딜레이 (초) - 0.5초에서 1초로 증가
 LAST_API_CALL_TIMES = {}  # API 종류별 마지막 호출 시간 기록
 
 def ensure_api_rate_limit(api_name, is_real_trading=False):
@@ -461,31 +461,49 @@ class KISAPI(BrokerBase):
                         
                     return {"error": error_msg}
                 
-                # 응답 데이터에서 잔고 정보 추출 (모의투자와 실전투자 API 응답 구조 차기 처리)
-                # 모의투자일 경우 output1이 비어있고 output2에 잔고 정보가 있을 수 있음
-                balance_output = {}
-                
-                if data.get("output1") and len(data.get("output1")) > 0:
-                    # 실전투자 또는 기존 구조
-                    balance_output = data.get("output1", [])[0] if data.get("output1") else {}
-                elif data.get("output2") and len(data.get("output2")) > 0:
-                    # 모의투자 - output2에 계좌 정보가 있고 종목 정보가 별도 API로 제공될 수 있음
-                    balance_output = data.get("output2", [])[0] if data.get("output2") else {}
-                
-                # 계좌 기본 정보 추출 (필드명이 모의투자와 실전투자 간에 다를 수 있으므로 대응)
-                deposit = int(balance_output.get("prvs_rcdl_excc_amt", 0))  # 예수금
-                available_deposit = int(balance_output.get("nxdy_excc_amt", 0))  # 출금가능금액
-                total_eval = int(balance_output.get("tot_evlu_amt", 0))  # 총평가금액
-                d2_deposit = int(balance_output.get("d2_auto_rdpt_amt", 0))  # D+2예수금
-                
+                # 초기 account_info 설정
                 account_info = {
-                    "예수금": deposit,
-                    "D+2예수금": d2_deposit,
-                    "출금가능금액": available_deposit,
-                    "주문가능금액": deposit,  # 모의투자는 주문가능금액이 예수금과 동일한 경우가 많음
-                    "총평가금액": total_eval,
+                    "예수금": 0,
+                    "D+2예수금": 0,
+                    "출금가능금액": 0,
+                    "주문가능금액": 0,
+                    "총평가금액": 0,
                     "timestamp": timestamp
                 }
+                
+                # 응답 데이터에서 잔고 정보 추출
+                if data.get("output1") and len(data.get("output1")) > 0:
+                    # 실전투자 또는 기존 구조
+                    balance_output1 = data.get("output1", [])[0] if data.get("output1") else {}
+                    
+                    # 기존 파싱 로직
+                    account_info["예수금"] = int(balance_output1.get("dnca_tot_amt", 0))
+                    account_info["D+2예수금"] = int(balance_output1.get("d2_auto_rdpt_amt", 0))
+                    account_info["출금가능금액"] = int(balance_output1.get("nxdy_excc_amt", 0))
+                    account_info["주문가능금액"] = int(balance_output1.get("prvs_rcdl_excc_amt", 0))
+                    account_info["총평가금액"] = int(balance_output1.get("tot_evlu_amt", 0))
+                    
+                # output2에서 추가 정보 파싱 (중요)
+                if data.get("output2") and len(data.get("output2")) > 0:
+                    balance_output2 = data.get("output2", [])[0]
+                    
+                    # output1에서 파싱된 데이터가 없거나 중요 필드가 0인 경우, output2에서 데이터 가져옴
+                    if account_info["예수금"] == 0:
+                        account_info["예수금"] = int(balance_output2.get("dnca_tot_amt", 0))
+                    
+                    if account_info["출금가능금액"] == 0:
+                        account_info["출금가능금액"] = int(balance_output2.get("nxdy_excc_amt", 0))
+                    
+                    if account_info["주문가능금액"] == 0:
+                        # 주문가능금액은 prvs_rcdl_excc_amt 필드에 있음
+                        account_info["주문가능금액"] = int(balance_output2.get("prvs_rcdl_excc_amt", 0))
+                    
+                    if account_info["총평가금액"] == 0:
+                        account_info["총평가금액"] = int(balance_output2.get("tot_evlu_amt", 0))
+                    
+                    # D+2예수금이 없으면 출금가능금액으로 대체
+                    if account_info["D+2예수금"] == 0:
+                        account_info["D+2예수금"] = account_info["출금가능금액"]
                 
                 # 잔고 상세 정보 로깅
                 self.logger.info(f"계좌 잔고 조회 성공: 예수금 {account_info['예수금']:,}원, "
@@ -1168,12 +1186,11 @@ class KISAPI(BrokerBase):
             return {}
             
         try:
+            # API 호출 속도 제한 준수
+            ensure_api_rate_limit("get_order_status", self.real_trading)
+            
             # 주문 조회 URL
             url = urljoin(self.base_url, "uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl")
-            
-            # 8자리 계좌번호 형식으로 변환
-            account_no_prefix = account_number[:3]
-            account_no_postfix = account_number[3:]
             
             # TR ID 가져오기
             tr_id = self._get_tr_id("order_status")
@@ -1187,59 +1204,89 @@ class KISAPI(BrokerBase):
                 "tr_id": tr_id
             }
             
+            # 계좌번호와 상품코드를 분리
+            # 예: 계좌번호가 "5015123456" 인 경우
+            # CANO: "50151234" (앞 8자리)
+            # ACNT_PRDT_CD: "01" (상품코드 - 주식은 01)
+            
+            # 먼저 계좌번호에 상품코드가 포함되어 있는지 확인
+            if len(account_number) >= 10:
+                cano = account_number[:-2]  # 계좌번호 앞 부분
+                acnt_prdt_cd = account_number[-2:]  # 상품코드 (마지막 2자리)
+            else:
+                # 10자리 미만이면 상품코드는 기본 "01"로 설정
+                cano = account_number
+                acnt_prdt_cd = self.product_code
+                
+            # 로깅을 통해 계좌번호 처리 확인
+            logger.debug(f"주문 상태 조회 - 계좌번호 분리: CANO={cano}, ACNT_PRDT_CD={acnt_prdt_cd}")
+            
             # 요청 파라미터
             params = {
-                "CANO": account_no_prefix,
-                "ACNT_PRDT_CD": account_no_postfix,
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
                 "CTX_AREA_FK100": "",
                 "CTX_AREA_NK100": "",
                 "INQR_DVSN_1": "0",
                 "INQR_DVSN_2": "0"
             }
             
+            # API 호출 전 전체 파라미터 로깅
+            logger.debug(f"주문 상태 조회 요청 파라미터: {params}")
+            
             # 요청 보내기
             response = requests.get(url, headers=headers, params=params)
-            response_data = response.json()
             
-            if response.status_code == 200 and response_data.get('rt_cd') == '0':
-                order_info = {}
-                orders = response_data.get('output', [])
+            # 응답 상태 코드와 내용 로깅
+            logger.debug(f"주문 상태 조회 응답 상태: {response.status_code}")
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                logger.debug(f"주문 상태 조회 응답 데이터: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
                 
-                # 주문번호로 일치하는 주문 찾기
-                for order in orders:
-                    if order.get('odno') == order_number:
-                        code = order.get('pdno', '')
-                        name = order.get('prdt_name', '')
-                        order_status = "접수완료" if order.get('rmn_qty', '0') == order.get('ord_qty', '0') else "일부체결"
-                        order_quantity = int(order.get('ord_qty', '0'))
-                        executed_quantity = order_quantity - int(order.get('rmn_qty', '0'))
-                        remaining_quantity = int(order.get('rmn_qty', '0'))
-                        order_price = int(order.get('ord_unpr', '0'))
-                        
-                        order_info = {
-                            "주문번호": order_number,
-                            "종목코드": code,
-                            "종목명": name,
-                            "주문상태": order_status,
-                            "주문수량": order_quantity,
-                            "체결수량": executed_quantity,
-                            "미체결수량": remaining_quantity,
-                            "주문가격": order_price
-                        }
-                        
-                        logger.info(f"주문 상태 조회 성공: {order_info}")
-                        return order_info
-                
-                logger.warning(f"해당 주문번호({order_number})의 주문 정보를 찾을 수 없습니다.")
-                return {}
+                if response_data.get('rt_cd') == '0':
+                    order_info = {}
+                    orders = response_data.get('output', [])
+                    
+                    # 주문번호로 일치하는 주문 찾기
+                    for order in orders:
+                        if order.get('odno') == order_number:
+                            code = order.get('pdno', '')
+                            name = order.get('prdt_name', '')
+                            order_status = "접수완료" if order.get('rmn_qty', '0') == order.get('ord_qty', '0') else "일부체결"
+                            order_quantity = int(order.get('ord_qty', '0'))
+                            executed_quantity = order_quantity - int(order.get('rmn_qty', '0'))
+                            remaining_quantity = int(order.get('rmn_qty', '0'))
+                            order_price = int(order.get('ord_unpr', '0'))
+                            
+                            order_info = {
+                                "주문번호": order_number,
+                                "종목코드": code,
+                                "종목명": name,
+                                "주문상태": order_status,
+                                "주문수량": order_quantity,
+                                "체결수량": executed_quantity,
+                                "미체결수량": remaining_quantity,
+                                "주문가격": order_price
+                            }
+                            
+                            logger.info(f"주문 상태 조회 성공: {order_info}")
+                            return order_info
+                    
+                    logger.warning(f"해당 주문번호({order_number})의 주문 정보를 찾을 수 없습니다.")
+                    return {}
+                else:
+                    err_code = response_data.get('rt_cd')
+                    err_msg = response_data.get('msg1')
+                    logger.error(f"주문 상태 조회 실패: [{err_code}] {err_msg}")
+                    return {}
             else:
-                err_code = response_data.get('rt_cd')
-                err_msg = response_data.get('msg1')
-                logger.error(f"주문 상태 조회 실패: [{err_code}] {err_msg}")
+                logger.error(f"주문 상태 조회 실패: HTTP {response.status_code} - {response.text}")
                 return {}
                 
         except Exception as e:
             logger.error(f"주문 상태 조회 실패: {e}")
+            logger.error(traceback.format_exc())  # 상세 에러 스택트레이스 출력
             return {}
             
     def switch_to_real(self):
@@ -1297,6 +1344,28 @@ class KISAPI(BrokerBase):
             dict: 매수 주문 결과
         """
         try:
+            # price가 None인 경우를 처리 - 시장가 주문이면 0으로, 지정가 주문이면 현재가 조회
+            if price is None:
+                if order_type.upper() == 'MARKET':
+                    price = 0
+                    logger.info("시장가 주문으로 price를 0으로 설정합니다.")
+                else:
+                    # 지정가 주문인데 가격이 없으면 현재가로 조회하여 설정
+                    try:
+                        price = self.get_current_price(symbol) or 0
+                        logger.info(f"지정가 주문의 가격을 현재가 {price:,}원으로 설정합니다.")
+                    except Exception as price_error:
+                        logger.error(f"현재가 조회 실패, price를 0으로 설정: {price_error}")
+                        price = 0
+            
+            # price가 정수형이 아닌 경우 정수로 변환
+            if not isinstance(price, int) and price is not None:
+                try:
+                    price = int(price)
+                except (ValueError, TypeError):
+                    logger.error(f"유효하지 않은 가격 형식: {price}, 0으로 설정합니다.")
+                    price = 0
+
             # 모의투자에서의 시장 제한 확인
             if not self.real_trading:
                 # 미국 주식 거래 시도 시 명확한 오류 메시지 제공
@@ -1855,4 +1924,84 @@ class KISAPI(BrokerBase):
         Returns:
             bool: 실전투자면 True, 모의투자면 False
         """
-        return not self.use_virtual_url
+        return self.real_trading
+    
+    def get_headers(self, tr_id):
+        """
+        API 요청 헤더 생성
+        
+        Args:
+            tr_id: TR ID
+            
+        Returns:
+            dict: 헤더 정보
+        """
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self.access_token}",
+            "appkey": self.app_key,
+            "appsecret": self.app_secret,
+            "tr_id": tr_id,
+            "custtype": "P"
+        }
+        return headers
+        
+    def check_error(self, result):
+        """
+        API 응답의 에러 확인
+        
+        Args:
+            result: API 응답 결과
+            
+        Returns:
+            bool: 에러 존재 여부
+        """
+        if not result:
+            self.logger.error("API 응답이 비어 있습니다.")
+            return True
+            
+        rt_cd = result.get('rt_cd')
+        if rt_cd != '0':
+            self.logger.error(f"API 오류 발생: [{rt_cd}] {result.get('msg1')}")
+            return True
+            
+        return False
+        
+    def wait_for_order_execution(self, order_number, timeout=10):
+        """
+        주문 체결 대기 및 확인
+        
+        Args:
+            order_number: 주문번호
+            timeout: 타임아웃 시간(초)
+            
+        Returns:
+            dict: 체결 결과 정보
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            # 주문 상태 확인
+            order_status = self.get_order_status(order_number)
+            
+            if not order_status:
+                # 일시적인 조회 실패인 경우 재시도
+                time.sleep(1)
+                continue
+                
+            # 주문 상태에 따라 처리
+            if order_status.get('미체결수량', 0) == 0:
+                # 전체 체결된 경우
+                self.logger.info(f"주문 전체 체결 완료: {order_number}")
+                return {'status': 'FILLED', 'detail': order_status}
+            
+            # 일부만 체결된 경우
+            if order_status.get('체결수량', 0) > 0:
+                self.logger.info(f"주문 일부 체결: {order_number}, 체결수량: {order_status.get('체결수량')}")
+                
+            # 대기
+            time.sleep(1)
+            
+        # 타임아웃 - 체결 완료되지 않음
+        self.logger.warning(f"주문 체결 대기 타임아웃: {order_number}")
+        last_status = self.get_order_status(order_number)
+        return {'status': 'PARTIALLY_FILLED', 'detail': last_status}

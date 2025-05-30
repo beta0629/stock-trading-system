@@ -22,6 +22,19 @@ from src.utils.time_utils import (
 # 로깅 설정
 logger = logging.getLogger('AutoTrader')
 
+# None 값 안전 포맷팅 유틸리티 함수
+def safe_format(value, format_spec=","):
+    """None 값도 안전하게 포맷팅하는 함수"""
+    if value is None:
+        return "0"
+    if isinstance(value, (int, float)):
+        try:
+            return f"{value:{format_spec}}"
+        except (ValueError, TypeError):
+            return str(value)
+    # 이미 문자열인 경우는 그대로 반환 (포맷팅 시도하지 않음)
+    return str(value)
+
 class TradeAction(Enum):
     """매매 동작 정의"""
     BUY = "BUY"
@@ -135,10 +148,10 @@ class AutoTrader:
                 
                 # 최신 잔고 정보로 업데이트됐는지 확인
                 if "timestamp" in balance and balance["timestamp"] == timestamp:
-                    self.logger.info(f"계좌 잔고 갱신 성공: 주문가능금액 {self.available_cash:,}원")
+                    self.logger.info(f"계좌 잔고 갱신 성공: 주문가능금액 {safe_format(self.available_cash)}원")
                     return balance
                 else:
-                    self.logger.info(f"잔고 정보가 최신 상태로 확인됨: {self.available_cash:,}원")
+                    self.logger.info(f"잔고 정보가 최신 상태로 확인됨: {safe_format(self.available_cash)}원")
                     return balance
         
         self.logger.warning("계좌 잔고 새로고침 시도 후에도 최신 정보를 가져오지 못했습니다")
@@ -154,17 +167,17 @@ class AutoTrader:
                 # 출금가능금액이 있으면 사용
                 if "출금가능금액" in account_info and account_info["출금가능금액"] > 0:
                     self.available_cash = account_info["출금가능금액"]
-                    logger.info(f"모의 계좌 출금가능금액으로 설정: {self.available_cash:,}원")
+                    logger.info(f"모의 계좌 출금가능금액으로 설정: {safe_format(self.available_cash)}원")
                 
                 # D+2예수금이 있으면 사용
                 elif "D+2예수금" in account_info and account_info["D+2예수금"] > 0:
                     self.available_cash = account_info["D+2예수금"]
-                    logger.info(f"모의 계좌 D+2예수금으로 설정: {self.available_cash:,}원")
+                    logger.info(f"모의 계좌 D+2예수금으로 설정: {safe_format(self.available_cash)}원")
                 
                 # 예수금 사용
                 else:
                     self.available_cash = account_info.get("예수금", 0)
-                    logger.info(f"모의 계좌 예수금으로 설정: {self.available_cash:,}원")
+                    logger.info(f"모의 계좌 예수금으로 설정: {safe_format(self.available_cash)}원")
             else:
                 # 실제 투자 계좌는 기존 방식 유지
                 self.available_cash = account_info.get("출금가능금액", 0)
@@ -172,7 +185,7 @@ class AutoTrader:
             # 매수 금액 제한 적용
             max_available = self.account_balance * self.max_buy_ratio
             if self.available_cash > max_available:
-                logger.info(f"매수 금액 제한 적용: {self.available_cash:,}원 -> {max_available:,}원 (총 자산의 {self.max_buy_ratio*100}%)")
+                logger.info(f"매수 금액 제한 적용: {safe_format(self.available_cash)}원 -> {safe_format(max_available)}원 (총 자산의 {self.max_buy_ratio*100}%)")
                 self.available_cash = max_available
                 
         except Exception as e:
@@ -322,12 +335,12 @@ class AutoTrader:
                 # 주문가능금액이 있으면 해당 값을 우선 사용
                 if "주문가능금액" in balance_info and balance_info["주문가능금액"] > 0:
                     available_cash = balance_info["주문가능금액"]
-                    logger.info(f"사용 가능 현금(주문가능금액): {available_cash:,}원")
+                    logger.info(f"사용 가능 현금(주문가능금액): {safe_format(available_cash)}원")
                     return available_cash
                 # 다음으로 예수금을 사용
                 elif "예수금" in balance_info and balance_info["예수금"] > 0:
                     available_cash = balance_info["예수금"]
-                    logger.info(f"사용 가능 현금(예수금): {available_cash:,}원")
+                    logger.info(f"사용 가능 현금(예수금): {safe_format(available_cash)}원")
                     return available_cash
             
             # 계좌 잔고를 불러오지 못한 경우, 현재 계좌 잔고 사용
@@ -407,6 +420,9 @@ class AutoTrader:
             # 디버그 로깅: 종목명 확인
             logger.info(f"주문 실행: 종목명 확인 - 심볼: {symbol}, 종목명: {stock_name}")
             
+            # 주문 시작 시간 기록
+            order_start_time = time.time()
+            
             order_info = {
                 "symbol": symbol,
                 "symbol_name": stock_name,
@@ -419,6 +435,9 @@ class AutoTrader:
                 "status": OrderStatus.RECEIVED.value
             }
             
+            # 상세 로깅: 주문정보 초기값 확인
+            logger.info(f"주문 정보 초기화: {symbol} {action.value} {quantity}주, 주문타입: {order_type.value}, 지정가격: {price}")
+            
             # 시뮬레이션 모드 체크
             if self.simulation_mode:
                 # 시뮬레이션 모드에서는 주문을 실행하지 않고 성공으로 가정
@@ -428,6 +447,7 @@ class AutoTrader:
                 if not price and market == "KR":
                     # 현재가로 시장가 주문 시뮬레이션
                     price = self.data_provider.get_current_price(symbol, market)
+                    logger.info(f"[시뮬레이션] 시장가 주문을 위한 현재가 조회: {symbol} = {price}원")
                 
                 # 계좌 잔고 (시뮬레이션)
                 balance = self._get_available_cash()
@@ -508,7 +528,7 @@ class AutoTrader:
                                 self.trade_stats["total_loss"] += abs(profit_loss)
                                 self.trade_stats["max_loss"] = max(self.trade_stats["max_loss"], abs(profit_loss))
                                 
-                            logger.info(f"[시뮬레이션] {stock_name}({symbol}) 매도 완료: 손익 {profit_loss:,.0f}원 ({profit_loss_pct:.2f}%)")
+                            logger.info(f"[시뮬레이션] {stock_name}({symbol}) 매도 완료: 손익 {safe_format(profit_loss)}원 ({profit_loss_pct:.2f}%)")
                             
                             # 매도 수량 및 평균단가 설정
                             sell_quantity = pos['quantity']
@@ -567,7 +587,11 @@ class AutoTrader:
                 
             else:
                 # 실제 주문 실행
-                logger.info(f"주문 실행: {action.value} {stock_name}({symbol}) x {quantity}주")
+                logger.info(f"주문 실행: {action.value} {stock_name}({symbol}) x {quantity}주, 주문유형: {order_type.value}")
+                if price:
+                    logger.info(f"지정가 주문: {price}원")
+                else:
+                    logger.info(f"시장가 주문 (가격 미지정)")
                 
                 # 거래 전 보유 정보
                 prev_quantity = 0
@@ -579,14 +603,17 @@ class AutoTrader:
                     if symbol in positions:
                         prev_quantity = positions[symbol].get('quantity', 0)
                         prev_avg_price = positions[symbol].get('avg_price', 0)
-                        logger.info(f"기존 보유: {symbol} {prev_quantity}주, 평균단가: {prev_avg_price:,.0f}원")
+                        logger.info(f"기존 보유: {symbol} {prev_quantity}주, 평균단가: {safe_format(prev_avg_price)}원")
                     
                     # 현재 계좌 잔고
                     account_info = self.broker.get_balance()
                     balance_before = account_info.get('예수금', 0)
-                    logger.info(f"주문 전 계좌 잔고: {balance_before:,.0f}원")
+                    logger.info(f"주문 전 계좌 잔고: {safe_format(balance_before)}원")
                 except Exception as broker_error:
                     logger.error(f"포지션 정보 조회 중 오류: {broker_error}")
+                
+                # API 호출 정보 기록
+                logger.info(f"증권사 API 호출: {action.value} {symbol}, 수량: {quantity}, 가격: {price}, 주문유형: {order_type.value}")
                 
                 # 주문 실행
                 if action == TradeAction.BUY:
@@ -594,75 +621,165 @@ class AutoTrader:
                 else:
                     order_result = self.broker.sell(symbol, quantity, price, order_type.value, market)
                 
+                # 주문 결과 로깅
+                logger.info(f"증권사 API 주문 응답: {order_result}")
+                
                 # 주문 결과 업데이트
                 order_info.update(order_result)
                 
-                # 주문 체결 확인 대기 (실시간 체결 정보를 받을 수 있는 경우)
-                logger.info(f"주문 체결 확인 대기 중...")
-                time.sleep(0.5)  # 체결 확인을 위해 잠시 대기
+                # 주문 체결 확인을 위한 대기시간 설정 (증가)
+                wait_time = 2.0  # 2초로 증가
+                logger.info(f"주문 체결 확인 대기 중... ({wait_time}초)")
+                time.sleep(wait_time)
                 
                 # 주문 체결 상태 확인
                 order_no = order_result.get('order_no', '')
                 if order_no:
+                    logger.info(f"주문번호: {order_no} - 상태 확인 시작")
                     try:
-                        order_status = self.broker.get_order_status(order_no)
-                        logger.info(f"주문 상태: {order_status}")
-                        
-                        # 주문 상태 정보를 order_info에 추가
-                        order_info.update({
-                            "executed_quantity": order_status.get('체결수량', 0),
-                            "executed_price": order_status.get('체결단가', price),
-                            "remain_qty": order_status.get('미체결수량', 0),
-                            "order_status": order_status.get('주문상태', '접수')
-                        })
+                        # 모의투자 모드에서는 주문상태 조회 API가 지원되지 않으므로 건너뜀
+                        if self.simulation_mode or not self.broker.real_trading:
+                            logger.info(f"모의투자 모드에서는 주문상태 조회를 지원하지 않습니다. 체결 상태 확인을 건너뜁니다.")
+                            # 모의투자에서는 항상 체결된 것으로 가정
+                            # 실제 현재가를 조회하여 체결가로 사용
+                            if price is None:
+                                try:
+                                    # 현재가 조회 시도
+                                    current_price = self.data_provider.get_current_price(symbol, market)
+                                    logger.info(f"모의투자 모드: 현재가 조회 결과 = {current_price}원")
+                                    if current_price and current_price > 0:
+                                        price = current_price
+                                    else:
+                                        logger.warning(f"모의투자 모드: 현재가 조회 실패, 기본가 사용")
+                                except Exception as e:
+                                    logger.warning(f"모의투자 모드: 현재가 조회 중 오류: {e}")
+                            
+                            order_info.update({
+                                "executed_quantity": quantity,
+                                "executed_price": price,
+                                "remain_qty": 0,
+                                "order_status": '체결완료(모의)'
+                            })
+                        else:
+                            # 실제 투자에서 상태 조회
+                            logger.info(f"실제 주문상태 조회 시도: 주문번호 {order_no}")
+                            order_status = self.broker.get_order_status(order_no)
+                            logger.info(f"주문 상태 조회 결과: {order_status}")
+                            
+                            # 상세 로깅: 체결 정보
+                            executed_qty = order_status.get('체결수량', 0)
+                            executed_price = order_status.get('체결단가', None)
+                            remain_qty = order_status.get('미체결수량', quantity)
+                            order_status_text = order_status.get('주문상태', '확인중')
+                            
+                            logger.info(f"체결 정보 상세: 체결수량={executed_qty}, 체결단가={executed_price}, " +
+                                        f"미체결수량={remain_qty}, 주문상태={order_status_text}")
+                            
+                            # 주문 상태 정보를 order_info에 추가
+                            order_info.update({
+                                "executed_quantity": executed_qty,
+                                "executed_price": executed_price,
+                                "remain_qty": remain_qty,
+                                "order_status": order_status_text
+                            })
+                            
+                            # 체결 가격이 없는 경우 현재가로 대체 시도
+                            if executed_price is None or executed_price == 0:
+                                logger.warning(f"체결가격이 없음. 현재가 조회 시도")
+                                try:
+                                    current_price = self.data_provider.get_current_price(symbol, market)
+                                    if current_price and current_price > 0:
+                                        logger.info(f"현재가 조회 결과: {current_price}원 - 체결가로 사용")
+                                        order_info["executed_price"] = current_price
+                                    else:
+                                        logger.warning(f"현재가 조회 결과 유효하지 않음: {current_price}")
+                                except Exception as e:
+                                    logger.error(f"현재가 조회 중 오류: {e}")
                     except Exception as e:
                         logger.error(f"주문 상태 확인 중 오류: {e}")
+                        logger.error(traceback.format_exc())
+                        # 오류 발생 시에도 기본 정보 설정
+                        order_info.update({
+                            "executed_quantity": quantity,
+                            "executed_price": price,
+                            "remain_qty": 0,
+                            "order_status": '확인불가'
+                        })
                 
                 # 거래 후 정보 조회
                 try:
                     # 최소 5초 이상 대기하여 API 캐싱 이슈 방지
-                    logger.info(f"계좌 정보 갱신 대기 중 (5초)...")
-                    time.sleep(5)
+                    wait_time_after_order = 5
+                    logger.info(f"계좌 정보 갱신 대기 중 ({wait_time_after_order}초)...")
+                    time.sleep(wait_time_after_order)
                     
                     # 거래 후 잔고 정보 강제 갱신 (여러번 시도)
                     account_info = None
                     retry_count = 0
                     max_retries = 3
+                    
+                    logger.info("계좌 정보 갱신 시작...")
                     while retry_count < max_retries:
                         try:
                             # 캐시를 회피하기 위한 추가 파라미터 사용 (타임스탬프)
-                            account_info = self.broker.get_balance(force_refresh=True, timestamp=int(time.time()))
+                            timestamp_cache_buster = int(time.time())
+                            logger.info(f"잔고 조회 시도 #{retry_count+1}: 타임스탬프={timestamp_cache_buster}")
+                            account_info = self.broker.get_balance(force_refresh=True, timestamp=timestamp_cache_buster)
                             balance_after = account_info.get('예수금', 0)
+                            avail_cash_after = account_info.get('주문가능금액', 0)
                             
-                            # 잔고 정보가 갱신되었는지 확인 (매수인 경우 감소, 매도인 경우 증가)
+                            logger.info(f"잔고 조회 결과: 예수금={balance_after}, 주문가능금액={avail_cash_after}")
+                            
+                            # 잔고 정보가 갱신되었는지 확인 (예수금 또는 주문가능금액 변화 확인)
                             if action == TradeAction.BUY:
-                                if balance_before > balance_after:
-                                    logger.info(f"계좌 잔고 변경 확인: {balance_before:,}원 -> {balance_after:,}원 (차이: {balance_before - balance_after:,}원)")
+                                # 매수: 예수금 또는 주문가능금액 감소 확인
+                                if balance_before > balance_after or \
+                                   (account_info.get('주문가능금액', 0) < account_info.get('주문가능금액', float('inf'))):
+                                    logger.info(f"계좌 잔고 변경 확인: 예수금 {safe_format(balance_before)}원 -> {safe_format(balance_after)}원")
+                                    logger.info(f"주문가능금액: {safe_format(avail_cash_after)}원")
                                     break
                             else:  # SELL
-                                if balance_before < balance_after:
-                                    logger.info(f"계좌 잔고 변경 확인: {balance_before:,}원 -> {balance_after:,}원 (차이: {balance_after - balance_before:,}원)")
+                                # 매도: 예수금 증가 또는 주문가능금액 증가 확인
+                                if balance_before < balance_after or \
+                                   (account_info.get('주문가능금액', 0) > account_info.get('주문가능금액', 0)):
+                                    logger.info(f"계좌 잔고 변경 확인: 예수금 {safe_format(balance_before)}원 -> {safe_format(balance_after)}원")
+                                    logger.info(f"주문가능금액: {safe_format(avail_cash_after)}원")
                                     break
                                 
                             # 변경이 감지되지 않으면 재시도
-                            logger.warning(f"계좌 잔고 변경이 감지되지 않음: {balance_before:,}원 -> {balance_after:,}원")
+                            logger.warning(f"계좌 잔고 변경이 감지되지 않음: 예수금 {safe_format(balance_before)}원 -> {safe_format(balance_after)}원")
+                            logger.info(f"주문가능금액: {safe_format(avail_cash_after)}원")
                             retry_count += 1
-                            time.sleep(2)  # 2초 대기 후 재시도
+                            retry_delay = 2 * (retry_count + 1)
+                            logger.info(f"잔고 조회 재시도 #{retry_count+1} 대기 중... ({retry_delay}초)")
+                            time.sleep(retry_delay)  # 시도마다 대기 시간 증가
                         except Exception as e:
-                            logger.error(f"계좌 잔고 조회 재시도 중 오류: {e}")
+                            logger.error(f"계좌 잔고 조회 재시도 #{retry_count+1} 중 오류: {e}")
                             retry_count += 1
                             time.sleep(2)
                     
                     # 포지션 정보 갱신
+                    logger.info("포지션 정보 갱신 시도...")
                     updated_positions = self.broker.get_positions()
                     
                     total_quantity = 0
-                    new_avg_price = 0
+                    new_avg_price = 0;
+                    
+                    # 포지션 상세 정보 로깅
+                    if updated_positions:
+                        logger.info(f"포지션 정보 갱신 결과: {len(updated_positions)}개 종목 보유")
+                        for pos_symbol, pos_info in updated_positions.items():
+                            logger.info(f"포지션: {pos_symbol}, 수량={pos_info.get('quantity', 0)}, " +
+                                        f"평단가={pos_info.get('avg_price', 0)}, 현재가={pos_info.get('current_price', 0)}")
+                    else:
+                        logger.info("갱신된 포지션 정보 없음")
                     
                     if symbol in updated_positions:
                         total_quantity = updated_positions[symbol].get('quantity', 0)
                         new_avg_price = updated_positions[symbol].get('avg_price', 0)
-                        logger.info(f"거래 후 보유: {symbol} {total_quantity}주, 평균단가: {new_avg_price:,.0f}원")
+                        logger.info(f"거래 후 보유: {symbol} {total_quantity}주, 평균단가: {safe_format(new_avg_price)}원")
+                    else:
+                        logger.info(f"거래 후 {symbol} 보유 없음")
                     
                     # 거래 금액 및 수수료 계산
                     executed_qty = order_info.get('executed_quantity', 0)
@@ -674,15 +791,35 @@ class AutoTrader:
                         logger.warning("체결수량이 None입니다. 기본값 0으로 설정합니다.")
                     
                     if executed_price is None:
-                        executed_price = 0
-                        logger.warning("체결가격이 None입니다. 기본값 0으로 설정합니다.")
+                        logger.warning("체결가격이 None입니다. 매매 타입, 시장, 현재 시간 정보 확인:")
+                        logger.warning(f"매매 타입: {action.value}, 시장: {market}, 시간: {get_current_time()}")
+                        logger.warning(f"주문 타입: {order_type.value}, 지정가격: {price}, 주문번호: {order_no}")
+                        
+                        # 체결가격 없음 - 현재가 또는 주문가격으로 대체
+                        if price is not None and price > 0:
+                            logger.info(f"체결가격 대체: 주문 시 지정가격 {price}원 사용")
+                            executed_price = price
+                        else:
+                            try:
+                                current_price = self.data_provider.get_current_price(symbol, market)
+                                if current_price and current_price > 0:
+                                    logger.info(f"체결가격 대체: 현재가 {current_price}원 사용")
+                                    executed_price = current_price
+                                else:
+                                    logger.warning("현재가 조회 실패, 기본값 0 사용")
+                                    executed_price = 0
+                            except Exception as e:
+                                logger.error(f"현재가 조회 중 오류, 기본값 0 사용: {e}")
+                                executed_price = 0
                     
                     # 안전한 곱셈 연산
                     trade_amount = executed_qty * executed_price
+                    logger.info(f"거래 금액 계산: {executed_qty}주 x {executed_price}원 = {trade_amount}원")
                     
                     # 예상 수수료 계산 (실제 수수료는 증권사마다 다를 수 있음)
                     fee_rate = getattr(self.config, 'FEE_RATE', 0.00015)  # 기본 0.015%
                     fee = int(trade_amount * fee_rate)
+                    logger.info(f"거래 수수료: {trade_amount}원 x {fee_rate:.6f} = {fee}원")
                     
                     # 거래 정보 추가
                     trade_info = {
@@ -706,11 +843,14 @@ class AutoTrader:
                     if action == TradeAction.SELL and prev_avg_price > 0:
                         trade_info["profit_loss"] = (executed_price - prev_avg_price) * executed_qty  # 매매에 따른 손익
                         trade_info["profit_loss_pct"] = ((executed_price / prev_avg_price) - 1) * 100  # 매매 손익률
+                        logger.info(f"매도 손익: {trade_info['profit_loss']}원 ({trade_info['profit_loss_pct']:.2f}%)")
                     
-                    order_info["trade_info"] = trade_info
+                    order_info["trade_info"] = trade_info;
+                    logger.info(f"거래 정보 생성 완료: 체결가={executed_price}, 체결수량={executed_qty}")
                     
                 except Exception as e:
                     logger.error(f"거래 후 정보 조회 중 오류: {e}")
+                    logger.error(traceback.format_exc())
                     # 오류가 발생하더라도 기본 거래 정보는 설정
                     order_info["trade_info"] = {
                         "quantity": quantity,
@@ -719,38 +859,128 @@ class AutoTrader:
                     }
                 
                 # 주문 완료 후 계좌 잔고 강제 갱신 (매수/매도 모두)
+                logger.info("주문 완료 후 계좌 잔고 최종 갱신 시도")
                 self._load_account_balance(force_refresh=True)
             
             # 주문 이력에 추가
             self.order_history.append(order_info)
             
+            # 주문 완료 소요 시간 측정 및 기록
+            order_end_time = time.time()
+            order_duration = order_end_time - order_start_time
+            logger.info(f"주문 처리 완료: 소요시간 {order_duration:.2f}초")
+            
             # 알림 발송
             if self.notifier:
-                # order_info에 trade_info가 있으면 이를 포함하여 알림
-                signal_data = {
-                    'symbol': symbol,
-                    'name': stock_name,  # 종목명 추가
-                    'price': price,
-                    'market': market,
-                    'signals': [{
-                        'type': action.value,
-                        'strength': 'STRONG',
-                        'confidence': 0.9,
-                        'date': get_current_time().strftime("%Y-%m-%d")
-                    }],
-                    'trade_info': order_info.get('trade_info', {})
-                }
-                
-                # 데이터 구조 확인 로그
-                logger.info(f"알림 데이터 확인: symbol={signal_data['symbol']}, name={signal_data['name']}")
-                
-                self.notifier.send_signal_notification(signal_data)
+                try:
+                    # 가격 데이터 안전하게 포맷팅 (None 방지)
+                    formatted_price = safe_format(price)
+                    trade_amount = 0
+                    
+                    if "trade_info" in order_info:
+                        trade_info = order_info["trade_info"]
+                        if "trade_amount" in trade_info:
+                            trade_amount = trade_info["trade_amount"]
+                    
+                    formatted_trade_amount = safe_format(trade_amount)
+                    account_balance = safe_format(self.broker.get_balance().get("주문가능금액", 0))
+                    
+                    # order_info에 trade_info가 있으면 이를 포함하여 알림
+                    signal_data = {
+                        'symbol': symbol,
+                        'name': stock_name,  # 종목명 추가
+                        'price': formatted_price,  # 포맷팅된 가격
+                        'market': market,
+                        'signals': [{
+                            'type': action.value,
+                            'strength': 'STRONG',
+                            'confidence': 0.9,
+                            'date': get_current_time().strftime("%Y-%m-%d")
+                        }],
+                        'trade_info': {
+                            "quantity": quantity,
+                            "price": formatted_price,
+                            "total_amount": formatted_trade_amount,
+                            "account_balance": account_balance,
+                            "order_no": order_info.get("trade_info", {}).get("order_no", ""),
+                            "transaction_time": get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    }
+                    
+                    # 매수/매도 이전 보유 정보 추가
+                    if "trade_info" in order_info:
+                        signal_data['trade_info']["prev_quantity"] = order_info["trade_info"].get("prev_quantity", 0)
+                        signal_data['trade_info']["total_quantity"] = order_info["trade_info"].get("total_quantity", quantity)
+                        
+                        # 체결가격 정보 추가
+                        if "executed_price" in order_info["trade_info"]:
+                            executed_price = order_info["trade_info"]["executed_price"]
+                            signal_data['trade_info']["executed_price"] = safe_format(executed_price)
+                            logger.info(f"알림 데이터에 체결가격 추가: {safe_format(executed_price)}원")
+                        
+                        # 매도의 경우 손익 정보 추가
+                        if action == TradeAction.SELL:
+                            signal_data['trade_info']["profit_loss"] = safe_format(order_info["trade_info"].get("profit_loss", 0))
+                            signal_data['trade_info']["profit_loss_pct"] = order_info["trade_info"].get("profit_loss_pct", 0)
+                    
+                    # 데이터 구조 확인 로그
+                    logger.info(f"알림 데이터 확인: symbol={signal_data['symbol']}, name={signal_data['name']}")
+                    logger.debug(f"알림 데이터 상세: {signal_data}")
+                    
+                    # 알림 발송 시도 및 결과 확인
+                    notification_result = self.notifier.send_signal_notification(signal_data)
+                    
+                    # 알림 발송 결과 로깅
+                    if notification_result:
+                        logger.info(f"{symbol} 매매 알림 발송 성공")
+                    else:
+                        logger.warning(f"{symbol} 매매 알림 발송 실패, 대체 메시지 전송 시도")
+                        
+                        # 대체 메시지 발송 - 포맷팅 개선
+                        emoji = '🟢' if action == TradeAction.BUY else '🔴'
+                        action_text = '매수' if action == TradeAction.BUY else '매도'
+                        
+                        # 체결 정보 사용 (가능한 경우)
+                        if "trade_info" in order_info and "executed_price" in order_info["trade_info"]:
+                            executed_price = order_info["trade_info"]["executed_price"]
+                            executed_qty = order_info["trade_info"]["executed_qty"]
+                            fallback_message = f"{emoji} {action_text} 체결 알림: {stock_name}({symbol})\n"
+                            fallback_message += f"체결수량: {executed_qty}주\n"
+                            fallback_message += f"체결가격: {safe_format(executed_price)}원\n"
+                            fallback_message += f"체결금액: {formatted_trade_amount}원\n"
+                        else:
+                            # 체결 정보 없는 경우
+                            fallback_message = f"{emoji} {action_text} 알림: {stock_name}({symbol})\n"
+                            fallback_message += f"수량: {quantity}주\n"
+                            fallback_message += f"가격: {formatted_price}원\n"
+                            fallback_message += f"금액: {formatted_trade_amount}원\n"
+                        
+                        # 매도일 경우 손익 정보 추가
+                        if action == TradeAction.SELL and "trade_info" in order_info:
+                            profit_loss = order_info["trade_info"].get("profit_loss", 0)
+                            profit_loss_pct = order_info["trade_info"].get("profit_loss_pct", 0)
+                            fallback_message += f"손익: {safe_format(profit_loss)}원 ({profit_loss_pct:.2f}%)\n"
+                        
+                        fallback_message += f"계좌잔고: {account_balance}원\n"
+                        fallback_message += f"시간: {get_current_time_str()}"
+                        
+                        self.notifier.send_message(fallback_message)
+                except Exception as e:
+                    logger.error(f"매매 알림 발송 중 오류 발생: {e}")
+                    logger.error(traceback.format_exc())
+                    # 오류 발생 시에도 기본 메시지 전송
+                    try:
+                        formatted_price = safe_format(price)
+                        basic_message = f"{'🟢 매수' if action == TradeAction.BUY else '🔴 매도'}: {stock_name}({symbol}) {quantity}주 {formatted_price}원"
+                        self.notifier.send_message(basic_message)
+                    except:
+                        logger.error("대체 알림 발송도 실패했습니다.")
             
             return order_info
             
         except Exception as e:
             logger.error(f"주문 실행 중 오류 발생: {e}")
-            logger.debug(traceback.format_exc())
+            logger.error(traceback.format_exc())
             
             # 실패 정보 업데이트
             order_info["status"] = OrderStatus.REJECTED.value
@@ -774,7 +1004,7 @@ class AutoTrader:
             # 알림 메시지 구성
             if status == OrderStatus.EXECUTED.value:
                 message = f"🔔 주문 체결: {action} {symbol} x {quantity}주\n"
-                message += f"💰 체결가: {price:,.0f}원\n"
+                message += f"💰 체결가: {safe_format(price)}원\n"
                 message += f"⏱️ 시간: {get_current_time_str()}"
             else:
                 message = f"⚠️ 주문 상태 알림: {symbol} {action}\n"
@@ -809,11 +1039,11 @@ class AutoTrader:
                 if quantity <= 0 or avg_price <= 0:
                     logger.warning(f"{symbol} 포지션 데이터가 유효하지 않습니다. (수량: {quantity}, 평균단가: {avg_price}) - 손절매/익절 검사 건너뜀")
                     continue
-                    
+                
                 # 현재가 확인 (0이면 건너뛰기)
                 current_price = position.get('current_price', 0)
                 if current_price <= 0:
-                    logger.warning(f"{symbol} 현재가가 유효하지 않습니다. (현재가: {current_price}) - 손절매/익절 검사 건너뜀")
+                    logger.warning(f"{symbol} 현재가가 유효하지 않습니다. (현재가: {current_price}) - 손절매/익절 검사 건너뜁")
                     continue
                 
                 # 손익률 계산 (안전하게)
@@ -845,7 +1075,7 @@ class AutoTrader:
                         self.notifier.send_message(
                             f"🔴 손절매 실행: {symbol}\n"
                             f"손실: {profit_loss_pct:.2f}%\n"
-                            f"현재가: {current_price:,}원, 평단가: {avg_price:,}원\n"
+                            f"현재가: {safe_format(current_price)}원, 평단가: {safe_format(avg_price)}원\n"
                             f"⏱️ 시간: {get_current_time_str()}"
                         )
                 
@@ -867,7 +1097,7 @@ class AutoTrader:
                         self.notifier.send_message(
                             f"🟢 익절 실행: {symbol}\n"
                             f"이익: {profit_loss_pct:.2f}%\n"
-                            f"현재가: {current_price:,}원, 평단가: {avg_price:,}원\n"
+                            f"현재가: {safe_format(current_price)}원, 평단가: {safe_format(avg_price)}원\n"
                             f"⏱️ 시간: {get_current_time_str()}"
                         )
         except Exception as e:
@@ -1021,7 +1251,7 @@ class AutoTrader:
             total_profit_loss = sum(p.get('profit_loss', 0) for p in self.positions.values())
             total_profit_loss_pct = (total_profit_loss / (total_assets - total_profit_loss)) * 100 if (total_assets - total_profit_loss) > 0 else 0
             
-            # 포트폴리오 요약
+            # 포트폴리오 요약 (None 값 방지를 위해 safe_format 사용안함)
             summary = {
                 "timestamp": get_current_time().isoformat(),
                 "total_assets": total_assets,
@@ -1034,6 +1264,9 @@ class AutoTrader:
                 "position_count": len(self.positions),
                 "trade_stats": self.trade_stats
             }
+            
+            # 로그 출력 시 safe_format 사용
+            logger.info(f"포트폴리오 요약 생성: 총자산 {safe_format(total_assets)}원, 현금 {safe_format(cash)}원")
             
             return summary
         

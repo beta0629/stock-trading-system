@@ -480,6 +480,17 @@ class KakaoSender:
             
         symbol = signal_data['symbol']
         price = signal_data.get('price', signal_data.get('close', 0))
+        
+        # price가 문자열인 경우 숫자로 변환 (ValueError 방지)
+        try:
+            if isinstance(price, str):
+                price = float(price.replace(',', ''))  # 콤마 제거 후 변환
+            elif not isinstance(price, (int, float)):
+                price = 0  # 변환 불가능한 경우 기본값
+        except Exception as e:
+            logger.warning(f"가격 형식 변환 중 오류: {e}, 기본값 0으로 설정")
+            price = 0
+            
         signals = signal_data['signals']
         market = signal_data.get('market', 'KR')  # 기본값은 KR
         
@@ -512,6 +523,14 @@ class KakaoSender:
         # 증권사 API 관련 정보 (새로 추가됨)
         order_no = trade_info.get('order_no', '')  # 주문 번호
         executed_price = trade_info.get('executed_price', price)  # 체결 가격
+        
+        # executed_price가 문자열인 경우 숫자로 변환
+        try:
+            if isinstance(executed_price, str):
+                executed_price = float(executed_price.replace(',', ''))
+        except Exception:
+            executed_price = price  # 변환 실패 시 기본 price 값 사용
+            
         executed_qty = trade_info.get('executed_qty', 0)  # 체결 수량
         remain_qty = trade_info.get('remain_qty', 0)  # 미체결 수량
         order_status = trade_info.get('order_status', '')  # 주문 상태
@@ -530,7 +549,8 @@ class KakaoSender:
             else:
                 message += f"{symbol}\n"
                 
-            message += f"현재가: {price:,.0f}원"
+            # .0 제거를 위해 정수로 변환 후 천 단위 콤마를 표시
+            message += f"현재가: {int(price):,}원"
             
             # 신뢰도가 있으면 추가
             if confidence:
@@ -545,8 +565,8 @@ class KakaoSender:
             else:
                 message += f"{symbol}\n"
             
-            # 거래 가격 및 수량 정보
-            message += f"현재가: {price:,.0f}원"
+            # 거래 가격 및 수량 정보 - .0 제거를 위해 정수로 변환
+            message += f"현재가: {int(price):,}원"
             
             # 신뢰도가 있으면 추가
             if confidence:
@@ -562,15 +582,15 @@ class KakaoSender:
                 message += f"매도량: {trade_quantity:,}주\n"
                 message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
             
-            # 평균단가 (변동 있을 경우 이전 평단가 → 현재 평단가)
+            # 평균단가 (변동 있을 경우 이전 평단가 → 현재 평단가) - .0 제거를 위해 정수로 변환
             prev_avg_price = trade_info.get('prev_avg_price', 0)
             if prev_avg_price and prev_avg_price != avg_price:
-                message += f"평단가: {prev_avg_price:,.0f}원 → {avg_price:,.0f}원\n"
+                message += f"평단가: {int(prev_avg_price):,}원 → {int(avg_price):,}원\n"
             else:
-                message += f"평단가: {avg_price:,.0f}원\n"
+                message += f"평단가: {int(avg_price):,}원\n"
             
-            # 계좌 잔고
-            message += f"계좌잔고: {balance:,.0f}원"
+            # 계좌 잔고 - .0 제거를 위해 정수로 변환
+            message += f"계좌잔고: {int(balance):,}원"
 
             # 증권사 API 정보 추가 (주문 번호, 체결 상태 등)
             if order_no:
@@ -580,7 +600,8 @@ class KakaoSender:
                 # 체결 정보가 있으면 추가
                 if executed_qty > 0:
                     message += f"\n체결수량: {executed_qty:,}주"
-                    message += f"\n체결가격: {executed_price:,.0f}원"
+                    # 체결가격 - .0 제거를 위해 정수로 변환
+                    message += f"\n체결가격: {int(executed_price):,}원"
                 
                 # 미체결 수량이 있으면 표시
                 if remain_qty > 0:
@@ -591,9 +612,9 @@ class KakaoSender:
                     status_emoji = "✅" if "체결" in order_status else "⏳"
                     message += f"\n주문상태: {status_emoji} {order_status}"
                 
-                # 수수료 정보
+                # 수수료 정보 - .0 제거를 위해 정수로 변환
                 if fee > 0:
-                    message += f"\n수수료: {fee:,.0f}원"
+                    message += f"\n수수료: {int(fee):,}원"
                 
                 # 거래 시간
                 if transaction_time:

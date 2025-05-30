@@ -225,6 +225,18 @@ class DatabaseManager:
             )
             ''')
             
+            # 한국 주식 종목 정보 테이블 추가
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kr_stock_info (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                market TEXT DEFAULT 'KR',
+                sector TEXT,
+                industry TEXT,
+                updated_at DATETIME
+            )
+            ''')
+            
             conn.commit()
             conn.close()
             self.logger.info("SQLITE 데이터베이스 초기화 완료")
@@ -343,6 +355,18 @@ class DatabaseManager:
                 avg_loss DECIMAL(15, 2),
                 total_profit_loss DECIMAL(15, 2),
                 profit_loss_pct DECIMAL(10, 6)
+            )
+            ''')
+            
+            # 한국 주식 종목 정보 테이블 추가
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kr_stock_info (
+                code VARCHAR(10) PRIMARY KEY,
+                name VARCHAR(50),
+                market VARCHAR(10) DEFAULT 'KR',
+                sector VARCHAR(50),
+                industry VARCHAR(50),
+                updated_at DATETIME
             )
             ''')
             
@@ -1025,3 +1049,161 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"전략별 성과 분석 오류: {e}")
             return None
+    
+    def save_kr_stock_info(self, stock_info_list):
+        """한국 주식 종목 정보 저장/업데이트"""
+        if not self.use_db:
+            return False
+            
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            timestamp = datetime.now()
+            success_count = 0
+            
+            for stock in stock_info_list:
+                code = stock.get('code')
+                name = stock.get('name')
+                sector = stock.get('sector', '')
+                industry = stock.get('industry', '')
+                
+                if not code or not name:
+                    self.logger.warning(f"종목 코드 또는 이름 누락: {stock}")
+                    continue
+                
+                if self.db_type == 'sqlite':
+                    cursor.execute('''
+                    INSERT OR REPLACE INTO kr_stock_info 
+                    (code, name, market, sector, industry, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (code, name, 'KR', sector, industry, timestamp))
+                else:  # MySQL
+                    cursor.execute('''
+                    INSERT INTO kr_stock_info 
+                    (code, name, market, sector, industry, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                    name = %s,
+                    sector = %s,
+                    industry = %s,
+                    updated_at = %s
+                    ''', (code, name, 'KR', sector, industry, timestamp,
+                           name, sector, industry, timestamp))
+                success_count += 1
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"한국 주식 종목 정보 {success_count}개 저장/업데이트 완료")
+            return True
+        except Exception as e:
+            self.logger.error(f"한국 주식 종목 정보 저장 오류: {e}")
+            return False
+    
+    def get_kr_stock_info(self):
+        """한국 주식 종목 정보 조회"""
+        if not self.use_db:
+            return []
+            
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            if self.db_type == 'sqlite':
+                cursor.execute("SELECT code, name, sector, industry FROM kr_stock_info")
+            else:  # MySQL
+                cursor.execute("SELECT code, name, sector, industry FROM kr_stock_info")
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # 결과를 딕셔너리 리스트로 변환
+            stock_info_list = []
+            for row in rows:
+                if self.db_type == 'sqlite':
+                    stock_info_list.append({
+                        'code': row[0],
+                        'name': row[1],
+                        'sector': row[2] if row[2] else '',
+                        'industry': row[3] if row[3] else ''
+                    })
+                else:  # MySQL은 커서가 다르게 동작할 수 있음
+                    stock_info_list.append({
+                        'code': row[0],
+                        'name': row[1],
+                        'sector': row[2] if row[2] else '',
+                        'industry': row[3] if row[3] else ''
+                    })
+            
+            self.logger.info(f"한국 주식 종목 정보 {len(stock_info_list)}개 조회 완료")
+            return stock_info_list
+        except Exception as e:
+            self.logger.error(f"한국 주식 종목 정보 조회 오류: {e}")
+            return []
+    
+    def init_kr_stock_info(self):
+        """한국 주식 종목 정보 초기화 (없는 경우에만 기본 데이터 삽입)"""
+        if not self.use_db:
+            return False
+            
+        try:
+            # 현재 저장된 종목 정보 확인
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) FROM kr_stock_info")
+            count = cursor.fetchone()[0]
+            
+            # 이미 데이터가 있으면 초기화 건너뛰기
+            if count > 0:
+                conn.close()
+                self.logger.info(f"이미 {count}개의 한국 주식 종목 정보가 있습니다. 초기화 건너뜀.")
+                return True
+            
+            # 기본 데이터 준비
+            default_stocks = [
+                {'code': '005930', 'name': '삼성전자'},
+                {'code': '005940', 'name': 'NH투자증권'},
+                {'code': '051900', 'name': 'LG생활건강'},
+                {'code': '000660', 'name': 'SK하이닉스'},
+                {'code': '051910', 'name': 'LG화학'},
+                {'code': '035420', 'name': 'NAVER'},
+                {'code': '096770', 'name': 'SK이노베이션'},
+                {'code': '005380', 'name': '현대차'},
+                {'code': '035720', 'name': '카카오'},
+                {'code': '068270', 'name': '셀트리온'},
+                {'code': '207940', 'name': '삼성바이오로직스'},
+                {'code': '006400', 'name': '삼성SDI'},
+                {'code': '018260', 'name': '삼성에스디에스'},
+                {'code': '000270', 'name': '기아'},
+                {'code': '005490', 'name': 'POSCO홀딩스'},
+                {'code': '036570', 'name': 'NCsoft'},
+                {'code': '055550', 'name': '신한지주'}
+            ]
+            
+            timestamp = datetime.now()
+            
+            # 데이터 삽입
+            for stock in default_stocks:
+                code = stock['code']
+                name = stock['name']
+                
+                if self.db_type == 'sqlite':
+                    cursor.execute('''
+                    INSERT INTO kr_stock_info (code, name, market, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ''', (code, name, 'KR', timestamp))
+                else:  # MySQL
+                    cursor.execute('''
+                    INSERT INTO kr_stock_info (code, name, market, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    ''', (code, name, 'KR', timestamp))
+            
+            conn.commit()
+            conn.close()
+            
+            self.logger.info(f"한국 주식 종목 기본 정보 {len(default_stocks)}개 초기화 완료")
+            return True
+        except Exception as e:
+            self.logger.error(f"한국 주식 종목 정보 초기화 오류: {e}")
+            return False

@@ -986,6 +986,12 @@ class GPTAutoTrader:
                 logger.info(f"{symbol} 매도 진행")
                 self._execute_sell(symbol)
             
+            # 매도 후 계좌 잔고 다시 확인 (매도했을 경우 잔고 증가)
+            if sell_candidates:
+                updated_balance = self.broker.get_balance()
+                available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
+                logger.info(f"매도 후 업데이트된 주문가능금액: {available_cash:,.0f}원")
+            
             # 2. 매수 결정
             kr_recommendations = self.gpt_selections.get('KR', [])
             buy_candidates = []
@@ -1022,8 +1028,13 @@ class GPTAutoTrader:
             
             # 매수 실행 (자금 상황 고려)
             for stock_data in buy_candidates:
-                if available_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
-                    logger.info(f"남은 자금({available_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
+                # 현재 자금 상황 실시간 확인을 위해 API에서 다시 조회
+                current_balance = self.broker.get_balance()
+                current_cash = current_balance.get('주문가능금액', current_balance.get('예수금', 0))
+                logger.info(f"현재 주문가능금액: {current_cash:,.0f}원")
+                
+                if current_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
+                    logger.info(f"남은 자금({current_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
                     break
                 
                 symbol = stock_data.get('symbol')
@@ -1032,9 +1043,11 @@ class GPTAutoTrader:
                 logger.info(f"{symbol}({name}) 매수 진행 - 추천 비중: {weight}%")
                 
                 if self._execute_buy(stock_data):
-                    # 매수 성공 시 가용 자금 업데이트
+                    # 매수 성공 시 가용 자금 업데이트 - 최신 주문가능금액 조회
+                    time.sleep(2)  # API 응답 시간을 고려해 잠시 대기
                     updated_balance = self.broker.get_balance()
                     available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
+                    logger.info(f"매수 후 업데이트된 주문가능금액: {available_cash:,.0f}원")
             
             return True
             
@@ -1532,6 +1545,14 @@ class GPTAutoTrader:
                     # 샤프 비율 계산
                     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
                     
+                    # 성과 측정
+                    # 표준편차가 0이거나 NaN인 경우 처리
+                    std_dev = strategy_returns.std()
+                    if std_dev == 0 or np.isnan(std_dev):
+                        sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+                    else:
+                        sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
+                    
                     if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
                         best_sharpe = sharpe_ratio
                         best_period = period
@@ -1595,6 +1616,14 @@ class GPTAutoTrader:
                     # 전략 성과 측정
                     sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
                     
+                    # 성과 측정
+                    # 표준편차가 0이거나 NaN인 경우 처리
+                    std_dev = strategy_returns.std()
+                    if std_dev == 0 or np.isnan(std_dev):
+                        sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+                    else:
+                        sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
+                    
                     if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
                         best_sharpe = sharpe_ratio
                         best_period = period
@@ -1654,7 +1683,12 @@ class GPTAutoTrader:
                             strategy_returns = df['Returns'].shift(-1) * position
                             
                             # 성과 측정
-                            sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                            # 표준편차가 0이거나 NaN인 경우 처리
+                            std_dev = strategy_returns.std()
+                            if std_dev == 0 or np.isnan(std_dev):
+                                sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+                            else:
+                                sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
                             
                             if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
                                 best_sharpe = sharpe_ratio
@@ -1714,7 +1748,12 @@ class GPTAutoTrader:
                         strategy_returns = df['Returns'].shift(-1) * position
                         
                         # 성과 측정
-                        sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                        # 표준편차가 0이거나 NaN인 경우 처리
+                        std_dev = strategy_returns.std()
+                        if std_dev == 0 or np.isnan(std_dev):
+                            sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+                        else:
+                            sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
                         
                         if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
                             best_sharpe = sharpe_ratio
