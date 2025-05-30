@@ -138,12 +138,12 @@ GPT_STOCK_SELECTION_INTERVAL = 24  # 종목 선정 간격 (시간)
 GPT_TRADING_MAX_POSITIONS = 10  # 최대 포지션 수 (5에서 10으로 증가)
 GPT_TRADING_CONF_THRESHOLD = 0.7  # 매매 신뢰도 임계값
 GPT_MAX_INVESTMENT_PER_STOCK = 1000000  # 종목당 최대 투자금액 (원)
-GPT_STRATEGY = "value"  # 기본 전략 (balanced, growth, value, dividend)
+GPT_STRATEGY = "balanced"  # 기본 전략 (balanced, growth, value, dividend)
 GPT_TRADING_MONITOR_INTERVAL = 30  # 모니터링 간격 (분)
 GPT_USE_DYNAMIC_SELECTION = True  # 하드코딩 대신 GPT가 동적으로 종목 선정 (추가된 옵션)
 
 # 단타 매매 설정
-DAY_TRADING_MODE = os.environ.get("DAY_TRADING_MODE", "False").lower() == "true"  # 단타 매매 모드 활성화 여부
+DAY_TRADING_MODE = True  # 단타 매매 모드 활성화 여부
 DAY_TRADING_MAX_POSITIONS = 3  # 단타 매매 시 최대 동시 포지션 수 (적은 종목에 집중)
 DAY_TRADING_PROFIT_THRESHOLD = 2.0  # 단타 매매 이익 실현 기준 (%)
 DAY_TRADING_STOP_LOSS = 1.0  # 단타 매매 손절 기준 (%)
@@ -187,7 +187,7 @@ FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '005940', 'name': 'NH투자증권'}, {'code': '051900', 'name': 'LG생활건강'}]
+# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '035420', 'name': 'NAVER'}, {'code': '051910', 'name': 'LG화학'}, {'code': '068270', 'name': '셀트리온'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 

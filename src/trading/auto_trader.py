@@ -593,20 +593,43 @@ class AutoTrader:
                 else:
                     logger.info(f"시장가 주문 (가격 미지정)")
                 
-                # 거래 전 보유 정보
+                # 거래 전 보유 정보 미리 조회
                 prev_quantity = 0
                 prev_avg_price = 0
                 
                 try:
-                    # 현재 포지션 정보 확인
+                    # 현재 보유 종목 정보 미리 조회
                     positions = self.broker.get_positions()
-                    if symbol in positions:
-                        prev_quantity = positions[symbol].get('quantity', 0)
-                        prev_avg_price = positions[symbol].get('avg_price', 0)
-                        logger.info(f"기존 보유: {symbol} {prev_quantity}주, 평균단가: {safe_format(prev_avg_price)}원")
+                    # 로그에 positions 내용 확인 추가
+                    logger.info(f"보유 포지션 정보: {json.dumps(positions, ensure_ascii=False, default=str)}")
+                    
+                    # 브로커 API 응답 구조에 따라 처리
+                    if isinstance(positions, dict):
+                        # dict 형태 - KIS API 실전 계좌 등
+                        if symbol in positions:
+                            position_data = positions[symbol]
+                            prev_quantity = position_data.get('quantity', 0)
+                            prev_avg_price = position_data.get('avg_price', 0)
+                            logger.info(f"기존 보유(dict): {symbol} {prev_quantity}주, 평균단가: {safe_format(prev_avg_price)}원")
+                    elif isinstance(positions, list):
+                        # list 형태 - 모의투자 등
+                        for position in positions:
+                            # KISAPI 모의투자 구조 처리
+                            if "pdno" in position and position.get("pdno") == symbol:
+                                prev_quantity = int(position.get("hldg_qty", "0"))
+                                prev_avg_price = float(position.get("pchs_avg_pric", "0"))
+                                logger.info(f"기존 보유(KISAPI): {symbol} {prev_quantity}주, 평균단가: {safe_format(prev_avg_price)}원")
+                                break
+                            # 일반 구조 처리
+                            elif "symbol" in position and position.get("symbol") == symbol:
+                                prev_quantity = position.get("quantity", 0)
+                                prev_avg_price = position.get("avg_price", 0)
+                                logger.info(f"기존 보유(list): {symbol} {prev_quantity}주, 평균단가: {safe_format(prev_avg_price)}원")
+                                break
                     
                     # 현재 계좌 잔고
                     account_info = self.broker.get_balance()
+                    logger.info(f"계좌 잔고 정보: {json.dumps(account_info, ensure_ascii=False, default=str)}")
                     balance_before = account_info.get('예수금', 0)
                     logger.info(f"주문 전 계좌 잔고: {safe_format(balance_before)}원")
                 except Exception as broker_error:
@@ -727,8 +750,9 @@ class AutoTrader:
                             account_info = self.broker.get_balance(force_refresh=True, timestamp=timestamp_cache_buster)
                             balance_after = account_info.get('예수금', 0)
                             avail_cash_after = account_info.get('주문가능금액', 0)
+                            total_eval = account_info.get('총평가금액', 0)  # 총평가금액 추가
                             
-                            logger.info(f"잔고 조회 결과: 예수금={balance_after}, 주문가능금액={avail_cash_after}")
+                            logger.info(f"잔고 조회 결과: 예수금={balance_after}, 주문가능금액={avail_cash_after}, 총평가금액={total_eval}")
                             
                             # 잔고 정보가 갱신되었는지 확인 (예수금 또는 주문가능금액 변화 확인)
                             if action == TradeAction.BUY:
@@ -761,25 +785,58 @@ class AutoTrader:
                     # 포지션 정보 갱신
                     logger.info("포지션 정보 갱신 시도...")
                     updated_positions = self.broker.get_positions()
+                    logger.info(f"갱신된 포지션 정보: {json.dumps(updated_positions, ensure_ascii=False, default=str)}")
                     
                     total_quantity = 0
-                    new_avg_price = 0;
+                    new_avg_price = 0
                     
-                    # 포지션 상세 정보 로깅
-                    if updated_positions:
-                        logger.info(f"포지션 정보 갱신 결과: {len(updated_positions)}개 종목 보유")
-                        for pos_symbol, pos_info in updated_positions.items():
-                            logger.info(f"포지션: {pos_symbol}, 수량={pos_info.get('quantity', 0)}, " +
-                                        f"평단가={pos_info.get('avg_price', 0)}, 현재가={pos_info.get('current_price', 0)}")
+                    # 포지션 상세 정보 - 종목 정보 찾기
+                    if isinstance(updated_positions, dict):
+                        # 딕셔너리 형태 (KIS API 실전 등)
+                        if symbol in updated_positions:
+                            position_data = updated_positions[symbol]
+                            total_quantity = position_data.get('quantity', 0)
+                            new_avg_price = position_data.get('avg_price', 0)
+                            logger.info(f"거래 후 보유(dict): {symbol} {total_quantity}주, 평균단가: {safe_format(new_avg_price)}원")
+                        else:
+                            logger.info(f"거래 후 {symbol} 보유 없음 (dict)")
+                    elif isinstance(updated_positions, list):
+                        # 리스트 형태 (모의투자 등)
+                        found = False
+                        for position in updated_positions:
+                            # KISAPI 모의투자 구조
+                            if "pdno" in position and position.get("pdno") == symbol:
+                                total_quantity = int(position.get("hldg_qty", "0"))
+                                new_avg_price = float(position.get("pchs_avg_pric", "0"))
+                                logger.info(f"거래 후 보유(KISAPI): {symbol} {total_quantity}주, 평균단가: {safe_format(new_avg_price)}원")
+                                found = True
+                                break
+                            # 일반 구조
+                            elif "symbol" in position and position.get("symbol") == symbol:
+                                total_quantity = position.get("quantity", 0)
+                                new_avg_price = position.get("avg_price", 0)
+                                logger.info(f"거래 후 보유(list): {symbol} {total_quantity}주, 평균단가: {safe_format(new_avg_price)}원")
+                                found = True
+                                break
+                        
+                        if not found:
+                            logger.info(f"거래 후 {symbol} 보유 없음 (list)")
                     else:
-                        logger.info("갱신된 포지션 정보 없음")
+                        logger.warning(f"알 수 없는 positions 형식: {type(updated_positions)}")
                     
-                    if symbol in updated_positions:
-                        total_quantity = updated_positions[symbol].get('quantity', 0)
-                        new_avg_price = updated_positions[symbol].get('avg_price', 0)
-                        logger.info(f"거래 후 보유: {symbol} {total_quantity}주, 평균단가: {safe_format(new_avg_price)}원")
-                    else:
-                        logger.info(f"거래 후 {symbol} 보유 없음")
+                    # 보유 종목이 없거나 조회 실패 시, 매수한 경우 보유량과 평단가를 직접 계산하여 설정
+                    if action == TradeAction.BUY and total_quantity == 0:
+                        if prev_quantity == 0:
+                            # 신규 매수: 주문수량이 현재 보유량임
+                            total_quantity = quantity
+                            new_avg_price = order_info.get("executed_price", price) or price
+                            logger.info(f"신규 매수로 보유량 직접 계산: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
+                        else:
+                            # 추가 매수: 이전 보유량에 주문수량 추가
+                            total_quantity = prev_quantity + quantity
+                            total_value = (prev_avg_price * prev_quantity) + (price * quantity)
+                            new_avg_price = total_value / total_quantity
+                            logger.info(f"추가 매수로 보유량 직접 계산: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
                     
                     # 거래 금액 및 수수료 계산
                     executed_qty = order_info.get('executed_quantity', 0)
@@ -821,13 +878,47 @@ class AutoTrader:
                     fee = int(trade_amount * fee_rate)
                     logger.info(f"거래 수수료: {trade_amount}원 x {fee_rate:.6f} = {fee}원")
                     
-                    # 거래 정보 추가
+                    # 보유수량이 여전히 0으로 나오면 KIS API 모의투자 포맷 특별 처리
+                    if total_quantity == 0 and action == TradeAction.BUY:
+                        # 포지션 정보에서 다시 한번 상세하게 찾기
+                        logger.info("모의투자 계좌 포지션 정보를 다시 조회하여 보유수량 확인...")
+                        try:
+                            # 포지션 정보 다시 조회
+                            detail_positions = self.broker.get_positions(force_refresh=True)
+                            logger.info(f"상세 포지션 조회 결과: {json.dumps(detail_positions, ensure_ascii=False, default=str)}")
+                            
+                            # KIS API 모의투자 형식 특별 처리
+                            if isinstance(detail_positions, list):
+                                for pos in detail_positions:
+                                    # 모의투자는 pdno를 확인
+                                    if "pdno" in pos and pos["pdno"] == symbol:
+                                        # 보유수량 찾음
+                                        total_quantity = int(pos.get("hldg_qty", "0"))
+                                        new_avg_price = float(pos.get("pchs_avg_pric", "0"))
+                                        logger.info(f"모의투자 계좌에서 보유수량 찾음: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
+                                        break
+                                    # 실전투자 형식
+                                    elif "symbol" in pos and pos["symbol"] == symbol:
+                                        total_quantity = pos.get("quantity", 0)
+                                        new_avg_price = pos.get("avg_price", 0)
+                                        logger.info(f"실전 계좌에서 보유수량 찾음: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
+                                        break
+                        except Exception as e:
+                            logger.error(f"상세 포지션 조회 중 오류: {e}")
+                    
+                    # 계좌 API에서 종목정보를 찾지 못한 경우, total_quantity가 0이면 직접 설정
+                    if total_quantity == 0 and action == TradeAction.BUY:
+                        total_quantity = prev_quantity + quantity  # 이전 보유량 + 매수량으로 설정
+                        logger.info(f"API에서 종목정보를 찾지 못해 보유수량 직접 계산: {total_quantity}주")
+
+                    # 거래 정보 추가 (종합)
                     trade_info = {
                         "quantity": executed_qty,  # 체결 수량
                         "total_quantity": total_quantity,  # 매매 후 총 보유 수량
                         "avg_price": new_avg_price,  # 평균단가
                         "prev_avg_price": prev_avg_price,  # 매매 전 평균단가
-                        "balance": balance_after,  # 거래 후 계좌 잔고
+                        "balance": avail_cash_after,  # 거래 후 계좌 잔고 (주문가능금액 사용)
+                        "account_balance": avail_cash_after,  # 계좌 잔고 추가 (kakao_sender에서 사용)
                         "prev_quantity": prev_quantity,  # 매매 전 보유 수량
                         "trade_amount": trade_amount,  # 거래 금액
                         "order_no": order_no,  # 주문번호
@@ -836,7 +927,8 @@ class AutoTrader:
                         "remain_qty": order_info.get('remain_qty', 0),  # 미체결수량
                         "order_status": order_info.get('order_status', ''),  # 주문상태
                         "fee": fee,  # 수수료
-                        "transaction_time": get_current_time().strftime("%Y-%m-%d %H:%M:%S")  # 거래시간
+                        "transaction_time": get_current_time().strftime("%Y-%m-%d %H:%M:%S"),  # 거래시간
+                        "total_eval": total_eval  # 총평가금액 추가
                     }
                     
                     # 매도의 경우 손익 정보 추가
@@ -846,7 +938,7 @@ class AutoTrader:
                         logger.info(f"매도 손익: {trade_info['profit_loss']}원 ({trade_info['profit_loss_pct']:.2f}%)")
                     
                     order_info["trade_info"] = trade_info;
-                    logger.info(f"거래 정보 생성 완료: 체결가={executed_price}, 체결수량={executed_qty}")
+                    logger.info(f"거래 정보 생성 완료: 체결가={executed_price}, 체결수량={executed_qty}, 보유량={total_quantity}, 평단가={new_avg_price}")
                     
                 except Exception as e:
                     logger.error(f"거래 후 정보 조회 중 오류: {e}")
@@ -901,7 +993,8 @@ class AutoTrader:
                             "quantity": quantity,
                             "price": formatted_price,
                             "total_amount": formatted_trade_amount,
-                            "account_balance": account_balance,
+                            "balance": account_balance,  # account_balance 키 사용
+                            "account_balance": account_balance,  # 추가: 계좌잔고 정보 (kakao_sender.py에서 사용)
                             "order_no": order_info.get("trade_info", {}).get("order_no", ""),
                             "transaction_time": get_current_time().strftime("%Y-%m-%d %H:%M:%S")
                         }
@@ -911,6 +1004,10 @@ class AutoTrader:
                     if "trade_info" in order_info:
                         signal_data['trade_info']["prev_quantity"] = order_info["trade_info"].get("prev_quantity", 0)
                         signal_data['trade_info']["total_quantity"] = order_info["trade_info"].get("total_quantity", quantity)
+                        
+                        # 평단가 정보 추가
+                        if "avg_price" in order_info["trade_info"] and order_info["trade_info"]["avg_price"] > 0:
+                            signal_data['trade_info']["avg_price"] = order_info["trade_info"]["avg_price"]
                         
                         # 체결가격 정보 추가
                         if "executed_price" in order_info["trade_info"]:
@@ -922,10 +1019,15 @@ class AutoTrader:
                         if action == TradeAction.SELL:
                             signal_data['trade_info']["profit_loss"] = safe_format(order_info["trade_info"].get("profit_loss", 0))
                             signal_data['trade_info']["profit_loss_pct"] = order_info["trade_info"].get("profit_loss_pct", 0)
+                                                    
+                        # 총평가금액 정보 추가 (kakao_sender.py에서 사용)
+                        total_eval = order_info["trade_info"].get("total_eval", 0)
+                        signal_data['trade_info']["total_eval"] = total_eval
+                        logger.info(f"알림 데이터에 총평가금액 추가: {safe_format(total_eval)}원")
                     
                     # 데이터 구조 확인 로그
                     logger.info(f"알림 데이터 확인: symbol={signal_data['symbol']}, name={signal_data['name']}")
-                    logger.debug(f"알림 데이터 상세: {signal_data}")
+                    logger.info(f"알림 데이터 상세: {json.dumps(signal_data, ensure_ascii=False, default=str)}")
                     
                     # 알림 발송 시도 및 결과 확인
                     notification_result = self.notifier.send_signal_notification(signal_data)
@@ -1607,71 +1709,420 @@ class AutoTrader:
                 "보유종목": []
             }
     
-    def place_order(self, code, order_type, quantity, price, order_type_name=None):
+    def generate_investment_report(self):
         """
-        주식 주문 실행
+        종합 투자 내역 리포트 생성
         
-        Args:
-            code (str): 종목코드
-            order_type (str): 주문유형 (buy, sell)
-            quantity (int): 주문수량
-            price (float): 주문가격
-            order_type_name (str, optional): 주문유형명 (지정가, 시장가 등)
-            
         Returns:
-            dict: 주문 결과
+            dict: 투자 내역 리포트 데이터
         """
-        logger.info(f"주문 시작: {code} {order_type} {quantity}주 {price}원")
-        
         try:
-            # 현재 잔고 확인
-            pre_balance = self.broker_api.get_balance()
-            available_cash = pre_balance.get('주문가능금액', 0)
+            logger.info("투자 내역 종합 리포트 생성 시작")
             
-            logger.info(f"주문 전 계좌 잔고: {available_cash:,}원")
+            # 최신 계좌 정보 및 포지션 정보 로드
+            self._load_account_balance(force_refresh=True)
+            self._load_positions()
+            self._update_position_value()
             
-            # 매수 시 주문가능금액 확인
-            if order_type == 'buy':
-                required_amount = quantity * price
-                if available_cash < required_amount:
-                    logger.warning(f"주문가능금액 부족: 필요 {required_amount:,}원, 보유 {available_cash:,}원")
-                    return {"success": False, "message": "주문가능금액 부족", "error_code": "INSUFFICIENT_BALANCE"}
+            current_time = get_current_time()
+            formatted_date = current_time.strftime("%Y년 %m월 %d일 %H:%M")
             
-            # 주문 실행
-            order_result = self.broker_api.place_order(code, order_type, quantity, price, order_type_name)
+            # 기본 리포트 구조
+            report = {
+                "timestamp": current_time.isoformat(),
+                "formatted_date": formatted_date,
+                "account_summary": {},
+                "positions": [],
+                "recent_trades": [],
+                "monthly_performance": {},
+                "sector_analysis": {},
+                "recommendations": []
+            }
             
-            if order_result.get('success', False):
-                order_no = order_result.get('order_no', '')
-                logger.info(f"주문 성공: {order_no}")
+            # 1. 계좌 요약 정보
+            try:
+                balance_info = self.broker.get_balance(force_refresh=True)
+                logger.info(f"계좌 잔고 정보 조회: {json.dumps(balance_info, ensure_ascii=False, default=str)}")
                 
-                # 주문 성공 후 잔고 갱신을 위한 대기
-                time.sleep(2)
+                # 예수금 확인
+                deposit = balance_info.get("예수금", 0)
+                if isinstance(deposit, str):
+                    deposit = float(deposit.replace(',', ''))
                 
-                # 주문 후 강제로 잔고 갱신 (최대 3회 시도)
-                max_attempts = 3
-                for attempt in range(1, max_attempts + 1):
-                    logger.info(f"주문 후 잔고 갱신 시도 ({attempt}/{max_attempts})")
-                    time.sleep(1 * attempt)  # 시도마다 대기 시간 증가
+                # 주문 가능 금액
+                available_cash = balance_info.get("주문가능금액", 0)
+                if isinstance(available_cash, str):
+                    available_cash = float(available_cash.replace(',', ''))
                     
-                    # 강제로 최신 잔고 정보 가져오기
-                    post_balance = self.broker_api.get_balance(force_refresh=True)
-                    updated_cash = post_balance.get('주문가능금액', 0)
+                # D+2 예수금
+                d2_deposit = balance_info.get("D+2예수금", 0)
+                if isinstance(d2_deposit, str):
+                    d2_deposit = float(d2_deposit.replace(',', ''))
                     
-                    # 잔고가 변경되었는지 확인
-                    if order_type == 'buy' and updated_cash != available_cash:
-                        logger.info(f"잔고 갱신 성공: {updated_cash:,}원 (이전: {available_cash:,}원)")
-                        break
-                    elif attempt == max_attempts:
-                        logger.warning(f"잔고 갱신 실패: 여전히 {updated_cash:,}원 (API 지연 또는 캐싱 문제)")
+                # 총평가금액과 투자원금 - 실적 계좌와 모의 계좌 처리 통합
+                total_eval_amount = balance_info.get("총평가금액", 0)
+                if isinstance(total_eval_amount, str):
+                    total_eval_amount = float(total_eval_amount.replace(',', ''))
                 
-                return order_result
-            else:
-                error_message = order_result.get('message', '알 수 없는 오류')
-                error_code = order_result.get('error_code', 'UNKNOWN_ERROR')
-                logger.error(f"주문 실패: {error_message} (코드: {error_code})")
-                return order_result
+                # 투자원금이 없으면 계좌 상세 정보에서 다시 확인
+                invest_principal = balance_info.get("투자원금", 0)
+                if isinstance(invest_principal, str):
+                    invest_principal = float(invest_principal.replace(',', ''))
                 
+                # 보유 종목의 총 평가금액 계산
+                position_total_value = sum(
+                    position.get("current_value", 0) 
+                    for position in self.positions.values()
+                )
+                
+                # 보유 종목의 총 손익금액 계산
+                position_total_pl = sum(
+                    position.get("profit_loss", 0) 
+                    for position in self.positions.values()
+                )
+                
+                # 보유 종목 수
+                position_count = len(self.positions)
+                
+                # 투자원금이 여전히 없을 경우 평가금액에서 손익을 빼서 추정
+                if invest_principal == 0 and position_total_value > 0:
+                    invest_principal = position_total_value - position_total_pl
+                    logger.info(f"투자원금 추정: {safe_format(invest_principal)}원 (총평가금액 - 총손익)")
+                
+                # 계좌 수익률 계산
+                account_profit_rate = 0
+                if invest_principal > 0:
+                    account_profit_rate = (position_total_pl / invest_principal) * 100
+                
+                # 계좌 요약 정보 설정
+                report["account_summary"] = {
+                    "예수금": deposit,
+                    "주문가능금액": available_cash,
+                    "D+2예수금": d2_deposit,
+                    "총평가금액": total_eval_amount,
+                    "투자원금": invest_principal,
+                    "총손익": position_total_pl,
+                    "수익률": account_profit_rate,
+                    "보유종목수": position_count,
+                    "주식평가금액": position_total_value
+                }
+                
+                logger.info(f"계좌 요약 정보 생성: 총평가금액 {safe_format(total_eval_amount)}원, 수익률 {account_profit_rate:.2f}%")
+                
+            except Exception as e:
+                logger.error(f"계좌 요약 정보 생성 중 오류: {e}")
+                report["account_summary"] = {
+                    "error": f"계좌 정보 조회 실패: {str(e)}"
+                }
+            
+            # 2. 보유 종목 정보
+            try:
+                positions_list = []
+                
+                for symbol, position in self.positions.items():
+                    # 종목명 (없으면 심볼로 대체)
+                    symbol_name = position.get("symbol_name", symbol)
+                    
+                    # 손익률 계산
+                    avg_price = position.get("avg_price", 0)
+                    current_price = position.get("current_price", 0)
+                    profit_loss_pct = 0
+                    
+                    if avg_price > 0 and current_price > 0:
+                        profit_loss_pct = ((current_price / avg_price) - 1) * 100
+                    
+                    # 현재가 갱신
+                    if current_price <= 0:
+                        market = position.get("market", "KR")
+                        updated_price = self.data_provider.get_current_price(symbol, market)
+                        if updated_price > 0:
+                            current_price = updated_price
+                            position["current_price"] = updated_price
+                            # 손익 정보 업데이트
+                            if avg_price > 0:
+                                profit_loss_pct = ((current_price / avg_price) - 1) * 100
+                                position["profit_loss_pct"] = profit_loss_pct
+                    
+                    # 포지션 정보 추가
+                    positions_list.append({
+                        "종목코드": symbol,
+                        "종목명": symbol_name,
+                        "보유수량": position.get("quantity", 0),
+                        "평균단가": avg_price,
+                        "현재가": current_price,
+                        "평가금액": position.get("current_value", 0),
+                        "손익금액": position.get("profit_loss", 0),
+                        "손익률": profit_loss_pct,
+                        "비중": (position.get("current_value", 0) / position_total_value) * 100 if position_total_value > 0 else 0
+                    })
+                
+                # 손익률 기준으로 정렬 (높은 수익률이 먼저 오도록)
+                positions_list.sort(key=lambda x: x["손익률"], reverse=True)
+                report["positions"] = positions_list
+                
+                logger.info(f"보유 종목 정보 생성: {len(positions_list)}개 종목")
+                
+            except Exception as e:
+                logger.error(f"보유 종목 정보 생성 중 오류: {e}")
+                report["positions"] = []
+            
+            # 3. 최근 거래 내역
+            try:
+                # 최근 30일 거래만 필터링
+                thirty_days_ago = (current_time - datetime.timedelta(days=30)).isoformat()
+                recent_trades = []
+                
+                for order in self.order_history:
+                    # 거래 시간이 30일 이내인 것만 필터링
+                    order_time = order.get("timestamp", "")
+                    if not order_time or order_time < thirty_days_ago:
+                        continue
+                    
+                    # 종목명 설정
+                    symbol = order.get("symbol", "")
+                    symbol_name = order.get("symbol_name", symbol)
+                    
+                    # 거래 정보
+                    action = order.get("action", "")
+                    quantity = order.get("quantity", 0)
+                    price = order.get("price", 0)
+                    
+                    # 체결 정보
+                    executed_price = order.get("executed_price", price)
+                    executed_qty = order.get("executed_quantity", quantity)
+                    
+                    # 거래 상세 정보에서 추가 정보 조회
+                    trade_info = order.get("trade_info", {})
+                    profit_loss = trade_info.get("profit_loss", 0) if action == "SELL" else 0
+                    profit_loss_pct = trade_info.get("profit_loss_pct", 0) if action == "SELL" else 0
+                    
+                    # 거래 시간 포맷팅
+                    transaction_time = trade_info.get("transaction_time", order_time)
+                    if isinstance(transaction_time, str) and len(transaction_time) >= 10:
+                        # 날짜 형식 변환 (YYYY-MM-DD 형식이면 한국식으로 변환)
+                        if transaction_time[4] == "-" and transaction_time[7] == "-":
+                            year = transaction_time[0:4]
+                            month = transaction_time[5:7]
+                            day = transaction_time[8:10]
+                            transaction_time = f"{year}년 {month}월 {day}일"
+                    
+                    recent_trades.append({
+                        "종목코드": symbol,
+                        "종목명": symbol_name,
+                        "거래유형": "매수" if action == "BUY" else "매도",
+                        "거래수량": executed_qty,
+                        "거래가격": executed_price,
+                        "거래금액": executed_price * executed_qty,
+                        "손익금액": profit_loss,
+                        "손익률": profit_loss_pct,
+                        "거래시간": transaction_time
+                    })
+                
+                # 최신 거래가 먼저 오도록 정렬
+                recent_trades.sort(key=lambda x: x.get("거래시간", ""), reverse=True)
+                report["recent_trades"] = recent_trades
+                
+                logger.info(f"최근 거래 내역 생성: {len(recent_trades)}건")
+                
+            except Exception as e:
+                logger.error(f"최근 거래 내역 생성 중 오류: {e}")
+                report["recent_trades"] = []
+            
+            # 4. 월별 성과 분석
+            try:
+                monthly_performance = {}
+                
+                # 전체 거래 내역에서 월별로 집계
+                for order in self.order_history:
+                    order_time = order.get("timestamp", "")
+                    if not order_time or len(order_time) < 7:  # YYYY-MM 형식 체크
+                        continue
+                        
+                    # 월 정보 추출 (YYYY-MM 형식)
+                    month_key = order_time[0:7]
+                    
+                    # 해당 월 데이터 초기화
+                    if month_key not in monthly_performance:
+                        monthly_performance[month_key] = {
+                            "매수금액": 0,
+                            "매도금액": 0,
+                            "순매수금액": 0,
+                            "손익금액": 0,
+                            "거래횟수": 0
+                        }
+                    
+                    action = order.get("action", "")
+                    executed_price = order.get("executed_price", 0)
+                    executed_qty = order.get("executed_quantity", 0)
+                    trade_amount = executed_price * executed_qty
+                    
+                    # 매수/매도에 따른 데이터 업데이트
+                    if action == "BUY":
+                        monthly_performance[month_key]["매수금액"] += trade_amount
+                        monthly_performance[month_key]["순매수금액"] += trade_amount
+                    elif action == "SELL":
+                        monthly_performance[month_key]["매도금액"] += trade_amount
+                        monthly_performance[month_key]["순매수금액"] -= trade_amount
+                        
+                        # 손익 정보 업데이트 (매도의 경우)
+                        trade_info = order.get("trade_info", {})
+                        profit_loss = trade_info.get("profit_loss", 0)
+                        monthly_performance[month_key]["손익금액"] += profit_loss
+                    
+                    monthly_performance[month_key]["거래횟수"] += 1
+                
+                # 월별 실적을 리스트로 변환하여 시간순으로 정렬
+                monthly_list = []
+                for month, data in monthly_performance.items():
+                    # 월 표시 변환 (YYYY-MM -> YYYY년 MM월)
+                    year = month[0:4]
+                    month_num = month[5:7]
+                    formatted_month = f"{year}년 {month_num}월"
+                    
+                    monthly_list.append({
+                        "연월": formatted_month,
+                        "raw_date": month,  # 정렬용
+                        "매수금액": data["매수금액"],
+                        "매도금액": data["매도금액"],
+                        "순매수금액": data["순매수금액"],
+                        "손익금액": data["손익금액"],
+                        "거래횟수": data["거래횟수"]
+                    })
+                
+                # 날짜순으로 정렬
+                monthly_list.sort(key=lambda x: x["raw_date"])
+                # 정렬용 필드 제거
+                for item in monthly_list:
+                    del item["raw_date"]
+                
+                report["monthly_performance"] = monthly_list
+                
+                logger.info(f"월별 성과 분석 생성: {len(monthly_list)}개월")
+                
+            except Exception as e:
+                logger.error(f"월별 성과 분석 생성 중 오류: {e}")
+                report["monthly_performance"] = []
+            
+            # 5. 섹터 분석 (보유 종목의 섹터 분포)
+            try:
+                sector_analysis = {}
+                
+                # 설정에서 종목별 섹터 정보 가져오기
+                stock_sectors = {}
+                if hasattr(self.config, 'KR_STOCK_INFO'):
+                    for stock in self.config.KR_STOCK_INFO:
+                        stock_sectors[stock.get('code')] = stock.get('sector', '기타')
+                
+                # 보유 종목별로 섹터 집계
+                for symbol, position in self.positions.items():
+                    sector = stock_sectors.get(symbol, '기타')
+                    
+                    if sector not in sector_analysis:
+                        sector_analysis[sector] = {
+                            "종목수": 0,
+                            "평가금액": 0,
+                            "손익금액": 0,
+                            "비중": 0
+                        }
+                    
+                    sector_analysis[sector]["종목수"] += 1
+                    sector_analysis[sector]["평가금액"] += position.get("current_value", 0)
+                    sector_analysis[sector]["손익금액"] += position.get("profit_loss", 0)
+                
+                # 총 평가금액 기준으로 비중 계산
+                total_eval = sum(data["평가금액"] for data in sector_analysis.values())
+                for sector in sector_analysis:
+                    if total_eval > 0:
+                        sector_analysis[sector]["비중"] = (sector_analysis[sector]["평가금액"] / total_eval) * 100
+                    
+                    # 수익률 계산
+                    if sector_analysis[sector]["평가금액"] > 0:
+                        sector_analysis[sector]["수익률"] = (sector_analysis[sector]["손익금액"] / 
+                                                        (sector_analysis[sector]["평가금액"] - sector_analysis[sector]["손익금액"])) * 100
+                    else:
+                        sector_analysis[sector]["수익률"] = 0
+                
+                # 비중 기준으로 정렬된 리스트로 변환
+                sector_list = []
+                for sector, data in sector_analysis.items():
+                    sector_list.append({
+                        "섹터명": sector,
+                        "종목수": data["종목수"],
+                        "평가금액": data["평가금액"],
+                        "손익금액": data["손익금액"],
+                        "비중": data["비중"],
+                        "수익률": data["수익률"]
+                    })
+                
+                # 비중 기준으로 내림차순 정렬
+                sector_list.sort(key=lambda x: x["비중"], reverse=True)
+                
+                report["sector_analysis"] = sector_list
+                
+                logger.info(f"섹터 분석 생성: {len(sector_list)}개 섹터")
+                
+            except Exception as e:
+                logger.error(f"섹터 분석 생성 중 오류: {e}")
+                report["sector_analysis"] = []
+            
+            # 6. 투자 추천 (단순 예시 - 실제 구현은 별도로 필요)
+            try:
+                # 보유 종목 중 손익률 순위별 리스트
+                top_performers = sorted(
+                    [p for p in report["positions"] if p["손익률"] > 0], 
+                    key=lambda x: x["손익률"], 
+                    reverse=True
+                )[:3]  # 상위 3개
+                
+                bottom_performers = sorted(
+                    [p for p in report["positions"] if p["손익률"] <= 0], 
+                    key=lambda x: x["손익률"]
+                )[:3]  # 하위 3개
+                
+                recommendations = []
+                
+                # 우수 종목 유지 추천
+                for pos in top_performers:
+                    recommendations.append({
+                        "종목명": pos["종목명"],
+                        "종목코드": pos["종목코드"],
+                        "추천": "유지",
+                        "사유": f"수익률 {pos['손익률']:.2f}%로 우수한 퍼포먼스 보임"
+                    })
+                
+                # 부진 종목 검토 추천
+                for pos in bottom_performers:
+                    recommendations.append({
+                        "종목명": pos["종목명"],
+                        "종목코드": pos["종목코드"],
+                        "추천": "검토",
+                        "사유": f"수익률 {pos['손익률']:.2f}%로 부진한 퍼포먼스, 손절 또는 추가 투자 검토 필요"
+                    })
+                
+                report["recommendations"] = recommendations
+                
+                logger.info(f"투자 추천 생성: {len(recommendations)}개 항목")
+                
+            except Exception as e:
+                logger.error(f"투자 추천 생성 중 오류: {e}")
+                report["recommendations"] = []
+            
+            # 최종 리포트 완성
+            logger.info("투자 내역 종합 리포트 생성 완료")
+            return report
+            
         except Exception as e:
-            logger.error(f"주문 처리 중 오류 발생: {e}")
+            logger.error(f"투자 내역 종합 리포트 생성 중 오류 발생: {e}")
             logger.error(traceback.format_exc())
-            return {"success": False, "message": str(e), "error_code": "EXCEPTION"}
+            
+            # 에러가 발생해도 기본 구조 반환
+            return {
+                "timestamp": get_current_time().isoformat(),
+                "formatted_date": get_current_time().strftime("%Y년 %m월 %d일 %H:%M"),
+                "account_summary": {"error": str(e)},
+                "positions": [],
+                "recent_trades": [],
+                "monthly_performance": {},
+                "sector_analysis": {},
+                "recommendations": []
+            }
