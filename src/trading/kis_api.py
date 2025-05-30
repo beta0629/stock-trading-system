@@ -1476,7 +1476,6 @@ class KISAPI(BrokerBase):
                 # 매매 후 로직 처리 (예: 잔고 업데이트, 포지션 기록 등)
                 try:
                     # 1. 강제 대기 - API 서버에서 주문 처리 시간 확보
-                    import time
                     time.sleep(1)
                     
                     # 2. 잔고 업데이트 확인
@@ -1666,7 +1665,6 @@ class KISAPI(BrokerBase):
                 # 매매 후 로직 처리 (예: 잔고 업데이트, 포지션 기록 등)
                 try:
                     # 1. 강제 대기 - API 서버에서 주문 처리 시간 확보
-                    import time
                     time.sleep(1)
                     
                     # 2. 잔고 업데이트 확인
