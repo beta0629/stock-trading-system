@@ -801,6 +801,414 @@ class StockAnalysisSystem:
         self.send_notification('status', message)
         logger.info("일일 요약 전송 완료")
         
+    def send_investment_report(self):
+        """투자 내역 종합 리포트 생성 및 전송"""
+        logger.info("투자 내역 종합 리포트 생성 시작")
+        
+        try:
+            # 자동 매매 활성화 여부 확인
+            if not self.auto_trading_enabled or not self.auto_trader:
+                logger.warning("자동 매매 시스템이 비활성화되어 있어 투자 리포트를 생성할 수 없습니다.")
+                return
+            
+            # 투자 내역 종합 리포트 생성
+            report = self.auto_trader.generate_investment_report()
+            
+            # 리포트 생성 실패 시
+            if not report or "error" in report.get("account_summary", {}):
+                error_msg = report.get("account_summary", {}).get("error", "알 수 없는 오류")
+                logger.error(f"투자 리포트 생성 실패: {error_msg}")
+                
+                # 오류 알림 발송
+                self.send_notification('status', f"⚠️ 투자 리포트 생성 실패: {error_msg}")
+                return
+            
+            # 계좌 요약 정보 메시지 생성
+            account_msg = "📊 <b>투자 내역 종합 리포트</b>\n\n"
+            account_msg += f"<i>{report.get('formatted_date')} 기준</i>\n\n"
+            account_msg += "<b>🏦 계좌 요약 정보</b>\n"
+            
+            account_data = report.get("account_summary", {})
+            account_msg += f"• 총평가금액: {account_data.get('총평가금액', 0):,.0f}원\n"
+            account_msg += f"• 주식평가금액: {account_data.get('주식평가금액', 0):,.0f}원\n"
+            account_msg += f"• 예수금: {account_data.get('예수금', 0):,.0f}원\n"
+            account_msg += f"• 주문가능금액: {account_data.get('주문가능금액', 0):,.0f}원\n"
+            account_msg += f"• D+2예수금: {account_data.get('D+2예수금', 0):,.0f}원\n"
+            account_msg += f"• 투자원금: {account_data.get('투자원금', 0):,.0f}원\n"
+            account_msg += f"• 총손익: {account_data.get('총손익', 0):,.0f}원\n"
+            account_msg += f"• 수익률: {account_data.get('수익률', 0):.2f}%\n"
+            account_msg += f"• 보유종목수: {account_data.get('보유종목수', 0)}개\n"
+            
+            # 보유 종목 정보 메시지 생성
+            positions_msg = "<b>📈 보유 종목 정보</b>\n"
+            
+            positions = report.get("positions", [])
+            if positions:
+                # 손익률 기준으로 내림차순 정렬 (이미 sorted)
+                for position in positions:
+                    positions_msg += f"• {position.get('종목명')} ({position.get('종목코드')})\n"
+                    positions_msg += f"  - 보유수량: {position.get('보유수량', 0):,.0f}주\n"
+                    positions_msg += f"  - 평균단가: {position.get('평균단가', 0):,.0f}원\n"
+                    positions_msg += f"  - 현재가: {position.get('현재가', 0):,.0f}원\n"
+                    positions_msg += f"  - 평가금액: {position.get('평가금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익금액: {position.get('손익금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익률: {position.get('손익률', 0):.2f}%\n"
+                    positions_msg += f"  - 비중: {position.get('비중', 0):.2f}%\n\n"
+            else:
+                positions_msg += "• 보유 종목이 없습니다.\n\n"
+            
+            # 최근 거래 내역 메시지 생성
+            trades_msg = "<b>🔄 최근 거래 내역</b>\n"
+            
+            recent_trades = report.get("recent_trades", [])
+            if recent_trades:
+                # 최근 5개 거래만 표시
+                for trade in recent_trades[:5]:
+                    trades_msg += f"• {trade.get('종목명')} ({trade.get('종목코드')})\n"
+                    trades_msg += f"  - {trade.get('거래유형')}: {trade.get('거래수량', 0):,.0f}주\n"
+                    trades_msg += f"  - 거래가격: {trade.get('거래가격', 0):,.0f}원\n"
+                    trades_msg += f"  - 거래금액: {trade.get('거래금액', 0):,.0f}원\n"
+                    
+                    # 매도인 경우에만 손익 정보 표시
+                    if trade.get('거래유형') == "매도":
+                        trades_msg += f"  - 손익금액: {trade.get('손익금액', 0):,.0f}원\n"
+                        trades_msg += f"  - 손익률: {trade.get('손익률', 0):.2f}%\n"
+                        
+                    trades_msg += f"  - 거래시간: {trade.get('거래시간')}\n\n"
+            else:
+                trades_msg += "• 최근 거래 내역이 없습니다.\n\n"
+            
+            # 월별 성과 분석 메시지 생성
+            monthly_msg = "<b>📅 월별 성과 분석</b>\n"
+            
+            monthly_performance = report.get("monthly_performance", [])
+            if monthly_performance:
+                # 최근 3개월만 표시
+                for month_data in monthly_performance[-3:]:
+                    monthly_msg += f"• {month_data.get('연월')}\n"
+                    monthly_msg += f"  - 매수금액: {month_data.get('매수금액', 0):,.0f}원\n"
+                    monthly_msg += f"  - 매도금액: {month_data.get('매도금액', 0):,.0f}원\n"
+                    monthly_msg += f"  - 순매수금액: {month_data.get('순매수금액', 0):,.0f}원\n"
+                    monthly_msg += f"  - 손익금액: {month_data.get('손익금액', 0):,.0f}원\n"
+                    monthly_msg += f"  - 거래횟수: {month_data.get('거래횟수', 0)}회\n\n"
+            else:
+                monthly_msg += "• 월별 성과 데이터가 없습니다.\n\n"
+            
+            # 섹터 분석 메시지 생성
+            sector_msg = "<b>🏭 섹터 분석</b>\n"
+            
+            sector_analysis = report.get("sector_analysis", [])
+            if sector_analysis:
+                for sector in sector_analysis:
+                    sector_msg += f"• {sector.get('섹터명')}\n"
+                    sector_msg += f"  - 종목수: {sector.get('종목수', 0)}개\n"
+                    sector_msg += f"  - 평가금액: {sector.get('평가금액', 0):,.0f}원\n"
+                    sector_msg += f"  - 손익금액: {sector.get('손익금액', 0):,.0f}원\n"
+                    sector_msg += f"  - 비중: {sector.get('비중', 0):.2f}%\n"
+                    sector_msg += f"  - 수익률: {sector.get('수익률', 0):.2f}%\n\n"
+            else:
+                sector_msg += "• 섹터 분석 데이터가 없습니다.\n\n"
+            
+            # 투자 추천 메시지 생성
+            recommendations_msg = "<b>💡 투자 추천</b>\n"
+            
+            recommendations = report.get("recommendations", [])
+            if recommendations:
+                for rec in recommendations:
+                    recommendations_msg += f"• {rec.get('종목명')} ({rec.get('종목코드')})\n"
+                    recommendations_msg += f"  - 추천: {rec.get('추천')}\n"
+                    recommendations_msg += f"  - 사유: {rec.get('사유')}\n\n"
+            else:
+                recommendations_msg += "• 현재 투자 추천이 없습니다.\n\n"
+            
+            # 면책조항 추가
+            disclaimer_msg = "<i>※ 이 리포트는 자동으로 생성된 정보로, 투자 결정에 참고자료로만 활용하시길 권장드립니다. 투자는 본인의 판단과 책임하에 진행하시기 바랍니다.</i>"
+            
+            # 메시지를 나눠서 전송 (텔레그램 메시지 길이 제한 때문)
+            self.send_notification('status', account_msg)
+            time.sleep(1)  # API 제한 방지
+            self.send_notification('status', positions_msg)
+            time.sleep(1)
+            self.send_notification('status', trades_msg)
+            time.sleep(1)
+            self.send_notification('status', monthly_msg)
+            time.sleep(1)
+            self.send_notification('status', sector_msg)
+            time.sleep(1)
+            self.send_notification('status', recommendations_msg + disclaimer_msg)
+            
+            logger.info("투자 내역 종합 리포트 전송 완료")
+            
+        except Exception as e:
+            logger.error(f"투자 내역 종합 리포트 전송 중 오류 발생: {e}")
+            self.send_notification('status', f"⚠️ 투자 리포트 전송 중 오류 발생: {str(e)}")
+    
+    def send_investment_report_kr(self):
+        """한국 시장 투자 내역 종합 리포트 생성 및 전송"""
+        logger.info("한국 시장 투자 내역 종합 리포트 생성 시작")
+        
+        try:
+            # 자동 매매 활성화 여부 확인
+            if not self.auto_trading_enabled or not self.auto_trader:
+                logger.warning("자동 매매 시스템이 비활성화되어 있어 투자 리포트를 생성할 수 없습니다.")
+                return
+            
+            # 투자 내역 종합 리포트 생성
+            report = self.auto_trader.generate_investment_report()
+            
+            # 리포트 생성 실패 시
+            if not report or "error" in report.get("account_summary", {}):
+                error_msg = report.get("account_summary", {}).get("error", "알 수 없는 오류")
+                logger.error(f"한국 시장 투자 리포트 생성 실패: {error_msg}")
+                self.send_notification('status', f"⚠️ 한국 시장 투자 리포트 생성 실패: {error_msg}")
+                return
+            
+            # 계좌 요약 정보 메시지 생성
+            account_msg = "📊 <b>한국 시장 투자 내역 종합 리포트</b>\n\n"
+            account_msg += f"<i>{report.get('formatted_date')} 기준</i>\n\n"
+            account_msg += "<b>🏦 계좌 요약 정보</b>\n"
+            
+            account_data = report.get("account_summary", {})
+            account_msg += f"• 총평가금액: {account_data.get('총평가금액', 0):,.0f}원\n"
+            account_msg += f"• 주식평가금액: {account_data.get('주식평가금액', 0):,.0f}원\n"
+            account_msg += f"• 예수금: {account_data.get('예수금', 0):,.0f}원\n"
+            account_msg += f"• 주문가능금액: {account_data.get('주문가능금액', 0):,.0f}원\n"
+            account_msg += f"• D+2예수금: {account_data.get('D+2예수금', 0):,.0f}원\n"
+            account_msg += f"• 투자원금: {account_data.get('투자원금', 0):,.0f}원\n"
+            account_msg += f"• 총손익: {account_data.get('총손익', 0):,.0f}원\n"
+            account_msg += f"• 수익률: {account_data.get('수익률', 0):.2f}%\n"
+            account_msg += f"• 보유종목수: {account_data.get('보유종목수', 0)}개\n"
+            
+            # 보유 종목 정보 메시지 생성 (한국 시장 종목만)
+            positions_msg = "<b>📈 한국 보유 종목 정보</b>\n"
+            
+            positions = []
+            for pos in report.get("positions", []):
+                symbol = pos.get('종목코드', '')
+                # 한국 주식 코드는 보통 6자리 숫자 (정규식으로 필터링)
+                if re.match(r'^\d{6}$', symbol):
+                    positions.append(pos)
+            
+            if positions:
+                # 손익률 기준으로 내림차순 정렬
+                positions.sort(key=lambda x: x.get('손익률', 0), reverse=True)
+                
+                for position in positions:
+                    positions_msg += f"• {position.get('종목명')} ({position.get('종목코드')})\n"
+                    positions_msg += f"  - 보유수량: {position.get('보유수량', 0):,.0f}주\n"
+                    positions_msg += f"  - 평균단가: {position.get('평균단가', 0):,.0f}원\n"
+                    positions_msg += f"  - 현재가: {position.get('현재가', 0):,.0f}원\n"
+                    positions_msg += f"  - 평가금액: {position.get('평가금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익금액: {position.get('손익금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익률: {position.get('손익률', 0):.2f}%\n"
+                    positions_msg += f"  - 비중: {position.get('비중', 0):.2f}%\n\n"
+            else:
+                positions_msg += "• 한국 보유 종목이 없습니다.\n\n"
+            
+            # 최근 거래 내역 메시지 생성 (한국 시장 거래만)
+            trades_msg = "<b>🔄 최근 한국 시장 거래 내역</b>\n"
+            
+            recent_trades = []
+            for trade in report.get("recent_trades", []):
+                symbol = trade.get('종목코드', '')
+                # 한국 주식 코드는 보통 6자리 숫자
+                if re.match(r'^\d{6}$', symbol):
+                    recent_trades.append(trade)
+                    
+            if recent_trades:
+                # 최근 5개 거래만 표시
+                for trade in recent_trades[:5]:
+                    trades_msg += f"• {trade.get('종목명')} ({trade.get('종목코드')})\n"
+                    trades_msg += f"  - {trade.get('거래유형')}: {trade.get('거래수량', 0):,.0f}주\n"
+                    trades_msg += f"  - 거래가격: {trade.get('거래가격', 0):,.0f}원\n"
+                    trades_msg += f"  - 거래금액: {trade.get('거래금액', 0):,.0f}원\n"
+                    
+                    # 매도인 경우에만 손익 정보 표시
+                    if trade.get('거래유형') == "매도":
+                        trades_msg += f"  - 손익금액: {trade.get('손익금액', 0):,.0f}원\n"
+                        trades_msg += f"  - 손익률: {trade.get('손익률', 0):.2f}%\n"
+                        
+                    trades_msg += f"  - 거래시간: {trade.get('거래시간')}\n\n"
+            else:
+                trades_msg += "• 최근 한국 시장 거래 내역이 없습니다.\n\n"
+            
+            # 섹터 분석 메시지 생성 (한국 시장 종목에 대해서만)
+            sector_msg = "<b>🏭 한국 시장 섹터 분석</b>\n"
+            
+            sector_analysis = report.get("sector_analysis", [])
+            if sector_analysis:
+                for sector in sector_analysis:
+                    sector_msg += f"• {sector.get('섹터명')}\n"
+                    sector_msg += f"  - 종목수: {sector.get('종목수', 0)}개\n"
+                    sector_msg += f"  - 평가금액: {sector.get('평가금액', 0):,.0f}원\n"
+                    sector_msg += f"  - 손익금액: {sector.get('손익금액', 0):,.0f}원\n"
+                    sector_msg += f"  - 비중: {sector.get('비중', 0):.2f}%\n"
+                    sector_msg += f"  - 수익률: {sector.get('수익률', 0):.2f}%\n\n"
+            else:
+                sector_msg += "• 섹터 분석 데이터가 없습니다.\n\n"
+            
+            # 한국 시장 종목에 대한 투자 추천 필터링
+            kr_recommendations = []
+            for rec in report.get("recommendations", []):
+                symbol = rec.get('종목코드', '')
+                if re.match(r'^\d{6}$', symbol):
+                    kr_recommendations.append(rec)
+            
+            # 투자 추천 메시지 생성
+            recommendations_msg = "<b>💡 한국 종목 투자 추천</b>\n"
+            
+            if kr_recommendations:
+                for rec in kr_recommendations:
+                    recommendations_msg += f"• {rec.get('종목명')} ({rec.get('종목코드')})\n"
+                    recommendations_msg += f"  - 추천: {rec.get('추천')}\n"
+                    recommendations_msg += f"  - 사유: {rec.get('사유')}\n\n"
+            else:
+                recommendations_msg += "• 현재 한국 종목 투자 추천이 없습니다.\n\n"
+            
+            # 면책조항 추가
+            disclaimer_msg = "<i>※ 이 리포트는 자동으로 생성된 정보로, 투자 결정에 참고자료로만 활용하시길 권장드립니다. 투자는 본인의 판단과 책임하에 진행하시기 바랍니다.</i>"
+            
+            # 메시지를 나눠서 전송 (텔레그램 메시지 길이 제한 때문)
+            self.send_notification('status', account_msg)
+            time.sleep(1)  # API 제한 방지
+            self.send_notification('status', positions_msg)
+            time.sleep(1)
+            self.send_notification('status', trades_msg)
+            time.sleep(1)
+            self.send_notification('status', sector_msg)
+            time.sleep(1)
+            self.send_notification('status', recommendations_msg + disclaimer_msg)
+            
+            logger.info("한국 시장 투자 내역 종합 리포트 전송 완료")
+            
+        except Exception as e:
+            logger.error(f"한국 시장 투자 내역 종합 리포트 전송 중 오류 발생: {e}")
+            self.send_notification('status', f"⚠️ 한국 시장 투자 리포트 전송 중 오류 발생: {str(e)}")
+
+    def send_investment_report_us(self):
+        """미국 시장 투자 내역 종합 리포트 생성 및 전송"""
+        logger.info("미국 시장 투자 내역 종합 리포트 생성 시작")
+        
+        try:
+            # 자동 매매 활성화 여부 확인
+            if not self.auto_trading_enabled or not self.auto_trader:
+                logger.warning("자동 매매 시스템이 비활성화되어 있어 투자 리포트를 생성할 수 없습니다.")
+                return
+            
+            # 투자 내역 종합 리포트 생성
+            report = self.auto_trader.generate_investment_report()
+            
+            # 리포트 생성 실패 시
+            if not report or "error" in report.get("account_summary", {}):
+                error_msg = report.get("account_summary", {}).get("error", "알 수 없는 오류")
+                logger.error(f"미국 시장 투자 리포트 생성 실패: {error_msg}")
+                self.send_notification('status', f"⚠️ 미국 시장 투자 리포트 생성 실패: {error_msg}")
+                return
+            
+            # 계좌 요약 정보 메시지 생성
+            account_msg = "📊 <b>미국 시장 투자 내역 종합 리포트</b>\n\n"
+            account_msg += f"<i>{report.get('formatted_date')} 기준</i>\n\n"
+            account_msg += "<b>🏦 계좌 요약 정보</b>\n"
+            
+            account_data = report.get("account_summary", {})
+            account_msg += f"• 총평가금액: {account_data.get('총평가금액', 0):,.0f}원\n"
+            account_msg += f"• 주식평가금액: {account_data.get('주식평가금액', 0):,.0f}원\n"
+            account_msg += f"• 예수금: {account_data.get('예수금', 0):,.0f}원\n"
+            account_msg += f"• 주문가능금액: {account_data.get('주문가능금액', 0):,.0f}원\n"
+            account_msg += f"• 투자원금: {account_data.get('투자원금', 0):,.0f}원\n"
+            account_msg += f"• 총손익: {account_data.get('총손익', 0):,.0f}원\n"
+            account_msg += f"• 수익률: {account_data.get('수익률', 0):.2f}%\n"
+            account_msg += f"• 보유종목수: {account_data.get('보유종목수', 0)}개\n"
+            
+            # 보유 종목 정보 메시지 생성 (미국 시장 종목만)
+            positions_msg = "<b>📈 미국 보유 종목 정보</b>\n"
+            
+            positions = []
+            for pos in report.get("positions", []):
+                symbol = pos.get('종목코드', '')
+                # 미국 주식 코드는 보통 알파벳으로만 이루어짐
+                if not re.match(r'^\d{6}$', symbol) and symbol:  # 6자리 숫자가 아니면 미국 종목으로 간주
+                    positions.append(pos)
+            
+            if positions:
+                # 손익률 기준으로 내림차순 정렬
+                positions.sort(key=lambda x: x.get('손익률', 0), reverse=True)
+                
+                for position in positions:
+                    positions_msg += f"• {position.get('종목명')} ({position.get('종목코드')})\n"
+                    positions_msg += f"  - 보유수량: {position.get('보유수량', 0):,.0f}주\n"
+                    positions_msg += f"  - 평균단가: ${position.get('평균단가', 0)/100:,.2f}\n"
+                    positions_msg += f"  - 현재가: ${position.get('현재가', 0)/100:,.2f}\n"
+                    positions_msg += f"  - 평가금액: {position.get('평가금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익금액: {position.get('손익금액', 0):,.0f}원\n"
+                    positions_msg += f"  - 손익률: {position.get('손익률', 0):.2f}%\n"
+                    positions_msg += f"  - 비중: {position.get('비중', 0):.2f}%\n\n"
+            else:
+                positions_msg += "• 미국 보유 종목이 없습니다.\n\n"
+            
+            # 최근 거래 내역 메시지 생성 (미국 시장 거래만)
+            trades_msg = "<b>🔄 최근 미국 시장 거래 내역</b>\n"
+            
+            recent_trades = []
+            for trade in report.get("recent_trades", []):
+                symbol = trade.get('종목코드', '')
+                # 미국 주식 코드는 보통 알파벳으로만 이루어짐
+                if not re.match(r'^\d{6}$', symbol) and symbol:
+                    recent_trades.append(trade)
+                    
+            if recent_trades:
+                # 최근 5개 거래만 표시
+                for trade in recent_trades[:5]:
+                    trades_msg += f"• {trade.get('종목명')} ({trade.get('종목코드')})\n"
+                    trades_msg += f"  - {trade.get('거래유형')}: {trade.get('거래수량', 0):,.0f}주\n"
+                    trades_msg += f"  - 거래가격: ${trade.get('거래가격', 0)/100:,.2f}\n"
+                    trades_msg += f"  - 거래금액: {trade.get('거래금액', 0):,.0f}원\n"
+                    
+                    # 매도인 경우에만 손익 정보 표시
+                    if trade.get('거래유형') == "매도":
+                        trades_msg += f"  - 손익금액: {trade.get('손익금액', 0):,.0f}원\n"
+                        trades_msg += f"  - 손익률: {trade.get('손익률', 0):.2f}%\n"
+                        
+                    trades_msg += f"  - 거래시간: {trade.get('거래시간')}\n\n"
+            else:
+                trades_msg += "• 최근 미국 시장 거래 내역이 없습니다.\n\n"
+            
+            # 미국 시장 종목에 대한 투자 추천 필터링
+            us_recommendations = []
+            for rec in report.get("recommendations", []):
+                symbol = rec.get('종목코드', '')
+                if not re.match(r'^\d{6}$', symbol) and symbol:
+                    us_recommendations.append(rec)
+            
+            # 투자 추천 메시지 생성
+            recommendations_msg = "<b>💡 미국 종목 투자 추천</b>\n"
+            
+            if us_recommendations:
+                for rec in us_recommendations:
+                    recommendations_msg += f"• {rec.get('종목명')} ({rec.get('종목코드')})\n"
+                    recommendations_msg += f"  - 추천: {rec.get('추천')}\n"
+                    recommendations_msg += f"  - 사유: {rec.get('사유')}\n\n"
+            else:
+                recommendations_msg += "• 현재 미국 종목 투자 추천이 없습니다.\n\n"
+            
+            # 면책조항 추가
+            disclaimer_msg = "<i>※ 이 리포트는 자동으로 생성된 정보로, 투자 결정에 참고자료로만 활용하시길 권장드립니다. 투자는 본인의 판단과 책임하에 진행하시기 바랍니다.</i>"
+            
+            # 메시지를 나눠서 전송 (텔레그램 메시지 길이 제한 때문)
+            self.send_notification('status', account_msg)
+            time.sleep(1)  # API 제한 방지
+            self.send_notification('status', positions_msg)
+            time.sleep(1)
+            self.send_notification('status', trades_msg)
+            time.sleep(1)
+            self.send_notification('status', recommendations_msg + disclaimer_msg)
+            
+            logger.info("미국 시장 투자 내역 종합 리포트 전송 완료")
+            
+        except Exception as e:
+            logger.error(f"미국 시장 투자 내역 종합 리포트 전송 중 오류 발생: {e}")
+            self.send_notification('status', f"⚠️ 미국 시장 투자 리포트 전송 중 오류 발생: {str(e)}")
+    
     def start(self):
         """시스템 시작"""
         if self.is_running:
@@ -966,6 +1374,10 @@ class StockAnalysisSystem:
         # GPT 자동 매매: 30분 간격으로 실행
         gpt_trading_interval = getattr(self.config, 'GPT_TRADING_MONITOR_INTERVAL', 30)
         schedule.every(gpt_trading_interval).minutes.do(self.run_gpt_trading_cycle)
+        
+        # 투자 내역 종합 리포트: 국내장 마감 직후 (15:40)와 미국장 마감 직후 (06:10) 전송
+        schedule.every().day.at("15:40").do(self.send_investment_report_kr)  # 한국장 마감 직후
+        schedule.every().day.at("06:10").do(self.send_investment_report_us)  # 미국장 마감 직후 (한국시간)
         
         # 메인 루프
         try:
