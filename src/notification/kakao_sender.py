@@ -522,7 +522,19 @@ class KakaoSender:
         trade_quantity = trade_info.get('quantity', 0)  # 매매 수량
         total_quantity = trade_info.get('total_quantity', 0)  # 매매 후 총 보유 수량
         avg_price = trade_info.get('avg_price', 0)  # 평균단가
+        
+        # 계좌 잔고는 다양한 필드에서 확인 (둘 다 확인)
         balance = trade_info.get('balance', 0)  # 계좌 잔고
+        
+        # auto_trader.py에서는 때때로 balance 대신 다른 키를 사용할 수 있음
+        if balance == 0:
+            # account_balance 키도 확인
+            if 'account_balance' in trade_info:
+                balance = trade_info.get('account_balance', 0)
+            # total_amount 키도 확인
+            elif 'total_amount' in trade_info:
+                balance = trade_info.get('total_amount', 0)
+        
         prev_quantity = trade_info.get('prev_quantity', 0)  # 매매 전 보유 수량
         total_eval = trade_info.get('total_eval', 0)  # 총평가금액
         
@@ -537,7 +549,7 @@ class KakaoSender:
             balance = 0
             
         # 매매 수량, 보유량 값 검증 및 로깅
-        logger.info(f"매매 수량: {trade_quantity}, 이전 보유량: {prev_quantity}, 현재 보유량: {total_quantity}")
+        logger.info(f"매매 수량: {trade_quantity}, 이전 보유량: {prev_quantity}, 현재 보유량: {total_quantity}, 계좌잔고: {balance}")
         
         # 포맷팅에 사용될 값들이 None이 아닌지 확인하고 숫자형으로 변환
         try:
