@@ -509,7 +509,6 @@ class KakaoSender:
                 latest_signal = signal
         
         signal_type = latest_signal['type']
-        signal_emoji = "🔴" if signal_type == 'SELL' else "🟢"
         confidence = latest_signal.get('confidence', 0)
         
         # 매매 데이터 가져오기 (구매 수량, 평단가, 잔고 등)
@@ -519,8 +518,19 @@ class KakaoSender:
         avg_price = trade_info.get('avg_price', 0)  # 평균단가
         balance = trade_info.get('balance', 0)  # 계좌 잔고
         prev_quantity = trade_info.get('prev_quantity', 0)  # 매매 전 보유 수량
+        total_eval = trade_info.get('total_eval', 0)  # 총평가금액
         
-        # 증권사 API 관련 정보 (새로 추가됨)
+        # balance가 문자열인 경우 숫자로 변환 (TypeError 방지)
+        try:
+            if isinstance(balance, str):
+                balance = float(balance.replace(',', ''))  # 콤마 제거 후 변환
+            elif not isinstance(balance, (int, float)):
+                balance = 0  # 변환 불가능한 경우 기본값
+        except Exception as e:
+            logger.warning(f"계좌 잔고 형식 변환 중 오류: {e}, 기본값 0으로 설정")
+            balance = 0
+        
+        # 증권사 API 관련 정보
         order_no = trade_info.get('order_no', '')  # 주문 번호
         executed_price = trade_info.get('executed_price', price)  # 체결 가격
         
@@ -537,98 +547,56 @@ class KakaoSender:
         fee = trade_info.get('fee', 0)  # 수수료
         transaction_time = trade_info.get('transaction_time', '')  # 거래 시간
 
-        # 메시지 포맷 설정
-        # 매매 정보가 없는 경우, 기본 포맷으로 표시
-        if not trade_info:
-            # 기본 포맷 (구매 수량 정보 없음)
-            message = f"{signal_emoji} {signal_type}\n"
-            
-            # 종목명 표시 (종목코드를 괄호 안에 표시)
-            if stock_name:
-                message += f"{stock_name} ({symbol})\n"
-            else:
-                message += f"{symbol}\n"
-                
-            # .0 제거를 위해 정수로 변환 후 천 단위 콤마를 표시
-            message += f"현재가: {int(price):,}원"
-            
-            # 신뢰도가 있으면 추가
-            if confidence:
-                message += f" (신뢰도: {confidence*100:.1f}%)"
-        else:
-            # 확장된 포맷 (구매 수량, 평단가, 잔고 등 포함)
-            message = f"{signal_emoji} {signal_type}:\n"
-            
-            # 종목명 표시 (종목코드를 괄호 안에 표시)
-            if stock_name:
-                message += f"{stock_name} ({symbol})\n"
-            else:
-                message += f"{symbol}\n"
-            
-            # 거래 가격 및 수량 정보 - .0 제거를 위해 정수로 변환
-            message += f"현재가: {int(price):,}원"
-            
-            # 신뢰도가 있으면 추가
-            if confidence:
-                message += f" (신뢰도: {confidence*100:.1f}%)\n"
-            else:
-                message += "\n"
-                
-            # 매매 수량 및 총 보유 수량 (이전 보유량 → 현재 보유량)
-            if signal_type == "BUY":
-                message += f"매수량: {trade_quantity:,}주\n"
-                message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
-            else:  # "SELL"
-                message += f"매도량: {trade_quantity:,}주\n"
-                message += f"보유량: {prev_quantity:,}주 → {total_quantity:,}주\n"
-            
-            # 평균단가 (변동 있을 경우 이전 평단가 → 현재 평단가) - .0 제거를 위해 정수로 변환
-            prev_avg_price = trade_info.get('prev_avg_price', 0)
-            if prev_avg_price and prev_avg_price != avg_price:
-                message += f"평단가: {int(prev_avg_price):,}원 → {int(avg_price):,}원\n"
-            else:
-                message += f"평단가: {int(avg_price):,}원\n"
-            
-            # 계좌 잔고 - .0 제거를 위해 정수로 변환
-            message += f"계좌잔고: {int(balance):,}원"
+        # 메시지 포맷 설정 - 기존 스타일로 돌아가기
+        if signal_type == "BUY":
+            header_message = "BUY:"
+        else:  # "SELL"
+            header_message = "SELL:"
 
-            # 증권사 API 정보 추가 (주문 번호, 체결 상태 등)
-            if order_no:
-                message += f"\n\n📝 주문정보"
-                message += f"\n주문번호: {order_no}"
-                
-                # 체결 정보가 있으면 추가
-                if executed_qty > 0:
-                    message += f"\n체결수량: {executed_qty:,}주"
-                    # 체결가격 - .0 제거를 위해 정수로 변환
-                    message += f"\n체결가격: {int(executed_price):,}원"
-                
-                # 미체결 수량이 있으면 표시
-                if remain_qty > 0:
-                    message += f"\n미체결: {remain_qty:,}주"
-                
-                # 주문 상태 표시
-                if order_status:
-                    status_emoji = "✅" if "체결" in order_status else "⏳"
-                    message += f"\n주문상태: {status_emoji} {order_status}"
-                
-                # 수수료 정보 - .0 제거를 위해 정수로 변환
-                if fee > 0:
-                    message += f"\n수수료: {int(fee):,}원"
-                
-                # 거래 시간
-                if transaction_time:
-                    message += f"\n거래시간: {transaction_time}"
+        # 기존 포맷 (구매 수량 정보 포함)
+        message = f"{header_message}\n"
         
-        # 신호 이유 추가 (짧게)
-        reason = latest_signal.get('reason', '')
-        if reason and len(reason) > 0:
-            # 이유가 길면 첫 문장만 추출
-            sentences = re.split(r'(?<=[.!?])\s+', reason)
-            first_reason = sentences[0] if sentences else reason
-            if len(first_reason) > 80:  # 너무 길면 자르기
-                first_reason = first_reason[:77] + "..."
-            message += f"\n\n💬 {first_reason}"
+        # 종목명 표시 (종목코드를 괄호 안에 표시)
+        if stock_name:
+            message += f"{stock_name} ({symbol})\n"
+        else:
+            message += f"{symbol}\n"
+            
+        # 현재가와 신뢰도 표시 - .0 제거를 위해 정수로 변환 후 천 단위 콤마 표시
+        message += f"현재가: {int(price):,}원"
+        
+        # 신뢰도가 있으면 추가
+        if confidence:
+            message += f" (신뢰도: {confidence*100:.1f}%)\n"
+        else:
+            message += "\n"
+            
+        # 매매 수량 표시
+        message += f"매수량: {trade_quantity}주\n"
+        
+        # 보유량 변화 표시 (이전 → 현재)
+        message += f"보유량: {prev_quantity}주 → {total_quantity}주\n"
+        
+        # 평단가 (.0 제거를 위해 정수로 변환)
+        if avg_price > 0:
+            message += f"평단가: {int(avg_price):,}원\n"
+        else:
+            message += f"평단가: 0원\n"
+            
+        # 계좌 잔고 (.0 제거를 위해 정수로 변환)
+        if balance > 0:
+            message += f"계좌잔고: {int(balance):,}원"
+        else:
+            message += f"계좌잔고: 0원"
+
+        # 주문 정보 추가
+        if order_no:
+            message += f"\n\n📝 주문정보\n"
+            message += f"주문번호: {order_no}\n"
+            
+            # 거래 시간 (있는 경우)
+            if transaction_time:
+                message += f"거래시간: {transaction_time}"
         
         # 메시지 전송
         return self.send_message(message)

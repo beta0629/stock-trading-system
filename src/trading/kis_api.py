@@ -162,9 +162,46 @@ class KISAPI(BrokerBase):
             # 주문 정보
             code = order_data.get('PDNO', '코드 없음')
             quantity = order_data.get('ORD_QTY', '0')
-            price = order_data.get('ORD_UNPR', '0')
+            price_str = order_data.get('ORD_UNPR', '0')
             order_div = "시장가" if order_data.get('ORD_DVSN', '') == "01" else "지정가"
             
+            # 실제 주문 가격 처리
+            price = 0
+            try:
+                price = int(price_str)
+            except (ValueError, TypeError):
+                price = 0
+                
+            # 시장가 주문인 경우 현재가 조회
+            if order_div == "시장가" and price == 0:
+                try:
+                    current_price = self.get_current_price(code)
+                    if current_price > 0:
+                        price = current_price
+                        self.logger.debug(f"시장가 주문의 표시 가격을 현재가({price:,}원)로 설정합니다.")
+                except Exception as e:
+                    self.logger.warning(f"시장가 주문의 현재가 조회 실패: {e}")
+                    
+            # 주문 체결 정보에서 가격 확인 (응답 데이터에 체결 가격이 있는 경우)
+            if success and response_data:
+                try:
+                    # output 필드에서 체결 가격 정보 확인
+                    output = response_data.get('output', {})
+                    if isinstance(output, dict) and 'ODNO' in output:
+                        # 체결 가격 정보가 있는지 확인 (필드명이 다를 수 있음)
+                        for price_field in ['EXECPRC', 'EXEC_PRC', 'CTTR_PRPR', 'PRPR']:
+                            if price_field in output and output.get(price_field):
+                                try:
+                                    exec_price = int(output.get(price_field))
+                                    if exec_price > 0:
+                                        price = exec_price
+                                        self.logger.debug(f"응답 데이터에서 체결 가격({price:,}원)을 확인했습니다.")
+                                        break
+                                except (ValueError, TypeError):
+                                    continue
+                except Exception as e:
+                    self.logger.warning(f"응답 데이터 처리 중 오류 발생: {e}")
+                        
             # 응답 정보
             order_no = ""
             msg = ""
@@ -178,12 +215,18 @@ class KISAPI(BrokerBase):
             trading_mode = "실전투자" if self.real_trading else "모의투자"
             log_msg = f"[{now}] [{trading_mode}] [{order_type}] "
             
+            # 숫자 형식으로 가격 포맷팅 (천 단위 콤마 추가)
+            try:
+                price_formatted = f"{price:,}원"
+            except (ValueError, TypeError):
+                price_formatted = f"{price}원"
+            
             if success:
-                log_msg += f"성공 - 종목코드: {code}, 수량: {quantity}, 가격: {price}원, 주문유형: {order_div}"
+                log_msg += f"성공 - 종목코드: {code}, 수량: {quantity}, 가격: {price_formatted}, 주문유형: {order_div}"
                 if order_no:
                     log_msg += f", 주문번호: {order_no}"
             else:
-                log_msg += f"실패 - 종목코드: {code}, 수량: {quantity}, 가격: {price}원, 주문유형: {order_div}"
+                log_msg += f"실패 - 종목코드: {code}, 수량: {quantity}, 가격: {price_formatted}, 주문유형: {order_div}"
                 if error:
                     log_msg += f", 오류: {error}"
                 if msg:
@@ -204,8 +247,8 @@ class KISAPI(BrokerBase):
                 with open(log_file, 'a', encoding='utf-8') as f:
                     f.write(log_msg + "\n")
                     
-                    # 응답 데이터 상세 기록 (실패한 경우)
-                    if not success and response_data:
+                    # 응답 데이터 상세 기록
+                    if response_data:
                         f.write(f"응답 데이터: {json.dumps(response_data, ensure_ascii=False, indent=2)}\n")
                     
                     # 구분선 추가
@@ -234,23 +277,25 @@ class KISAPI(BrokerBase):
         한국투자증권 API 연결 (토큰 발급)
         """
         try:
+            # 토큰 발급 URL
             url = urljoin(self.base_url, "oauth2/tokenP")
             
-            # 필수 설정값 확인
-            if not self.app_key or not self.app_secret:
-                logger.error("APP_KEY와 APP_SECRET이 설정되지 않았습니다.")
-                return False
-                
+            # 요청 헤더
             headers = {
                 "content-type": "application/json"
             }
             
+            # 요청 바디
             body = {
                 "grant_type": "client_credentials",
                 "appkey": self.app_key,
                 "appsecret": self.app_secret
             }
             
+            # API 요청 전 로그
+            logger.info(f"한국투자증권 API 토큰 발급 요청 - URL: {url}")
+            
+            # 토큰 발급 요청
             response = requests.post(url, headers=headers, data=json.dumps(body))
             response_data = response.json()
             
@@ -1412,6 +1457,19 @@ class KISAPI(BrokerBase):
             else:  # 미국 주식인 경우
                 trade_symbol = symbol
 
+            # 매수 전 보유 상태 확인
+            old_positions = self.get_positions()
+            old_quantity = 0
+            old_avg_price = 0
+
+            # 기존 보유 여부 및 수량/평단가 확인
+            for pos in old_positions:
+                if pos.get('종목코드', '').strip() == symbol.strip() or pos.get('종목코드', '').strip() == trade_symbol.strip():
+                    old_quantity = pos.get('quantity', 0)
+                    old_avg_price = pos.get('avg_price', 0)
+                    logger.info(f"매수 전 보유 상태: {symbol}, 수량: {old_quantity}주, 평단가: {old_avg_price:,}원")
+                    break
+
             # 매수 주문 실행
             order_number = self.buy_stock(
                 trade_symbol, quantity, price, 
@@ -1427,6 +1485,25 @@ class KISAPI(BrokerBase):
                     "order_no": order_number,
                     "message": f"매수 주문이 접수되었습니다. (주문번호: {order_number})"
                 }
+                
+                # 계좌 잔고 업데이트
+                account_balance = self.get_balance(force_refresh=True)
+                deposit = account_balance.get('예수금', 0)
+                total_eval = account_balance.get('총평가금액', 0)
+                
+                # 매수 후 보유 상태 확인 - 시간을 두고 API 호출
+                time.sleep(1)
+                new_positions = self.get_positions()
+                new_quantity = 0
+                new_avg_price = 0
+                
+                # 매수 후 보유량과 평단가 확인
+                for pos in new_positions:
+                    if pos.get('종목코드', '').strip() == symbol.strip() or pos.get('종목코드', '').strip() == trade_symbol.strip():
+                        new_quantity = pos.get('quantity', 0)
+                        new_avg_price = pos.get('avg_price', 0)
+                        logger.info(f"매수 후 보유 상태: {symbol}, 수량: {new_quantity}주, 평단가: {new_avg_price:,}원")
+                        break
                 
                 # 카카오톡 메시지 전송
                 try:
@@ -1464,8 +1541,26 @@ class KISAPI(BrokerBase):
                             if price > 0 and order_type_str == 'limit':
                                 message += f"• 지정가: {price:,}원\n"
                             message += f"• 주문번호: {order_number}\n"
+                            
+                            # 보유 정보 추가
+                            if new_quantity > 0:
+                                message += f"• 보유수량: {new_quantity}주\n"
+                                message += f"• 평단가: {new_avg_price:,}원\n"
+                                
+                                # 기존 보유량이 있었다면 증가량 표시
+                                if old_quantity > 0:
+                                    quantity_diff = new_quantity - old_quantity
+                                    message += f"• 증가: {quantity_diff}주 (+{(quantity_diff * 100 / old_quantity):.1f}%)\n"
+                            else:
+                                # API로 바로 업데이트 안된 경우 추정치 표시
+                                estimated_quantity = old_quantity + quantity
+                                message += f"• 예상 보유수량: {estimated_quantity}주\n"
+                            
                             message += f"• 시장: {'국내' if market == 'KR' else '미국'}\n"
-                            message += f"• 모드: {'모의투자' if not self.real_trading else '실전투자'}"
+                            message += f"• 모드: {'모의투자' if not self.real_trading else '실전투자'}\n"
+                            # 계좌 잔고 정보 추가
+                            message += f"• 계좌잔고: {deposit:,}원\n"
+                            message += f"• 총평가금액: {total_eval:,}원"
                             
                             # 메시지 전송
                             kakao_sender.send_message(message)
