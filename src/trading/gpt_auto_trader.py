@@ -12,6 +12,7 @@ import datetime
 from typing import Dict, List, Any, Optional, Union
 import pandas as pd
 import json
+import numpy as np  # numpy 추가
 
 from src.ai_analysis.stock_selector import StockSelector
 from src.trading.auto_trader import AutoTrader, TradeAction, OrderType
@@ -704,57 +705,115 @@ class GPTAutoTrader:
             expected_total = quantity * current_price
             logger.info(f"{symbol} 매수 실행: {quantity}주 × {current_price:,.0f}원 = {expected_total:,.0f}원 (예상)")
             
-            # 매수 실행
-            order_result = self.auto_trader._execute_order(
-                symbol=symbol,
-                action=TradeAction.BUY,
-                quantity=quantity,
-                market=market
-            )
+            # 시뮬레이션 모드 확인 (명시적으로 config에서 가져옴)
+            simulation_mode = getattr(self.config, 'SIMULATION_MODE', False)
+            logger.info(f"현재 거래 모드: {'시뮬레이션' if simulation_mode else '실거래'} (SIMULATION_MODE={simulation_mode})")
             
-            if order_result.get('status') == 'EXECUTED':
-                logger.info(f"{symbol} 매수 주문 체결 완료")
+            # auto_trader의 시뮬레이션 모드도 확인
+            auto_trader_simulation = getattr(self.auto_trader, 'simulation_mode', False)
+            logger.info(f"AutoTrader 시뮬레이션 모드: {auto_trader_simulation}")
+            
+            # 명시적으로 auto_trader의 시뮬레이션 모드를 config와 일치시킴
+            self.auto_trader.simulation_mode = simulation_mode
+            
+            # 매수 실행 (실거래 모드일 때만 실제 주문 실행)
+            if not simulation_mode:
+                logger.info("실거래 모드로 주문을 실행합니다.")
+                order_result = self.auto_trader._execute_order(
+                    symbol=symbol,
+                    action=TradeAction.BUY,
+                    quantity=quantity,
+                    market=market
+                )
                 
-                # 매매 기록에 추가
+                if order_result.get('status') == 'EXECUTED':
+                    logger.info(f"{symbol} 매수 주문 체결 완료 - 실제 거래 실행됨")
+                    
+                    # 매매 기록에 추가
+                    trade_record = {
+                        'timestamp': get_current_time().isoformat(),
+                        'symbol': symbol,
+                        'name': name,
+                        'action': 'BUY',
+                        'quantity': quantity,
+                        'price': current_price,
+                        'total': quantity * current_price,
+                        'market': market,
+                        'source': 'GPT',
+                        'order_id': order_result.get('order_id', ''),
+                        'suggested_weight': suggested_weight * 100
+                    }
+                    self.trade_history.append(trade_record)
+                    
+                    # 주문 후 잔고 변화 확인을 위해 지연시간 추가
+                    logger.info(f"주문 체결 후 API 반영 대기 시작...")
+                    time.sleep(10)  # 10초로 증가 - 모의투자 API 반영 시간 고려
+                    
+                    # 매수 후 계좌 잔고 확인 - 증권사 API 데이터만 사용
+                    post_balance_info = self.broker.get_balance()
+                    post_available_cash = post_balance_info.get('주문가능금액', post_balance_info.get('예수금', 0))
+                    logger.info(f"매수 후 주문가능금액: {post_available_cash:,.0f}원")
+                    
+                    # 잔고 변화 확인 및 로깅 (정보 제공 목적으로만 사용)
+                    cash_diff = pre_available_cash - post_available_cash
+                    logger.info(f"주문가능금액 변화: -{cash_diff:,.0f}원 (예상: -{expected_total:,.0f}원)")
+                    
+                    # 보유 종목 업데이트 (증권사 API에서 제공하는 데이터만 사용)
+                    self._load_current_holdings()
+                    
+                    # 알림 전송
+                    if self.notifier:
+                        self.notifier.send_message(f"💰 주식 매수 완료: {name}({symbol})\n"
+                                                  f"• 수량: {quantity:,}주\n"
+                                                  f"• 단가: {current_price:,}원\n"
+                                                  f"• 총액: {expected_total:,}원\n"
+                                                  f"• 거래모드: 실거래")
+                    
+                    return True
+                else:
+                    logger.warning(f"{symbol} 매수 주문 실패: {order_result.get('message', '알 수 없는 오류')}")
+                    return False
+            else:
+                # 시뮬레이션 모드일 경우 매매 로그만 남기고 성공으로 처리
+                logger.info(f"{symbol} 매수 주문 시뮬레이션 완료 - 실제 거래는 발생하지 않음")
+                
+                # 매매 기록에 추가 (시뮬레이션 표시)
                 trade_record = {
                     'timestamp': get_current_time().isoformat(),
                     'symbol': symbol,
                     'name': name,
-                    'action': 'BUY',
+                    'action': 'BUY (SIM)',  # 시뮬레이션 표시
                     'quantity': quantity,
                     'price': current_price,
                     'total': quantity * current_price,
                     'market': market,
                     'source': 'GPT',
-                    'order_id': order_result.get('order_id', ''),
                     'suggested_weight': suggested_weight * 100
                 }
                 self.trade_history.append(trade_record)
                 
-                # 주문 후 잔고 변화 확인을 위해 지연시간 추가
-                logger.info(f"주문 체결 후 API 반영 대기 시작...")
-                time.sleep(10)  # 10초로 증가 - 모의투자 API 반영 시간 고려
+                # 시뮬레이션 보유 종목에 추가
+                if symbol not in self.holdings:
+                    self.holdings[symbol] = {
+                        'symbol': symbol,
+                        'name': name,
+                        'quantity': quantity,
+                        'avg_price': current_price,
+                        'current_price': current_price,
+                        'market': market,
+                        'entry_time': get_current_time().isoformat(),
+                        'simulation': True  # 시뮬레이션 표시
+                    }
                 
-                # 매수 후 계좌 잔고 확인 - 증권사 API 데이터만 사용
-                post_balance_info = self.broker.get_balance()
-                post_available_cash = post_balance_info.get('주문가능금액', post_balance_info.get('예수금', 0))
-                logger.info(f"매수 후 주문가능금액: {post_available_cash:,.0f}원")
-                
-                # 잔고 변화 확인 및 로깅 (정보 제공 목적으로만 사용)
-                cash_diff = pre_available_cash - post_available_cash
-                logger.info(f"주문가능금액 변화: -{cash_diff:,.0f}원 (예상: -{expected_total:,.0f}원)")
-                
-                if cash_diff < expected_total * 0.5:  # 예상 금액의 절반보다 작으면 참고용 로그만 남김
-                    logger.info(f"참고: 주문가능금액 변화({cash_diff:,.0f}원)가 예상({expected_total:,.0f}원)보다 적습니다.")
-                    logger.info(f"모의투자 API에서는 잔고 업데이트가 지연될 수 있습니다.")
-                
-                # 보유 종목 업데이트 (증권사 API에서 제공하는 데이터만 사용)
-                self._load_current_holdings()
+                # 알림 전송
+                if self.notifier:
+                    self.notifier.send_message(f"💰 주식 매수 시뮬레이션: {name}({symbol})\n"
+                                              f"• 수량: {quantity:,}주\n"
+                                              f"• 단가: {current_price:,}원\n"
+                                              f"• 총액: {expected_total:,}원\n"
+                                              f"• 거래모드: 시뮬레이션 (실제 거래 없음)")
                 
                 return True
-            else:
-                logger.warning(f"{symbol} 매수 주문 실패: {order_result.get('message', '알 수 없는 오류')}")
-                return False
                 
         except Exception as e:
             logger.error(f"매수 실행 중 오류 발생: {e}")
@@ -1190,252 +1249,525 @@ class GPTAutoTrader:
             logger.error(f"매수 실행 중 오류 발생: {e}")
             return False
     
-    def _load_cached_recommendations(self):
-        """캐시된 종목 추천 정보를 로드"""
-        try:
-            # 캐시 파일 경로
-            cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'cache')
-            kr_cache_file = os.path.join(cache_dir, 'kr_stock_recommendations.json')
-            us_cache_file = os.path.join(cache_dir, 'us_stock_recommendations.json')
-            
-            logger.info(f"캐시 파일 경로: {kr_cache_file}")
-            
-            # 한국 종목 추천 캐시 로드
-            if os.path.exists(kr_cache_file):
-                try:
-                    with open(kr_cache_file, 'r', encoding='utf-8') as f:
-                        kr_data = json.load(f)
-                        
-                    logger.info("kr_stock_recommendations.json 파일 내용:")
-                    recommended_stocks = kr_data.get('recommended_stocks', [])
-                    logger.info(f"캐시 파일의 종목 수: {len(recommended_stocks)}개")
-                    
-                    # 캐시 파일의 종목 목록 상세 로그
-                    for stock in recommended_stocks:
-                        symbol = stock.get('symbol', '')
-                        name = stock.get('name', symbol)
-                        # 비중 값 확인 (명시적으로 가져오기)
-                        weight = stock.get('suggested_weight', 20) # 기본값 20%로 설정
-                        logger.info(f"캐시 파일 종목: {name}({symbol}), 비중: {weight}%")
-                    
-                    # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
-                    if not self.gpt_selections.get('KR'):
-                        # 캐시 파일에서 추천 종목 로드
-                        normalized_recommendations = []
-                        
-                        for stock in recommended_stocks:
-                            # 깊은 복사를 통해 원본 데이터 유지
-                            stock_copy = stock.copy() if stock else {}
-                            
-                            # 종목 코드와 이름이 제대로 있는지 확인
-                            symbol = stock_copy.get('symbol', '')
-                            name = stock_copy.get('name', '')
-                            
-                            if not symbol:  # 종목 코드가 없으면 건너뜀
-                                logger.warning(f"종목 코드가 없는 항목을 건너뜁니다: {stock_copy}")
-                                continue
-                                
-                            # 종목 데이터 검증 및 기본값 설정
-                            if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
-                                # 비중이 없거나 0인 경우 기본값 설정
-                                stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
-                                logger.info(f"{symbol} 종목에 기본 비중 20% 설정")
-                            
-                            if not stock_copy.get('risk_level'):
-                                stock_copy['risk_level'] = 5  # 기본 위험도 5로 설정
-                            
-                            if not stock_copy.get('target_price'):
-                                # 목표가가 없으면 현재가의 20% 상승으로 설정
-                                current_price = self.data_provider.get_current_price(symbol, "KR") if self.data_provider else 0
-                                if current_price:
-                                    stock_copy['target_price'] = current_price * 1.2
-                                else:
-                                    stock_copy['target_price'] = 0
-                            
-                            # 종목 정보 검증 완료된 데이터 추가
-                            normalized_recommendations.append(stock_copy)
-                            logger.info(f"정규화된 추천 종목: {name}({symbol}), 비중: {stock_copy['suggested_weight']}%")
-                        
-                        # 정규화된 추천 목록으로 교체
-                        self.gpt_selections['KR'] = normalized_recommendations
-                        logger.info(f"한국 종목 추천 캐시 로드: {len(normalized_recommendations)}개 종목")
-                        
-                except Exception as e:
-                    logger.error(f"한국 종목 추천 캐시 로드 중 오류: {e}")
-                    # 오류 발생 시 기본 종목 목록 사용
-                    self._use_default_stocks()
-            else:
-                logger.warning(f"한국 종목 추천 캐시 파일이 존재하지 않습니다: {kr_cache_file}")
-                # 캐시 파일이 없을 경우 기본 종목 목록 사용
-                self._use_default_stocks()
-            
-            # 미국 종목 추천 캐시 로드
-            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
-            if us_stock_trading_enabled and os.path.exists(us_cache_file):
-                try:
-                    with open(us_cache_file, 'r', encoding='utf-8') as f:
-                        us_data = json.load(f)
-                        
-                    # GPT 선정 결과가 없을 경우에만 캐시 데이터로 대체
-                    if not self.gpt_selections.get('US'):
-                        recommended_stocks = us_data.get('recommended_stocks', [])
-                        normalized_recommendations = []
-                        
-                        for stock in recommended_stocks:
-                            # 깊은 복사를 통해 원본 데이터 유지
-                            stock_copy = stock.copy() if stock else {}
-                            
-                            # 종목 코드와 이름이 제대로 있는지 확인
-                            symbol = stock_copy.get('symbol', '')
-                            name = stock_copy.get('name', '')
-                            
-                            if not symbol:  # 종목 코드가 없으면 건너뜀
-                                continue
-                                
-                            # 종목 데이터 검증 및 기본값 설정
-                            if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
-                                stock_copy['suggested_weight'] = 20  # 기본 비중 20%로 설정
-                            
-                            if not stock_copy.get('risk_level'):
-                                stock_copy['risk_level'] = 5  # 기본 위험도 5로 설정
-                            
-                            # 종목 정보 검증 완료된 데이터 추가
-                            normalized_recommendations.append(stock_copy)
-                            
-                        self.gpt_selections['US'] = normalized_recommendations
-                        logger.info(f"미국 종목 추천 캐시 로드: {len(normalized_recommendations)}개 종목")
-                        
-                        # 선택된 종목 로그 출력
-                        for stock in self.gpt_selections['US']:
-                            symbol = stock.get('symbol', '')
-                            name = stock.get('name', symbol)
-                            weight = stock.get('suggested_weight', 0)
-                            logger.info(f"미국 추천 종목: {name}({symbol}), 비중: {weight}%")
-                except Exception as e:
-                    logger.error(f"미국 종목 추천 캐시 로드 중 오류: {e}")
-            
-            return True
-        except Exception as e:
-            logger.error(f"캐시된 종목 추천 정보 로드 중 오류 발생: {e}")
-            # 오류 발생 시 기본 종목 목록 사용
-            self._use_default_stocks()
-            return False
-            
-    def _use_default_stocks(self):
-        """기본 종목 목록 사용"""
-        logger.warning("추천 종목이 없어 config.py의 기본 종목을 사용합니다.")
-        default_stocks = getattr(self.config, 'DEFAULT_STOCKS_KR', [])
+    def _execute_sell(self, symbol):
+        """
+        보유 종목 매도 실행
         
-        # 기본 종목에 비중 설정 (균등 배분)
-        if default_stocks:
-            weight_each = 100 // len(default_stocks) if default_stocks else 0
+        Args:
+            symbol: 종목 코드
             
-            normalized_recommendations = []
-            for symbol in default_stocks:
-                # 종목 코드가 있는지 확인
-                if not symbol:
-                    continue
-                    
-                stock_data = {
+        Returns:
+            bool: 매도 성공 여부
+        """
+        try:
+            if symbol not in self.holdings:
+                logger.warning(f"{symbol} 보유하고 있지 않은 종목입니다.")
+                return False
+                
+            position = self.holdings[symbol]
+            quantity = position.get('quantity', 0)
+            market = position.get('market', 'KR')
+            name = position.get('name', symbol)
+            
+            if quantity <= 0:
+                logger.warning(f"{symbol} 매도 가능한 수량이 없습니다.")
+                return False
+                
+            # 현재가 확인
+            current_price = self.data_provider.get_current_price(symbol, market)
+            
+            logger.info(f"{symbol} 매도 실행: {quantity}주 × {current_price:,.0f}원 = {quantity * current_price:,.0f}원")
+            
+            # 매도 실행
+            order_result = self.auto_trader._execute_order(
+                symbol=symbol,
+                action=TradeAction.SELL,
+                quantity=quantity,
+                market=market
+            )
+            
+            if order_result.get('status') == 'EXECUTED':
+                logger.info(f"{symbol} 매도 주문 체결 완료")
+                
+                # 매매 기록에 추가
+                trade_record = {
+                    'timestamp': get_current_time().isoformat(),
                     'symbol': symbol,
-                    'name': symbol,  # 이름 정보가 없으므로 심볼로 대체
-                    'suggested_weight': weight_each,  # 균등 비중 부여
-                    'risk_level': 5,  # 중간 위험도
-                    'target_price': 0  # 목표가 정보 없음
+                    'name': name,
+                    'action': 'SELL',
+                    'quantity': quantity,
+                    'price': current_price,
+                    'total': quantity * current_price,
+                    'market': market,
+                    'source': 'GPT',
+                    'order_id': order_result.get('order_id', '')
                 }
-                normalized_recommendations.append(stock_data)
-                logger.info(f"기본 종목 추가: {symbol}, 비중: {weight_each}%")
-            
-            self.gpt_selections['KR'] = normalized_recommendations
-        return
+                self.trade_history.append(trade_record)
+                
+                # 보유 종목 업데이트
+                self._load_current_holdings()
+                
+                return True
+            else:
+                logger.warning(f"{symbol} 매도 주문 실패: {order_result.get('message', '알 수 없는 오류')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"매도 실행 중 오류 발생: {e}")
+            return False
     
     def _optimize_technical_indicators(self):
-        """GPT를 사용하여 기술적 지표 설정 최적화"""
+        """
+        기술적 지표 파라미터 최적화
+        
+        주식 분석에 사용되는 기술적 지표의 파라미터를 최적화합니다.
+        일정 주기마다 시장 상황에 맞게 최적의 파라미터를 찾습니다.
+        """
         try:
             now = get_current_time()
             
-            # 기술적 지표 최적화가 비활성화된 경우 건너뜀
-            if not self.optimize_technical_indicators:
-                logger.info("기술적 지표 최적화가 비활성화되어 있습니다.")
-                return False
-                
-            # 마지막 최적화 후 설정된 간격이 지나지 않았으면 건너뜀
+            # 최적화가 필요한지 확인
             if self.last_technical_optimization_time:
                 hours_passed = (now - self.last_technical_optimization_time).total_seconds() / 3600
                 if hours_passed < self.technical_optimization_interval:
-                    logger.info(f"마지막 기술적 지표 최적화 후 {hours_passed:.1f}시간 경과 (설정: {self.technical_optimization_interval}시간). 최적화 건너뜀")
+                    logger.debug(f"기술적 지표 최적화 주기({self.technical_optimization_interval}시간)가 지나지 않았습니다. ({hours_passed:.1f}시간 경과)")
                     return False
+            
+            logger.info("기술적 지표 파라미터 최적화 시작...")
+            
+            # 대표 종목들의 최근 데이터를 가져와 분석
+            benchmark_symbols = ["005930", "000660", "035420"]  # 삼성전자, SK하이닉스, NAVER
+            
+            results = {}
+            for symbol in benchmark_symbols:
+                try:
+                    # 과거 데이터 가져오기 (최근 3개월)
+                    df = self.data_provider.get_historical_data(symbol, "KR", period="3mo")
                     
-            # OpenAI API 키 유효성 확인
-            if not self.stock_selector.is_api_key_valid():
-                logger.warning("유효한 OpenAI API 키가 없어 기술적 지표 최적화를 건너뜁니다.")
-                if self.notifier:
-                    self.notifier.send_message("⚠️ OpenAI API 키 오류로 GPT 기술적 지표 최적화 실패. 기본 설정을 계속 사용합니다.")
+                    if df is None or len(df) < 60:  # 최소 60일 데이터 필요
+                        logger.warning(f"{symbol} 기술적 지표 최적화를 위한 충분한 데이터가 없습니다.")
+                        continue
+                    
+                    # 1. RSI 파라미터 최적화 (기간)
+                    best_rsi_period = self._find_best_rsi_period(df)
+                    
+                    # 2. 이동평균선 파라미터 최적화
+                    best_ma_short = self._find_best_ma_short_period(df)
+                    best_ma_long = self._find_best_ma_long_period(df, best_ma_short)
+                    
+                    # 3. MACD 파라미터 최적화
+                    best_macd_params = self._find_best_macd_params(df)
+                    
+                    # 4. 볼린저 밴드 파라미터 최적화
+                    best_bollinger_params = self._find_best_bollinger_params(df)
+                    
+                    results[symbol] = {
+                        "best_rsi_period": best_rsi_period,
+                        "best_ma_short": best_ma_short,
+                        "best_ma_long": best_ma_long,
+                        "best_macd_params": best_macd_params,
+                        "best_bollinger_params": best_bollinger_params
+                    }
+                    
+                    logger.info(f"{symbol} 기술적 지표 최적화 결과: RSI 기간={best_rsi_period}, "
+                              f"단기이평={best_ma_short}, 장기이평={best_ma_long}")
+                    
+                except Exception as e:
+                    logger.error(f"{symbol} 기술적 지표 최적화 중 오류 발생: {e}")
+            
+            # 결과가 없으면 종료
+            if not results:
+                logger.warning("기술적 지표 최적화 결과가 없습니다.")
                 return False
             
-            logger.info("GPT 기술적 지표 최적화 시작")
+            # 평균 최적 파라미터 계산
+            avg_rsi_period = int(sum(r["best_rsi_period"] for r in results.values()) / len(results))
+            avg_ma_short = int(sum(r["best_ma_short"] for r in results.values()) / len(results))
+            avg_ma_long = int(sum(r["best_ma_long"] for r in results.values()) / len(results))
             
-            # 한국 시장 기술적 지표 최적화
-            kr_technical_settings = self.stock_selector.optimize_technical_indicators(market="KR")
+            # 기본 지표는 대표 종목들의 평균값으로 설정하되, 일반적인 범위 내에 있도록 제한
+            rsi_period = max(9, min(21, avg_rsi_period))
+            ma_short = max(5, min(20, avg_ma_short))
+            ma_long = max(20, min(60, avg_ma_long))
             
-            # 미국 시장 기술적 지표 최적화
-            us_technical_settings = None
-            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            # 기술적 지표 설정 업데이트
+            # 여기서는 실제로 설정을 변경하진 않고 로깅만 수행
+            logger.info(f"기술적 지표 최적화 완료: RSI 기간={rsi_period}, 단기이평={ma_short}, 장기이평={ma_long}")
             
-            if us_stock_trading_enabled:
-                logger.info("미국 주식 거래가 활성화되어 있습니다. 미국 시장 기술적 지표 최적화를 요청합니다.")
-                us_technical_settings = self.stock_selector.optimize_technical_indicators(market="US")
-            
-            # 설정 업데이트 (config.py에 저장)
-            if kr_technical_settings:
-                self.stock_selector.update_config_technical_indicators(kr_technical_settings)
-                logger.info("한국 시장에 대한 기술적 지표 설정이 업데이트되었습니다.")
-            
-            # 마지막 최적화 시간 업데이트
+            # 최적화 시간 업데이트
             self.last_technical_optimization_time = now
-            
-            # 최적화 결과 요약
-            kr_settings = kr_technical_settings.get("recommended_settings", {})
-            kr_analysis = kr_technical_settings.get("market_analysis", "")
-            kr_explanation = kr_technical_settings.get("explanation", {})
-            trading_strategy = kr_technical_settings.get("trading_strategy", "")
             
             # 알림 전송
             if self.notifier:
-                # 최적화 결과 요약 메시지
-                message = f"📊 GPT 기술적 지표 최적화 완료 ({get_current_time_str()})\n\n"
-                
-                # 주요 설정값 추가
-                message += "🔧 최적화된 주요 설정값:\n"
-                message += f"• RSI 기간: {kr_settings.get('RSI_PERIOD', 14)}, 과매수: {kr_settings.get('RSI_OVERBOUGHT', 70)}, 과매도: {kr_settings.get('RSI_OVERSOLD', 30)}\n"
-                message += f"• MACD: Fast {kr_settings.get('MACD_FAST', 12)}, Slow {kr_settings.get('MACD_SLOW', 26)}, Signal {kr_settings.get('MACD_SIGNAL', 9)}\n"
-                message += f"• 이동평균선: 단기 {kr_settings.get('MA_SHORT', 5)}일, 중기 {kr_settings.get('MA_MEDIUM', 20)}일, 장기 {kr_settings.get('MA_LONG', 60)}일\n"
-                message += f"• 볼린저밴드: 기간 {kr_settings.get('BOLLINGER_PERIOD', 20)}, 표준편차 {kr_settings.get('BOLLINGER_STD', 2.0)}\n\n"
-                
-                # 시장 분석 요약 추가
-                if kr_analysis:
-                    # 첫 100자만 전송 (너무 길면 메시지가 잘릴 수 있음)
-                    message += f"📈 시장 분석 요약:\n{kr_analysis[:200]}...\n\n"
-                
-                # 매매 전략 추가
-                if trading_strategy:
-                    message += f"💡 추천 매매 전략:\n{trading_strategy[:200]}...\n"
-                
-                # 알림 전송
-                self.notifier.send_message(message)
-                
-                # RSI 설정 변경 이유 알림 (별도 메시지로 전송)
-                if "RSI" in kr_explanation:
-                    self.notifier.send_message(f"🔍 RSI 설정 최적화 설명:\n{kr_explanation['RSI'][:500]}...")
-                
-                # MACD 설정 변경 이유 알림 (별도 메시지로 전송)
-                if "MACD" in kr_explanation:
-                    self.notifier.send_message(f"🔍 MACD 설정 최적화 설명:\n{kr_explanation['MACD'][:500]}...")
+                self.notifier.send_message(f"📊 기술적 지표 최적화 완료\n\n"
+                                         f"• RSI 기간: {rsi_period}\n"
+                                         f"• 단기 이동평균: {ma_short}\n"
+                                         f"• 장기 이동평균: {ma_long}")
             
             return True
             
         except Exception as e:
             logger.error(f"기술적 지표 최적화 중 오류 발생: {e}")
-            if self.notifier:
-                self.notifier.send_message(f"⚠️ 기술적 지표 최적화 중 오류 발생: {str(e)}")
+            return False
+    
+    def _find_best_rsi_period(self, df, min_period=5, max_period=25):
+        """
+        최적의 RSI 기간 탐색
+        
+        Args:
+            df: 주가 데이터
+            min_period: 최소 RSI 기간
+            max_period: 최대 RSI 기간
+            
+        Returns:
+            int: 최적의 RSI 기간
+        """
+        try:
+            # 기본 RSI 기간
+            default_period = 14
+            
+            # 데이터가 충분하지 않으면 기본값 반환
+            if len(df) < 50:
+                return default_period
+                
+            # 실험해볼 RSI 기간 목록
+            periods = range(min_period, max_period + 1, 2)
+            
+            # 각 기간별 RSI 계산 및 성과 측정
+            best_period = default_period
+            best_score = -float('inf')
+            
+            for period in periods:
+                try:
+                    # RSI 계산
+                    import pandas as pd
+                    import numpy as np
+                    
+                    delta = df['Close'].diff()
+                    gain = delta.where(delta > 0, 0)
+                    loss = -delta.where(delta < 0, 0)
+                    
+                    avg_gain = gain.rolling(window=period).mean()
+                    avg_loss = loss.rolling(window=period).mean()
+                    
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                    
+                    # 과매수/과매도 시그널 생성 (RSI < 30 => 매수, RSI > 70 => 매도)
+                    buy_signals = (rsi < 30).astype(int)
+                    sell_signals = (rsi > 70).astype(int)
+                    
+                    # 모의 거래 성과 계산
+                    position = 0
+                    returns = []
+                    
+                    for i in range(period, len(df)):
+                        if buy_signals.iloc[i] and position == 0:
+                            position = 1  # 매수
+                            entry_price = df['Close'].iloc[i]
+                        elif sell_signals.iloc[i] and position == 1:
+                            position = 0  # 매도
+                            exit_price = df['Close'].iloc[i]
+                            returns.append((exit_price / entry_price) - 1)
+                    
+                    # 성과 지표 계산
+                    if returns:
+                        avg_return = np.mean(returns)
+                        win_rate = sum(1 for r in returns if r > 0) / len(returns)
+                        
+                        # 종합 점수 계산 (수익률 + 승률)
+                        score = avg_return * 100 + win_rate * 50
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_period = period
+                except Exception as e:
+                    logger.debug(f"RSI 기간 {period} 테스트 중 오류: {e}")
+            
+            return best_period
+            
+        except Exception as e:
+            logger.error(f"최적 RSI 기간 탐색 중 오류: {e}")
+            return 14  # 오류 발생시 기본값
+    
+    def _find_best_ma_short_period(self, df, min_period=5, max_period=20):
+        """
+        최적의 단기 이동평균선 기간 탐색
+        
+        Args:
+            df: 주가 데이터
+            min_period: 최소 기간
+            max_period: 최대 기간
+            
+        Returns:
+            int: 최적의 단기 이동평균선 기간
+        """
+        try:
+            # 기본 단기 이동평균 기간
+            default_period = 10
+            
+            # 데이터가 충분하지 않으면 기본값 반환
+            if len(df) < 50:
+                return default_period
+                
+            # 실험해볼 기간 목록
+            periods = range(min_period, max_period + 1)
+            
+            # 각 기간별 이동평균 계산 및 성과 측정
+            best_period = default_period
+            best_sharpe = -float('inf')
+            
+            for period in periods:
+                try:
+                    # 이동평균 계산
+                    ma = df['Close'].rolling(window=period).mean()
+                    
+                    # 매매 시그널 생성 (주가 > MA => 매수 포지션, 주가 < MA => 매도 포지션)
+                    position = (df['Close'] > ma).astype(int)
+                    
+                    # 수익률 계산
+                    df['Returns'] = df['Close'].pct_change()
+                    strategy_returns = df['Returns'].shift(-1) * position
+                    
+                    # 샤프 비율 계산
+                    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                    
+                    if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
+                        best_sharpe = sharpe_ratio
+                        best_period = period
+                except Exception as e:
+                    logger.debug(f"MA 기간 {period} 테스트 중 오류: {e}")
+            
+            return best_period
+            
+        except Exception as e:
+            logger.error(f"최적 단기 이동평균 기간 탐색 중 오류: {e}")
+            return 10  # 오류 발생시 기본값
+    
+    def _find_best_ma_long_period(self, df, short_period, min_period=20, max_period=60):
+        """
+        최적의 장기 이동평균선 기간 탐색
+        
+        Args:
+            df: 주가 데이터
+            short_period: 단기 이동평균선 기간
+            min_period: 최소 기간
+            max_period: 최대 기간
+            
+        Returns:
+            int: 최적의 장기 이동평균선 기간
+        """
+        try:
+            # 기본 장기 이동평균 기간
+            default_period = 30
+            
+            # 단기 이동평균보다 길어야 함
+            min_period = max(min_period, short_period + 5)
+            
+            # 데이터가 충분하지 않으면 기본값 반환
+            if len(df) < max_period * 2:
+                return default_period
+                
+            # 실험해볼 기간 목록
+            periods = range(min_period, max_period + 1, 5)  # 5일 단위로 테스트
+            
+            # 각 기간별 이동평균 골든크로스/데드크로스 전략 테스트
+            best_period = default_period
+            best_sharpe = -float('inf')
+            
+            # 단기 이동평균 계산
+            short_ma = df['Close'].rolling(window=short_period).mean()
+            
+            for period in periods:
+                try:
+                    # 장기 이동평균 계산
+                    long_ma = df['Close'].rolling(window=period).mean()
+                    
+                    # 골든 크로스/데드 크로스 시그널 생성
+                    # 골든 크로스 (단기선이 장기선 위로): 매수 시그널
+                    # 데드 크로스 (단기선이 장기선 아래로): 매도 시그널
+                    position = (short_ma > long_ma).astype(int)
+                    
+                    # 수익률 계산
+                    df['Returns'] = df['Close'].pct_change()
+                    strategy_returns = df['Returns'].shift(-1) * position
+                    
+                    # 전략 성과 측정
+                    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                    
+                    if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
+                        best_sharpe = sharpe_ratio
+                        best_period = period
+                except Exception as e:
+                    logger.debug(f"장기 MA 기간 {period} 테스트 중 오류: {e}")
+            
+            return best_period
+            
+        except Exception as e:
+            logger.error(f"최적 장기 이동평균 기간 탐색 중 오류: {e}")
+            return 30  # 오류 발생시 기본값
+    
+    def _find_best_macd_params(self, df):
+        """
+        최적의 MACD 파라미터 탐색
+        
+        Args:
+            df: 주가 데이터
+            
+        Returns:
+            dict: 최적의 MACD 파라미터 (fast, slow, signal)
+        """
+        # 기본값
+        default_params = {"fast": 12, "slow": 26, "signal": 9}
+        
+        try:
+            # 데이터가 충분하지 않으면 기본값 반환
+            if len(df) < 100:
+                return default_params
+                
+            # 실험해볼 파라미터 조합
+            fast_periods = [8, 10, 12, 14]
+            slow_periods = [20, 24, 26, 30]
+            signal_periods = [7, 9, 11]
+            
+            best_params = default_params
+            best_sharpe = -float('inf')
+            
+            for fast in fast_periods:
+                for slow in slow_periods:
+                    if fast >= slow:  # fast 기간은 slow 기간보다 짧아야 함
+                        continue
+                        
+                    for signal in signal_periods:
+                        try:
+                            # MACD 계산
+                            exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
+                            exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
+                            macd = exp1 - exp2
+                            signal_line = macd.ewm(span=signal, adjust=False).mean()
+                            
+                            # 매매 시그널 생성 (MACD > Signal Line => 매수, MACD < Signal Line => 매도)
+                            position = (macd > signal_line).astype(int)
+                            
+                            # 수익률 계산
+                            df['Returns'] = df['Close'].pct_change()
+                            strategy_returns = df['Returns'].shift(-1) * position
+                            
+                            # 성과 측정
+                            sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                            
+                            if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
+                                best_sharpe = sharpe_ratio
+                                best_params = {"fast": fast, "slow": slow, "signal": signal}
+                        except Exception as e:
+                            logger.debug(f"MACD 파라미터 테스트 중 오류: fast={fast}, slow={slow}, signal={signal}, 오류: {e}")
+            
+            return best_params
+            
+        except Exception as e:
+            logger.error(f"최적 MACD 파라미터 탐색 중 오류: {e}")
+            return default_params
+    
+    def _find_best_bollinger_params(self, df):
+        """
+        최적의 볼린저 밴드 파라미터 탐색
+        
+        Args:
+            df: 주가 데이터
+            
+        Returns:
+            dict: 최적의 볼린저 밴드 파라미터 (기간, 표준편차 배수)
+        """
+        # 기본값
+        default_params = {"window": 20, "num_std": 2.0}
+        
+        try:
+            # 데이터가 충분하지 않으면 기본값 반환
+            if len(df) < 60:
+                return default_params
+                
+            # 실험해볼 파라미터 조합
+            windows = [10, 15, 20, 25, 30]
+            std_devs = [1.5, 2.0, 2.5, 3.0]
+            
+            best_params = default_params
+            best_sharpe = -float('inf')
+            
+            for window in windows:
+                for num_std in std_devs:
+                    try:
+                        # 볼린저 밴드 계산
+                        rolling_mean = df['Close'].rolling(window=window).mean()
+                        rolling_std = df['Close'].rolling(window=window).std()
+                        
+                        upper_band = rolling_mean + (rolling_std * num_std)
+                        lower_band = rolling_mean - (rolling_std * num_std)
+                        
+                        # 매매 전략: 가격이 하단밴드 아래면 매수, 상단밴드 위면 매도
+                        long_signal = (df['Close'] < lower_band).astype(int)
+                        short_signal = (df['Close'] > upper_band).astype(int) * -1
+                        
+                        position = long_signal + short_signal
+                        
+                        # 수익률 계산
+                        df['Returns'] = df['Close'].pct_change()
+                        strategy_returns = df['Returns'].shift(-1) * position
+                        
+                        # 성과 측정
+                        sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
+                        
+                        if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
+                            best_sharpe = sharpe_ratio
+                            best_params = {"window": window, "num_std": num_std}
+                    except Exception as e:
+                        logger.debug(f"볼린저 밴드 파라미터 테스트 중 오류: window={window}, num_std={num_std}, 오류: {e}")
+            
+            return best_params
+            
+        except Exception as e:
+            logger.error(f"최적 볼린저 밴드 파라미터 탐색 중 오류: {e}")
+            return default_params
+            
+    def _load_cached_recommendations(self):
+        """
+        캐시된 GPT 추천 종목 정보 로드
+        """
+        try:
+            import os
+            import json
+            
+            # 캐시 디렉토리 확인
+            cache_dir = "cache"
+            if not os.path.exists(cache_dir):
+                logger.info("캐시 디렉토리가 없습니다.")
+                return False
+                
+            # 한국 주식 추천 캐시 로드
+            kr_cache_path = os.path.join(cache_dir, "kr_stock_recommendations.json")
+            if os.path.exists(kr_cache_path):
+                try:
+                    with open(kr_cache_path, "r", encoding="utf-8") as f:
+                        kr_data = json.load(f)
+                        if kr_data and "recommended_stocks" in kr_data:
+                            self.gpt_selections['KR'] = kr_data.get("recommended_stocks", [])
+                            logger.info(f"한국 주식 추천 캐시 로드 성공: {len(self.gpt_selections['KR'])}개 종목")
+                except Exception as e:
+                    logger.error(f"한국 주식 추천 캐시 로드 중 오류: {e}")
+                    
+            # 미국 주식 추천 캐시 로드
+            us_cache_path = os.path.join(cache_dir, "us_stock_recommendations.json")
+            if os.path.exists(us_cache_path):
+                try:
+                    with open(us_cache_path, "r", encoding="utf-8") as f:
+                        us_data = json.load(f)
+                        if us_data and "recommended_stocks" in us_data:
+                            self.gpt_selections['US'] = us_data.get("recommended_stocks", [])
+                            logger.info(f"미국 주식 추천 캐시 로드 성공: {len(self.gpt_selections['US'])}개 종목")
+                except Exception as e:
+                    logger.error(f"미국 주식 추천 캐시 로드 중 오류: {e}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"캐시된 추천 정보 로드 중 오류: {e}")
             return False

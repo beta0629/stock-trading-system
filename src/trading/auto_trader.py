@@ -73,7 +73,7 @@ class AutoTrader:
         self.take_profit_pct = getattr(config, 'TAKE_PROFIT_PCT', 5)  # 익절 비율 (기본 5%)
         self.trade_interval = getattr(config, 'TRADE_INTERVAL_SECONDS', 3600)  # 매매 간격 (기본 1시간)
         self.market_hours = getattr(config, 'MARKET_HOURS', {})  # 시장 운영 시간
-        self.simulation_mode = getattr(config, 'SIMULATION_MODE', True)  # 시뮬레이션 모드 (기본값: 실제 거래 X)
+        self.simulation_mode = getattr(config, 'SIMULATION_MODE', False)  # 시뮬레이션 모드 (기본값: 실제 거래)
         
         # 포지션 및 주문 이력 관리
         self.positions = {}  # {종목코드: {수량, 평균단가, 현재가치, ...}}
@@ -100,6 +100,8 @@ class AutoTrader:
         self.logger.info("자동매매 시스템 초기화 완료")
         if self.simulation_mode:
             self.logger.warning("!! 시뮬레이션 모드로 실행 중. 실제 거래는 발생하지 않습니다 !!")
+        else:
+            self.logger.info("!! 실제 거래 모드로 실행 중. 실제 자금으로 거래가 발생합니다 !!")
     
     def _load_account_balance(self, force_refresh=False):
         """
@@ -665,6 +667,17 @@ class AutoTrader:
                     # 거래 금액 및 수수료 계산
                     executed_qty = order_info.get('executed_quantity', 0)
                     executed_price = order_info.get('executed_price', price)
+                    
+                    # None 값 확인 및 기본값 설정
+                    if executed_qty is None:
+                        executed_qty = 0
+                        logger.warning("체결수량이 None입니다. 기본값 0으로 설정합니다.")
+                    
+                    if executed_price is None:
+                        executed_price = 0
+                        logger.warning("체결가격이 None입니다. 기본값 0으로 설정합니다.")
+                    
+                    # 안전한 곱셈 연산
                     trade_amount = executed_qty * executed_price
                     
                     # 예상 수수료 계산 (실제 수수료는 증권사마다 다를 수 있음)

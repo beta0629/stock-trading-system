@@ -13,12 +13,54 @@ import uuid  # uuid 모듈 추가
 from urllib.parse import urljoin, unquote
 import pandas as pd
 from pathlib import Path  # Path 추가
+from enum import Enum  # Enum 추가
 
 from .broker_base import BrokerBase
 from ..utils.time_utils import get_current_time, get_adjusted_time, KST
 
+# 주문 타입 및 매매 구분 열거형 정의
+class OrderType(Enum):
+    MARKET = "MARKET"  # 시장가
+    LIMIT = "LIMIT"    # 지정가
+
+class TradeAction(Enum):
+    BUY = "BUY"        # 매수
+    SELL = "SELL"      # 매도
+
 # 로깅 설정
 logger = logging.getLogger('KISAPI')
+
+# API 호출 관련 상수
+API_RATE_LIMIT_DELAY = 0.5  # 초당 API 호출 최대 횟수를 고려한 딜레이 (초)
+LAST_API_CALL_TIMES = {}  # API 종류별 마지막 호출 시간 기록
+
+def ensure_api_rate_limit(api_name, is_real_trading=False):
+    """
+    API 호출 속도 제한 준수를 위한 딜레이 함수
+    
+    Args:
+        api_name: API 종류 식별자
+        is_real_trading: 실전투자 여부 (True: 실전투자, False: 모의투자)
+    """
+    # 실전투자일 경우 딜레이 없이 바로 반환
+    if is_real_trading:
+        # logger.debug(f"실전투자 모드 - {api_name} API 딜레이 건너뜀")
+        LAST_API_CALL_TIMES[api_name] = time.time()  # 호출 시간은 기록
+        return
+    
+    # 모의투자일 경우에만 API 호출 속도 제한 적용
+    current_time = time.time()
+    last_call_time = LAST_API_CALL_TIMES.get(api_name, 0)
+    elapsed = current_time - last_call_time
+    
+    # 마지막 호출 이후 최소 딜레이 시간이 지나지 않았으면 대기
+    if elapsed < API_RATE_LIMIT_DELAY:
+        wait_time = API_RATE_LIMIT_DELAY - elapsed
+        logger.debug(f"모의투자 모드 - {api_name} API 호출 제한을 위해 {wait_time:.2f}초 대기")
+        time.sleep(wait_time)
+    
+    # 마지막 호출 시간 갱신
+    LAST_API_CALL_TIMES[api_name] = time.time()
 
 class KISAPI(BrokerBase):
     """한국투자증권 API 연동 클래스"""
@@ -351,6 +393,9 @@ class KISAPI(BrokerBase):
             return {"예수금": 0, "출금가능금액": 0, "총평가금액": 0}
             
         try:
+            # API 호출 속도 제한 준수
+            ensure_api_rate_limit("get_balance", self.real_trading)
+            
             url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
             
             # 하드코딩된 TR ID를 대신 _get_tr_id 사용해 모드에 맞는 TR ID 가져오기
@@ -407,6 +452,13 @@ class KISAPI(BrokerBase):
                 if data.get("rt_cd") != "0":
                     error_msg = data.get("msg_cd", "") + " " + data.get("msg1", "")
                     self.logger.error(f"잔고 조회 오류: {error_msg}")
+                    
+                    # 초당 거래건수 초과 에러인 경우 (EGW00201) 재시도
+                    if data.get("msg_cd") == "EGW00201":
+                        self.logger.warning("초당 거래건수 초과로 딜레이 후 재시도합니다.")
+                        time.sleep(1.0)  # 1초 대기
+                        return self.get_balance(force_refresh, timestamp)
+                        
                     return {"error": error_msg}
                 
                 # 응답 데이터에서 잔고 정보 추출 (모의투자와 실전투자 API 응답 구조 차기 처리)
@@ -654,6 +706,9 @@ class KISAPI(BrokerBase):
             logger.error("API 연결이 되지 않았습니다.")
             return ""
         
+        # API 호출 속도 제한 준수
+        ensure_api_rate_limit("buy_stock", self.real_trading)
+        
         if account_number is None:
             account_number = self.account_number
             
@@ -803,6 +858,9 @@ class KISAPI(BrokerBase):
         if not self._check_token():
             logger.error("API 연결이 되지 않았습니다.")
             return ""
+        
+        # API 호출 속도 제한 준수
+        ensure_api_rate_limit("sell_stock", self.real_trading)
         
         if account_number is None:
             account_number = self.account_number
@@ -1659,3 +1717,142 @@ class KISAPI(BrokerBase):
             # 실전투자는 짧은 대기 후 재시도
             time.sleep(3)
             return True
+    
+    def execute_order(self, symbol, action, quantity, price=None, order_type=OrderType.LIMIT):
+        """
+        주식 매매 주문 실행
+        
+        Args:
+            symbol: 종목 코드
+            action: 매매 구분 (매수/매도)
+            quantity: 주문 수량
+            price: 주문 가격 (지정가 주문 시)
+            order_type: 주문 유형 (시장가/지정가)
+            
+        Returns:
+            dict: 주문 결과
+        """
+        # 실전투자 여부 확인
+        is_real_trading = self.is_real_trading()
+        
+        # API 호출 속도 제한 적용 (실전투자는 딜레이 없음)
+        ensure_api_rate_limit('order', is_real_trading)
+        
+        # 주문 유형에 따라 필요한 파라미터 설정
+        if order_type == OrderType.MARKET:
+            # 시장가 주문
+            price_type = "01"  # 시장가
+            price = 0  # 시장가는 가격 설정 불필요
+        else:
+            # 지정가 주문
+            price_type = "00"  # 지정가
+            if price is None:
+                # 지정가 주문인데 가격이 없으면 현재가로 설정
+                current_price = self.get_current_price(symbol)
+                price = current_price
+    
+        # 헤더에 토큰 추가
+        authorization = self._build_auth_header()
+        
+        # 주문 유형 설정 (매수/매도)
+        if action == TradeAction.BUY:
+            trade_type = "01"  # 매수
+            self.logger.info(f"매수 주문 시작: {symbol}, 수량: {quantity}, 가격: {price:,}원, 주문유형: {'시장가' if order_type == OrderType.MARKET else '지정가'}")
+        else:  # TradeAction.SELL
+            trade_type = "02"  # 매도
+            self.logger.info(f"매도 주문 시작: {symbol}, 수량: {quantity}, 가격: {price:,}원, 주문유형: {'시장가' if order_type == OrderType.MARKET else '지정가'}")
+
+        # 주문 요청 데이터
+        request_data = {
+            "CANO": self.account_no[:8],  # 계좌번호 앞 8자리
+            "ACNT_PRDT_CD": self.account_no[8:],  # 계좌번호 뒤 2자리 (상품코드)
+            "PDNO": symbol,  # 종목코드
+            "ORD_DVSN": price_type,  # 주문유형: 00-지정가, 01-시장가
+            "ORD_QTY": str(quantity),  # 주문수량
+            "ORD_UNPR": str(price) if price else "0",  # 주문단가
+        }
+
+        # API URL 설정
+        base_url = self.virtual_url if self.use_virtual_url else self.real_url
+        url = f"{base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        
+        if action == TradeAction.BUY:
+            # 매수
+            request_data["BUY_TYPE"] = "00"  # 매수타입 (주식)
+            query_path = "/uapi/domestic-stock/v1/trading/order-cash"
+        else:
+            # 매도
+            request_data["SLL_TYPE"] = "00"  # 매도타입 (주식)
+            query_path = "/uapi/domestic-stock/v1/trading/order-cash"
+        
+        # 공통 헤더
+        headers = {
+            "Content-Type": "application/json",
+            "authorization": authorization,
+            "appKey": self.app_key,
+            "appSecret": self.app_secret,
+            "tr_id": "TTTC0802U" if action == TradeAction.BUY else "TTTC0801U"  # 실전환경: TTTC0802U(매수), TTTC0801U(매도)
+        }
+        
+        # 모의투자 환경인 경우 tr_id 변경
+        if self.use_virtual_url:
+            headers["tr_id"] = "VTTC0802U" if action == TradeAction.BUY else "VTTC0801U"  # 모의투자: VTTC0802U(매수), VTTC0801U(매도)
+            self.logger.debug("모의투자 환경으로 헤더 설정 변경")
+            
+        self.logger.debug(f"주문 요청 데이터: {request_data}")
+        self.logger.debug(f"주문 요청 헤더: {headers}")
+        
+        try:
+            # API 호출 (주문 실행)
+            response = requests.post(url, headers=headers, data=json.dumps(request_data))
+            self.logger.debug(f"주문 응답 상태코드: {response.status_code}")
+            self.logger.debug(f"주문 응답 내용: {response.text}")
+            
+            if response.status_code != 200:
+                self.logger.error(f"주문 실패 - 상태코드: {response.status_code}, 응답: {response.text}")
+                return {
+                    'success': False, 
+                    'message': f"API 오류: {response.status_code}", 
+                    'code': str(response.status_code)
+                }
+                
+            # 응답 처리
+            resp_data = response.json()
+            
+            # 응답 코드 확인
+            if resp_data.get('rt_cd') == '0':  # 정상 처리
+                order_no = resp_data.get('output', {}).get('ODNO', '')
+                order_time = resp_data.get('output', {}).get('ORD_TMD', '')
+                self.logger.info(f"주문 성공 - 주문번호: {order_no}, 주문시간: {order_time}")
+                
+                return {
+                    'success': True, 
+                    'message': '주문 성공', 
+                    'order_no': order_no,
+                    'order_time': order_time,
+                    'status': 'EXECUTED'
+                }
+            else:
+                # 실패 처리
+                error_code = resp_data.get('rt_cd')
+                error_msg = resp_data.get('msg1')
+                self.logger.error(f"주문 실패 - 에러코드: {error_code}, 메시지: {error_msg}")
+                return {
+                    'success': False, 
+                    'message': error_msg, 
+                    'code': error_code,
+                    'status': 'REJECTED'
+                }
+                
+        except Exception as e:
+            self.logger.error(f"주문 중 예외 발생: {str(e)}")
+            return {'success': False, 'message': str(e), 'status': 'ERROR'}
+
+    def is_real_trading(self):
+        """
+        현재 실전투자 모드인지 확인
+        
+        Returns:
+            bool: 실전투자면 True, 모의투자면 False
+        """
+        return not self.use_virtual_url

@@ -450,7 +450,7 @@ class StockSelector:
 4. 추천 이유(reason) - 간결하게 2-3문장
 5. 주요 경쟁 우위 요소(competitive_advantages) - 최소 2가지
 6. 향후 12개월 목표가(target_price)
-7. 투자 위험도(risk_level) - 1(매우 낮음)부터 10(매우 높음)
+7. 투자 위험도(risk_level) - 1(매우 낮음)부터 10(매우 높음)까지의 점수
 
 {market_info['name']} 시장의 종목코드는 {market_info['symbols_example']} 형식으로 정확히 표기해주세요.
 
@@ -961,3 +961,338 @@ class StockSelector:
         except Exception as e:
             logger.error(f"기술적 지표 설정 업데이트 중 오류 발생: {e}")
             return False
+    
+    def analyze_for_day_trading(self, symbols: List[str]) -> Dict[str, Any]:
+        """
+        단타 매매를 위한 종목 분석 수행
+        
+        Args:
+            symbols: 분석할 종목코드 목록
+            
+        Returns:
+            dict: 각 종목에 대한 분석 결과
+        """
+        logger.info(f"단타 매매를 위한 종목 분석 시작: {symbols}")
+        
+        # API 키 유효성 확인
+        if not self.is_api_key_valid():
+            logger.warning("유효하지 않은 OpenAI API 키로 인해 분석을 수행할 수 없습니다.")
+            return {"error": "유효하지 않은 API 키"}
+        
+        # 현재 날짜/시간 정보 가져오기
+        current_date = get_current_time_str("%Y년 %m월 %d일")
+        
+        # 종목 코드 문자열 생성
+        symbols_str = ", ".join([f"{s}" for s in symbols])
+        
+        # JSON 형식 예제 분리
+        json_example = '''
+{
+  "market_condition": "현재 시장 상황 분석",
+  "stock_analysis": {
+    "종목코드1": {
+      "price_trend": "상승",
+      "momentum_score": 8,
+      "day_trading_score": 7,
+      "trading_strategy": {
+        "entry_point": "매수 포인트 설명",
+        "exit_point": "매도 포인트 설명",
+        "key_signals": ["주요 시그널 1", "주요 시그널 2"]
+      },
+      "price_targets": {
+        "target": 52000,
+        "stop_loss": 49500
+      },
+      "summary": "이 종목에 대한 간략한 요약"
+    },
+    "종목코드2": {
+      "...":"..."
+    }
+  },
+  "day_trading_tips": "오늘의 단타 매매 전략에 대한 조언"
+}
+'''
+        
+        # GPT 프롬프트 구성 (f-string 중첩 방지)
+        prompt = f"당신은 단타 매매 전문 투자 분석가입니다. 오늘 날짜는 {current_date}입니다.\n"
+        prompt += f"다음 한국 종목들에 대한 단타 매매 관점에서의 분석을 해주세요: {symbols_str}\n\n"
+        prompt += """각 종목에 대해 다음 정보를 포함하여 JSON 형식으로 응답해주세요:
+1. 현재 가격 동향(price_trend) - "상승", "하락", "횡보" 중 하나
+2. 단기 모멘텀 점수(momentum_score) - 1(매우 약함)부터 10(매우 강함)까지의 점수
+3. 단타 매매 적합성 점수(day_trading_score) - 1(매우 낮음)부터 10(매우 높음)까지의 점수
+4. 오늘의 매매 전략(trading_strategy) - 매수/매도 시점, 익절 및 손절 전략 등
+5. 가격 타겟(price_targets) - 목표가 및 손절가
+
+응답은 다음과 같은 JSON 형식으로 제공해주세요:"""
+        prompt += "\n" + json_example
+
+        try:
+            # OpenAI API 호출
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "당신은 단타 매매 전문 투자 분석가입니다. 항상 JSON 형식으로 응답하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30  # 타임아웃 설정
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
+                return {"error": f"API 호출 실패: {response.status_code}", "detail": response.text}
+                
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # JSON 파싱
+            analysis = json.loads(content)
+            logger.info(f"단타 매매 분석 완료: {len(analysis.get('stock_analysis', {}))}개 종목")
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"단타 매매 분석 중 오류 발생: {e}")
+            return {"error": f"분석 오류: {str(e)}"}
+
+    def analyze_sudden_price_surge(self, limit=10) -> Dict[str, Any]:
+        """
+        급등주 감지 및 분석
+        
+        Args:
+            limit: 분석할 급등주 최대 개수
+            
+        Returns:
+            dict: 급등주 분석 결과
+        """
+        logger.info(f"급등주 감지 및 분석 시작 (최대 {limit}개)")
+        
+        # API 키 유효성 확인
+        if not self.is_api_key_valid():
+            logger.warning("유효하지 않은 OpenAI API 키로 인해 분석을 수행할 수 없습니다.")
+            return {"error": "유효하지 않은 API 키"}
+        
+        # 현재 날짜/시간 정보 가져오기
+        current_date = get_current_time_str("%Y년 %m월 %d일")
+        
+        # JSON 형식 예시를 완전히 분리
+        json_example = '''
+{
+  "market_trend": "현재 시장 급등 트렌드 분석",
+  "surge_stocks": [
+    {
+      "symbol": "종목코드",
+      "name": "종목명",
+      "expected_surge_rate": 8.5,
+      "surge_reason": ["사유1", "사유2", "사유3"],
+      "day_trading_score": 8,
+      "trading_strategy": {
+        "entry_point": "매수 전략",
+        "target_price": 55000,
+        "stop_loss": 51000,
+        "exit_strategy": "매도 전략"
+      },
+      "momentum_sustainability": "중간",
+      "trading_signals": ["매수신호1", "매수신호2"],
+      "risk_factors": ["위험요소1", "위험요소2"]
+    }
+  ],
+  "day_trading_advice": "오늘의 급등주 단타 매매 조언"
+}
+'''
+        
+        # 급등주 감지 기준 및 설명 (f-string 없이)
+        criteria_text = """급등주 감지 기준:
+1. 전일 대비 5% 이상 상승하는 종목
+2. 거래량이 평소보다 2배 이상 급증한 종목
+3. 특별한 뉴스나 이벤트가 있는 종목
+
+각 급등주에 대해 다음 정보를 포함하여 JSON 형식으로 응답해주세요:
+1. 종목코드(symbol)와 종목명(name)
+2. 예상 상승률(expected_surge_rate) - 퍼센트(%)
+3. 급등 원인(surge_reason) - 최대 3가지
+4. 단타 매매 적합성 점수(day_trading_score) - 1(매우 낮음)부터 10(매우 높음)까지의 점수
+5. 매매 전략(trading_strategy) - 진입 포인트, 목표가, 손절가 포함
+6. 모멘텀 지속성(momentum_sustainability) - "매우 짧음", "짧음", "중간", "길음" 중 하나"""
+
+        # GPT 프롬프트 구성 (f-string 최소화)
+        prompt = f"당신은 한국 주식 시장의 급등주 분석 전문가입니다. 오늘 날짜는 {current_date}입니다.\n"
+        prompt += "현재 한국 주식 시장에서 급등하는 종목을 찾고, 단타 매매 관점에서 분석해주세요.\n\n"
+        prompt += criteria_text + "\n\n"
+        prompt += f"금일 가장 매력적인 급등주 {limit}개에 대해 분석해주세요.\n\n"
+        prompt += "응답은 다음과 같은 JSON 형식으로 제공해주세요:\n"
+        prompt += json_example
+
+        try:
+            # OpenAI API 호출
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "당신은 한국 주식 시장의 급등주 분석 전문가입니다. 항상 JSON 형식으로 응답하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30  # 타임아웃 설정
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
+                return {"error": f"API 호출 실패: {response.status_code}", "detail": response.text}
+                
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # JSON 파싱
+            surge_analysis = json.loads(content)
+            logger.info(f"급등주 분석 완료: {len(surge_analysis.get('surge_stocks', []))}개 종목")
+            
+            # 결과 캐싱
+            cache_file = os.path.join(self.cache_dir, 'surge_stocks_analysis.json')
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(surge_analysis, f, ensure_ascii=False, indent=2)
+                logger.info(f"급등주 분석 결과가 캐시 파일({cache_file})에 저장되었습니다.")
+            except Exception as e:
+                logger.warning(f"급등주 분석 결과 캐싱 중 오류 발생: {e}")
+            
+            return surge_analysis
+            
+        except Exception as e:
+            logger.error(f"급등주 분석 중 오류 발생: {e}")
+            return {"error": f"분석 오류: {str(e)}"}
+
+    def get_intraday_trading_signals(self, symbol: str) -> Dict[str, Any]:
+        """
+        특정 종목에 대한 장중 실시간 매매 시그널 생성
+        
+        Args:
+            symbol: 종목 코드
+            
+        Returns:
+            dict: 매매 시그널 정보
+        """
+        logger.info(f"{symbol} 종목에 대한 장중 매매 시그널 생성 시작")
+        
+        # API 키 유효성 확인
+        if not self.is_api_key_valid():
+            logger.warning("유효하지 않은 OpenAI API 키로 인해 시그널을 생성할 수 없습니다.")
+            return {"error": "유효하지 않은 API 키"}
+        
+        # 현재 날짜/시간 정보 가져오기
+        current_date = get_current_time_str("%Y년 %m월 %d일")
+        current_time = get_current_time_str("%H:%M")
+        
+        # JSON 응답 예시 분리
+        json_example = '''
+{
+  "symbol": "SYMBOL",
+  "current_signal": "매수",
+  "signal_strength": 8,
+  "signal_type": "reversal", 
+  "timeframe": "단타(5분봉)",
+  "price_targets": {
+    "entry_min": 50000,
+    "entry_max": 51000,
+    "target": 54000,
+    "stop_loss": 49000
+  },
+  "exit_strategy": {
+    "price_based": "목표가 도달 시 또는 손절가 도달 시",
+    "time_based": "15:00까지 청산"
+  },
+  "momentum_indicators": {
+    "rsi": "과매도 상태에서 반등",
+    "macd": "골든크로스 형성 중",
+    "volume": "평균보다 1.5배 증가"
+  },
+  "key_levels": {
+    "support": 49500,
+    "resistance": 53000
+  },
+  "special_notes": "오후장 추가 상승 가능성 있음",
+  "confidence_score": 75
+}
+'''
+        
+        # GPT 프롬프트 구성 (f-string 중첩 방지)
+        prompt = f"당신은 단타 매매 전문 트레이더입니다. 오늘 날짜는 {current_date}, 현재 시간은 {current_time}입니다.\n"
+        prompt += f"현재 한국 주식시장에서 거래되는 종목 {symbol}에 대한 장중 실시간 매매 시그널을 생성해주세요.\n\n"
+        prompt += """매매 시그널은 다음과 같은 정보를 포함해야 합니다:
+1. 현재 거래 신호(current_signal) - "강력 매수", "매수", "중립", "매도", "강력 매도" 중 하나
+2. 신호 강도(signal_strength) - 1(매우 약함)부터 10(매우 강함)까지의 점수
+3. 시그널 발생 타임프레임(timeframe) - "초단타(1분봉)", "단타(5분봉)", "스윙(30분-1시간봉)" 중 하나
+4. 목표가(target_price)와 손절가(stop_loss)
+5. 청산 시점(exit_point) - "가격 기준", "시간 기준" 등 청산 조건
+6. 진입 가격대(entry_price_range) - 매수/매도 진입 가격대
+7. 해당 종목 관련 특이사항(특별히 주의해야 할 이벤트나 뉴스)
+
+응답은 다음과 같은 JSON 형식으로 제공해주세요:"""
+        prompt += "\n" + json_example.replace("SYMBOL", symbol)
+
+        try:
+            # OpenAI API 호출
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "당신은 단타 매매 전문 트레이더입니다. 항상 JSON 형식으로 응답하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 1500,
+                "temperature": 0.5,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=20  # 타임아웃 설정
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
+                return {"error": f"API 호출 실패: {response.status_code}", "detail": response.text}
+                
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # JSON 파싱
+            trading_signal = json.loads(content)
+            logger.info(f"{symbol} 종목 매매 시그널 생성 완료: {trading_signal.get('current_signal')}")
+            
+            return trading_signal
+            
+        except Exception as e:
+            logger.error(f"매매 시그널 생성 중 오류 발생: {e}")
+            return {"error": f"시그널 생성 오류: {str(e)}"}
