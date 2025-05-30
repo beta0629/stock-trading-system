@@ -478,6 +478,9 @@ class KakaoSender:
         if not signal_data.get('signals'):
             return
             
+        # 디버깅: 전체 signal_data 로깅
+        logger.info(f"매매 신호 데이터: {json.dumps(signal_data, ensure_ascii=False, default=str)}")
+            
         symbol = signal_data['symbol']
         price = signal_data.get('price', signal_data.get('close', 0))
         
@@ -513,6 +516,9 @@ class KakaoSender:
         
         # 매매 데이터 가져오기 (구매 수량, 평단가, 잔고 등)
         trade_info = signal_data.get('trade_info', {})
+        # 디버깅: trade_info 내용 확인
+        logger.info(f"매매 정보 확인: {json.dumps(trade_info, ensure_ascii=False, default=str)}")
+        
         trade_quantity = trade_info.get('quantity', 0)  # 매매 수량
         total_quantity = trade_info.get('total_quantity', 0)  # 매매 후 총 보유 수량
         avg_price = trade_info.get('avg_price', 0)  # 평균단가
@@ -529,6 +535,37 @@ class KakaoSender:
         except Exception as e:
             logger.warning(f"계좌 잔고 형식 변환 중 오류: {e}, 기본값 0으로 설정")
             balance = 0
+            
+        # 매매 수량, 보유량 값 검증 및 로깅
+        logger.info(f"매매 수량: {trade_quantity}, 이전 보유량: {prev_quantity}, 현재 보유량: {total_quantity}")
+        
+        # 포맷팅에 사용될 값들이 None이 아닌지 확인하고 숫자형으로 변환
+        try:
+            if prev_quantity is None:
+                prev_quantity = 0
+            else:
+                prev_quantity = int(float(str(prev_quantity).replace(',', '') or 0))
+        except Exception as e:
+            logger.warning(f"이전 보유량 변환 오류: {e}")
+            prev_quantity = 0
+            
+        try:
+            if total_quantity is None:
+                total_quantity = trade_quantity  # 없으면 매매 수량으로 대체
+            else:
+                total_quantity = int(float(str(total_quantity).replace(',', '') or 0))
+        except Exception as e:
+            logger.warning(f"총 보유량 변환 오류: {e}")
+            total_quantity = trade_quantity
+            
+        try:
+            if avg_price is None:
+                avg_price = price  # 없으면 현재가로 대체
+            else:
+                avg_price = float(str(avg_price).replace(',', '') or 0)
+        except Exception as e:
+            logger.warning(f"평균단가 변환 오류: {e}")
+            avg_price = price
         
         # 증권사 API 관련 정보
         order_no = trade_info.get('order_no', '')  # 주문 번호
@@ -563,7 +600,16 @@ class KakaoSender:
             message += f"{symbol}\n"
             
         # 현재가와 신뢰도 표시 - .0 제거를 위해 정수로 변환 후 천 단위 콤마 표시
-        message += f"현재가: {int(price):,}원"
+        if price > 0:
+            message += f"현재가: {int(price):,}원"
+        else:
+            # 현재가가 0이면 executed_price나 avg_price를 사용
+            if executed_price > 0:
+                message += f"현재가: {int(executed_price):,}원"
+            elif avg_price > 0:
+                message += f"현재가: {int(avg_price):,}원"
+            else:
+                message += "현재가: 정보 없음"
         
         # 신뢰도가 있으면 추가
         if confidence:
@@ -581,13 +627,13 @@ class KakaoSender:
         if avg_price > 0:
             message += f"평단가: {int(avg_price):,}원\n"
         else:
-            message += f"평단가: 0원\n"
+            message += f"평단가: 정보 없음\n"
             
         # 계좌 잔고 (.0 제거를 위해 정수로 변환)
         if balance > 0:
             message += f"계좌잔고: {int(balance):,}원"
         else:
-            message += f"계좌잔고: 0원"
+            message += f"계좌잔고: 정보 없음"
 
         # 주문 정보 추가
         if order_no:
@@ -597,6 +643,9 @@ class KakaoSender:
             # 거래 시간 (있는 경우)
             if transaction_time:
                 message += f"거래시간: {transaction_time}"
+        
+        # 최종 메시지 내용 확인
+        logger.info(f"카카오톡 메시지 내용: {message}")
         
         # 메시지 전송
         return self.send_message(message)
