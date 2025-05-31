@@ -97,7 +97,15 @@ KIS_VIRTUAL_APP_SECRET = os.environ.get("KIS_VIRTUAL_APP_SECRET", KIS_APP_SECRET
 KIS_VIRTUAL_ACCOUNT_NO = os.environ.get("KIS_VIRTUAL_ACCOUNT_NO")  # 모의투자 계좌번호
 
 # 실전투자 설정
-KIS_REAL_TRADING = False  # 모의투자 모드로 설정 (False = 모의투자, True = 실전투자)
+KIS_REAL_TRADING = True  # 실전투자 모드로 설정 (False = 모의투자, True = 실전투자)
+
+# 초기 자본금 설정
+INITIAL_CAPITAL = 1000000  # 실전투자 초기 자본금 (100만원)
+
+# 하락장 매수 전략 설정
+DIP_BUYING_ONLY = True  # 하락장에서만 매수 (True = 하락장만 매수, False = 상관없이 매수)
+DIP_THRESHOLD_PCT = -3.0  # 하락 기준 퍼센트 (최소 3% 하락한 종목만 매수)
+DIP_PERIOD = 5  # 하락 측정 기간 (최근 5일 동안 가격 변동 측정)
 
 # 모의투자 시장 제한 설정
 VIRTUAL_TRADING_KR_ONLY = os.environ.get("VIRTUAL_TRADING_KR_ONLY", "True").lower() == "true"  # 모의투자에서 국내주식만 거래 가능 여부
@@ -123,6 +131,29 @@ SHORT_TERM_MA = MA_SHORT  # 단기 이동평균 별칭
 MEDIUM_TERM_MA = MA_MEDIUM  # 중기 이동평균 별칭
 LONG_TERM_MA = MA_LONG  # 장기 이동평균 별칭
 
+# GPT 자동 매매 설정 - 추가
+GPT_AUTO_TRADING = True  # GPT 자동 매매 활성화 여부
+GPT_TRADING_MAX_POSITIONS = 5  # GPT 동시 보유 종목 수
+GPT_TRADING_CONF_THRESHOLD = 0.7  # GPT 매매 신뢰도 임계값
+GPT_MAX_INVESTMENT_PER_STOCK = 5000000  # GPT 종목당 최대 투자금액
+GPT_STOCK_SELECTION_INTERVAL = 24  # GPT 종목 선정 주기 (시간)
+GPT_STRATEGY = "balanced"  # GPT 전략 (aggressive, balanced, conservative 중 선택)
+GPT_USE_DYNAMIC_SELECTION = True  # 동적 종목 선정 사용 여부
+GPT_TRADING_MONITOR_INTERVAL = 10  # GPT 모니터링 주기 (분)
+
+# GPT 완전 자율 매매 설정 - 추가
+GPT_FULLY_AUTONOMOUS_MODE = True  # GPT 완전 자율 매매 모드 활성화
+GPT_AUTONOMOUS_TRADING_INTERVAL = 5  # 자율 매매 주기 (분)
+GPT_AUTONOMOUS_MAX_POSITIONS = 7  # 자율 매매 최대 포지션 수
+GPT_AUTONOMOUS_MAX_TRADE_AMOUNT = 1000000  # 자율 매매 종목당 최대 금액 (원)
+GPT_REALTIME_MARKET_SCAN_INTERVAL = 10  # 실시간 시장 스캔 주기 (분)
+GPT_AGGRESSIVE_MODE = False  # 공격적 매매 모드 (True: 위험 감수, False: 안전 추구)
+
+# GPT 위험 관리 설정 - 추가
+GPT_RISK_MANAGEMENT_ENABLED = True  # GPT 위험 관리 기능 활성화
+GPT_DAILY_LOSS_LIMIT = 5.0  # 일일 최대 손실 허용 비율 (%)
+GPT_AUTO_RESTART_ENABLED = True  # 오류 발생 시 자동 재시작 기능 활성화
+
 # GPT 기술적 지표 최적화 설정
 GPT_OPTIMIZE_TECHNICAL_INDICATORS = True  # GPT가 기술적 지표 설정 최적화 여부
 GPT_TECHNICAL_OPTIMIZATION_INTERVAL = 168  # 기술적 지표 최적화 간격 (시간, 기본값 1주일)
@@ -132,34 +163,58 @@ GPT_TECHNICAL_MARKET_SENSITIVITY = "market_sensitive"  # market_sensitive(시장
 RSI_OVERSOLD = 25
 RSI_OVERBOUGHT = 75
 
-# GPT 자동 매매 설정
-GPT_AUTO_TRADING = True  # GPT 자동 매매 활성화 여부
-GPT_STOCK_SELECTION_INTERVAL = 24  # 종목 선정 간격 (시간)
-GPT_TRADING_MAX_POSITIONS = 10  # 최대 포지션 수 (5에서 10으로 증가)
-GPT_TRADING_CONF_THRESHOLD = 0.7  # 매매 신뢰도 임계값
-GPT_MAX_INVESTMENT_PER_STOCK = 1000000  # 종목당 최대 투자금액 (원)
-GPT_STRATEGY = "balanced"  # 기본 전략 (balanced, growth, value, dividend)
-GPT_TRADING_MONITOR_INTERVAL = 30  # 모니터링 간격 (분)
-GPT_USE_DYNAMIC_SELECTION = True  # 하드코딩 대신 GPT가 동적으로 종목 선정 (추가된 옵션)
-
 # 단타 매매 설정
-DAY_TRADING_MODE = True  # 단타 매매 모드 활성화 여부
-DAY_TRADING_MAX_POSITIONS = 3  # 단타 매매 시 최대 동시 포지션 수 (적은 종목에 집중)
-DAY_TRADING_PROFIT_THRESHOLD = 2.0  # 단타 매매 이익 실현 기준 (%)
-DAY_TRADING_STOP_LOSS = 1.0  # 단타 매매 손절 기준 (%)
-DAY_TRADING_MONITOR_INTERVAL = 5  # 단타 매매 모니터링 간격 (분)
-DAY_TRADING_POSITION_HOLD_MAX = 180  # 단타 매매 최대 보유 시간 (분)
-DAY_TRADING_VOLATILITY_THRESHOLD = 1.5  # 단타 매매 대상 종목 변동성 기준 (%)
+DAY_TRADING_MODE = os.environ.get("DAY_TRADING_MODE", "True").lower() == "true"  # 단타 매매 모드 활성화 여부
+DAY_TRADING_MAX_POSITIONS = int(os.environ.get("DAY_TRADING_MAX_POSITIONS", "3"))  # 단타 매매 시 최대 동시 포지션 수
+DAY_TRADING_PROFIT_THRESHOLD = float(os.environ.get("DAY_TRADING_PROFIT_THRESHOLD", "2.0"))  # 단타 매매 이익 실현 기준 (%)
+DAY_TRADING_STOP_LOSS = float(os.environ.get("DAY_TRADING_STOP_LOSS", "1.0"))  # 단타 매매 손절 기준 (%)
+DAY_TRADING_MONITOR_INTERVAL = int(os.environ.get("DAY_TRADING_MONITOR_INTERVAL", "3"))  # 단타 매매 모니터링 간격 (분)
+DAY_TRADING_POSITION_HOLD_MAX = int(os.environ.get("DAY_TRADING_POSITION_HOLD_MAX", "180"))  # 단타 매매 최대 보유 시간 (분)
+DAY_TRADING_VOLATILITY_THRESHOLD = float(os.environ.get("DAY_TRADING_VOLATILITY_THRESHOLD", "1.5"))  # 단타 매매 대상 종목 변동성 기준 (%)
+MAX_REALTIME_WATCHLIST = int(os.environ.get("MAX_REALTIME_WATCHLIST", "50"))  # 실시간 모니터링 최대 종목 수
 
-# 급등주 감지 및 매매 설정
-SURGE_DETECTION_ENABLED = os.environ.get("SURGE_DETECTION_ENABLED", "False").lower() == "true"  # 급등주 감지 활성화
-SURGE_THRESHOLD = 5.0  # 급등 기준(%)
-SURGE_VOLUME_RATIO = 2.0  # 급등주 거래량 증가 비율 기준
-SURGE_SCORE_THRESHOLD = 7  # 급등주 매매 점수 기준 (1-10)
-MAX_SURGE_POSITIONS = 2  # 급등주 최대 포지션 수
-SURGE_SCAN_INTERVAL = 30  # 급등주 스캔 간격(분)
-SURGE_PROFIT_MULTIPLE = 1.5  # 급등주 익절 배수 (기본 익절 기준의 1.5배)
-# DAY_TRADING_MODE가 True이고 SURGE_DETECTION_ENABLED가 True일 때 급등주 감지 및 매매 활성화
+# 급등주 감지 및 매매 설정 - 최적화
+SURGE_DETECTION_ENABLED = os.environ.get("SURGE_DETECTION_ENABLED", "True").lower() == "true"  # 급등주 감지 활성화
+SURGE_THRESHOLD = float(os.environ.get("SURGE_THRESHOLD", "5.0"))  # 급등 기준(%)
+SURGE_VOLUME_RATIO = float(os.environ.get("SURGE_VOLUME_RATIO", "2.0"))  # 급등주 거래량 증가 비율 기준
+SURGE_SCORE_THRESHOLD = int(os.environ.get("SURGE_SCORE_THRESHOLD", "7"))  # 급등주 매매 점수 기준 (1-10)
+MAX_SURGE_POSITIONS = int(os.environ.get("MAX_SURGE_POSITIONS", "2"))  # 급등주 최대 포지션 수
+SURGE_SCAN_INTERVAL = int(os.environ.get("SURGE_SCAN_INTERVAL", "10"))  # 급등주 스캔 간격(분)
+SURGE_PROFIT_MULTIPLE = float(os.environ.get("SURGE_PROFIT_MULTIPLE", "1.5"))  # 급등주 익절 배수
+SURGE_GPT_ANALYSIS_ENABLED = os.environ.get("SURGE_GPT_ANALYSIS_ENABLED", "True").lower() == "true"  # GPT를 사용한 급등주 분석 활성화
+
+# GPT와 실시간 트레이딩 연동 설정 - 추가
+REALTIME_GPT_INTEGRATION = True  # GPT와 실시간 트레이딩 연동 활성화
+REALTIME_GPT_CONFIDENCE_THRESHOLD = 0.8  # 실시간 GPT 매매 신뢰도 임계값 
+REALTIME_GPT_ANALYSIS_INTERVAL = 5  # 실시간 GPT 분석 간격 (분)
+REALTIME_MOMENTUM_DETECTION = True  # 실시간 모멘텀 감지 활성화
+MOMENTUM_SCORE_THRESHOLD = 85  # 모멘텀 점수 임계값 (0-100)
+HYBRID_ANALYSIS_MODE = True  # 하이브리드 분석 모드(기술적 지표 + GPT 분석)
+
+# 실시간 트레이더 설정
+REALTIME_TRADING_ENABLED = True  # 실시간 트레이딩 활성화
+REALTIME_SCAN_INTERVAL_SECONDS = 30  # 실시간 스캔 간격 (초)
+REALTIME_USE_GPT_ANALYSIS = True  # 실시간 트레이딩에서 GPT 분석 사용
+REALTIME_GPT_CONFIDENCE_THRESHOLD = 0.8  # 실시간 GPT 신뢰도 임계값
+PRICE_SURGE_THRESHOLD_PERCENT = 2.5  # 급등 가격 변화 임계값 (%)
+VOLUME_SURGE_THRESHOLD_PERCENT = 200.0  # 급등 거래량 변화 임계값 (%)
+REALTIME_MIN_TRADE_AMOUNT = 500000  # 실시간 트레이딩 최소 거래 금액 (원)
+REALTIME_MAX_TRADE_AMOUNT = 2000000  # 실시간 트레이딩 최대 거래 금액 (원)
+REALTIME_STOP_LOSS_PERCENT = 3.0  # 실시간 트레이딩 손절 기준 (%)
+REALTIME_TAKE_PROFIT_PERCENT = 5.0  # 실시간 트레이딩 익절 기준 (%)
+REALTIME_MAX_HOLDING_MINUTES = 60  # 실시간 트레이딩 최대 보유 시간 (분)
+
+# GPT와 실시간 트레이딩 통합 설정
+GPT_TRADER_CONNECTION_ENABLED = True  # GPTAutoTrader와 RealtimeTrader 연결 활성화
+GPT_REALTIME_INSIGHTS_CACHE = 10  # GPT 실시간 인사이트 캐시 시간 (분)
+USE_HYBRID_TRADING_STRATEGY = True  # GPT와 기술적 지표를 조합한 하이브리드 매매 전략 사용
+HYBRID_GPT_WEIGHT = 0.7  # 하이브리드 전략에서 GPT 분석 가중치 (0-1)
+HYBRID_TECHNICAL_WEIGHT = 0.3  # 하이브리드 전략에서 기술적 분석 가중치 (0-1)
+
+# 실시간 트레이더 모니터링 설정
+REALTIME_TRADER_LOG_LEVEL = "INFO"  # 실시간 트레이더 로그 레벨 (DEBUG, INFO, WARNING, ERROR)
+REALTIME_TRADE_NOTIFICATION = True  # 실시간 거래 알림 활성화
+REALTIME_PERFORMANCE_METRICS_INTERVAL = 60  # 성능 지표 계산 간격 (분)
 
 # 미국 주식 종목 설정
 US_STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
@@ -187,7 +242,7 @@ FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '035420', 'name': 'NAVER'}, {'code': '051910', 'name': 'LG화학'}, {'code': '068270', 'name': '셀트리온'}]
+# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '051910', 'name': 'LG화학'}, {'code': '035420', 'name': 'NAVER'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 
@@ -203,3 +258,5 @@ logger.info(f"자동 매매 기능: {AUTO_TRADING_ENABLED}")
 logger.info(f"강제 시장 열림: {FORCE_MARKET_OPEN}")
 logger.info(f"데이터베이스 사용: {USE_DATABASE} (타입: {DB_TYPE})")
 logger.info(f"증권사 API 모드: {'실전투자' if KIS_REAL_TRADING else '모의투자'}")
+logger.info(f"GPT 자동 매매 기능: {GPT_AUTO_TRADING} (완전자율모드: {GPT_FULLY_AUTONOMOUS_MODE})")
+logger.info(f"실시간 GPT 연동: {REALTIME_GPT_INTEGRATION} (모멘텀 감지: {REALTIME_MOMENTUM_DETECTION})")
