@@ -787,6 +787,12 @@ class AutoTrader:
                     updated_positions = self.broker.get_positions()
                     logger.info(f"갱신된 포지션 정보: {json.dumps(updated_positions, ensure_ascii=False, default=str)}")
                     
+                    # 처음부터 API 응답 원본 보관 (카카오 알림용)
+                    api_response = None
+                    if hasattr(self.broker, 'last_api_response'):
+                        api_response = self.broker.last_api_response
+                        logger.info(f"API 원본 응답 확인: {json.dumps(api_response, ensure_ascii=False, default=str)[:200]}...")
+                    
                     total_quantity = 0
                     new_avg_price = 0
                     
@@ -824,28 +830,52 @@ class AutoTrader:
                     else:
                         logger.warning(f"알 수 없는 positions 형식: {type(updated_positions)}")
                     
+                    # API 응답에서 직접 보유수량 확인 (가장 정확함)
+                    if api_response and "output1" in api_response and isinstance(api_response["output1"], list):
+                        for item in api_response["output1"]:
+                            if item.get("pdno") == symbol:
+                                hldg_qty = int(item.get("hldg_qty", 0))
+                                logger.info(f"API 응답에서 직접 추출한 {symbol} 보유수량: {hldg_qty}주")
+                                if hldg_qty > 0:
+                                    total_quantity = hldg_qty  # API 응답 값을 우선 사용
+                                    new_avg_price = float(item.get("pchs_avg_pric", new_avg_price))
+                                    break
+                                    
+                    # 매수인 경우 quantity에 실제 주문수량을 설정
+                    executed_qty = quantity  # 기본적으로 요청한 주문수량을 사용
+                    
+                    # 체결 결과에서 체결수량 확인
+                    if "주문체결결과" in order_info:
+                        result_data = order_info["주문체결결과"]
+                        if isinstance(result_data, dict) and "체결수량" in result_data:
+                            executed_qty_str = result_data.get("체결수량", "0")
+                            try:
+                                executed_qty = int(executed_qty_str)
+                                logger.info(f"주문체결결과에서 추출한 체결수량: {executed_qty}주")
+                            except ValueError:
+                                logger.warning(f"체결수량 변환 실패: {executed_qty_str}")
+                    
                     # 보유 종목이 없거나 조회 실패 시, 매수한 경우 보유량과 평단가를 직접 계산하여 설정
                     if action == TradeAction.BUY and total_quantity == 0:
                         if prev_quantity == 0:
                             # 신규 매수: 주문수량이 현재 보유량임
-                            total_quantity = quantity
+                            total_quantity = executed_qty
                             new_avg_price = order_info.get("executed_price", price) or price
                             logger.info(f"신규 매수로 보유량 직접 계산: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
                         else:
                             # 추가 매수: 이전 보유량에 주문수량 추가
-                            total_quantity = prev_quantity + quantity
-                            total_value = (prev_avg_price * prev_quantity) + (price * quantity)
+                            total_quantity = prev_quantity + executed_qty
+                            total_value = (prev_avg_price * prev_quantity) + (price * executed_qty)
                             new_avg_price = total_value / total_quantity
                             logger.info(f"추가 매수로 보유량 직접 계산: {total_quantity}주, 평단가: {safe_format(new_avg_price)}원")
                     
                     # 거래 금액 및 수수료 계산
-                    executed_qty = order_info.get('executed_quantity', 0)
                     executed_price = order_info.get('executed_price', price)
                     
                     # None 값 확인 및 기본값 설정
                     if executed_qty is None:
-                        executed_qty = 0
-                        logger.warning("체결수량이 None입니다. 기본값 0으로 설정합니다.")
+                        executed_qty = quantity
+                        logger.warning("체결수량이 None입니다. 요청 주문수량으로 설정합니다.")
                     
                     if executed_price is None:
                         logger.warning("체결가격이 None입니다. 매매 타입, 시장, 현재 시간 정보 확인:")
@@ -908,7 +938,7 @@ class AutoTrader:
                     
                     # 계좌 API에서 종목정보를 찾지 못한 경우, total_quantity가 0이면 직접 설정
                     if total_quantity == 0 and action == TradeAction.BUY:
-                        total_quantity = prev_quantity + quantity  # 이전 보유량 + 매수량으로 설정
+                        total_quantity = prev_quantity + executed_qty  # 이전 보유량 + 매수량으로 설정
                         logger.info(f"API에서 종목정보를 찾지 못해 보유수량 직접 계산: {total_quantity}주")
 
                     # 거래 정보 추가 (종합)
@@ -938,8 +968,12 @@ class AutoTrader:
                         logger.info(f"매도 손익: {trade_info['profit_loss']}원 ({trade_info['profit_loss_pct']:.2f}%)")
                     
                     order_info["trade_info"] = trade_info;
-                    logger.info(f"거래 정보 생성 완료: 체결가={executed_price}, 체결수량={executed_qty}, 보유량={total_quantity}, 평단가={new_avg_price}")
+                    # API 원본 응답도 포함 (알림 서비스에서 필요)
+                    if api_response:
+                        order_info["api_response"] = api_response
                     
+                    logger.info(f"거래 정보 생성 완료: 체결가={executed_price}, 체결수량={executed_qty}, 보유량={total_quantity}, 평단가={new_avg_price}")
+                
                 except Exception as e:
                     logger.error(f"거래 후 정보 조회 중 오류: {e}")
                     logger.error(traceback.format_exc())
@@ -1006,7 +1040,7 @@ class AutoTrader:
                         signal_data['trade_info']["total_quantity"] = order_info["trade_info"].get("total_quantity", quantity)
                         
                         # 평단가 정보 추가
-                        if "avg_price" in order_info["trade_info"] and order_info["trade_info"]["avg_price"] > 0:
+                        if "avg_price" in order_info["trade_info"] and order_info["trade_info"]["avg_price"] is not None and order_info["trade_info"]["avg_price"] > 0:
                             signal_data['trade_info']["avg_price"] = order_info["trade_info"]["avg_price"]
                         
                         # 체결가격 정보 추가
@@ -1493,8 +1527,7 @@ class AutoTrader:
                 
                 if available_cash < min_capital:
                     logger.warning(f"사용 가능한 자본금이 최소 요구 금액보다 적습니다. ({available_cash:,.0f} < {min_capital:,.0f})")
-                    return False
-            
+                    return False            
             # 기타 모든 조건 통과
             return True
             

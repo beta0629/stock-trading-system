@@ -13,9 +13,12 @@ from typing import Dict, List, Any, Optional, Union
 import pandas as pd
 import json
 import numpy as np  # numpy 추가
+import threading
 
 from src.ai_analysis.stock_selector import StockSelector
+from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
 from src.trading.auto_trader import AutoTrader, TradeAction, OrderType
+from src.trading.realtime_trader import RealtimeTrader
 from src.utils.time_utils import get_current_time, get_current_time_str, is_market_open
 
 # 로깅 설정
@@ -42,8 +45,14 @@ class GPTAutoTrader:
         # GPT 종목 선정기 초기화
         self.stock_selector = StockSelector(config)
         
+        # GPT 트레이딩 전략 초기화 (신규 추가)
+        self.gpt_strategy = GPTTradingStrategy(config)
+        
         # AutoTrader 초기화 (실제 매매 실행용)
         self.auto_trader = AutoTrader(config, broker, data_provider, None, notifier)
+        
+        # RealtimeTrader 초기화 (실시간 매매용) (신규 추가)
+        self.realtime_trader = RealtimeTrader(config, broker, data_provider, notifier)
         
         # 설정값 로드
         self.gpt_trading_enabled = getattr(config, 'GPT_AUTO_TRADING', True)
@@ -60,6 +69,18 @@ class GPTAutoTrader:
         self.technical_optimization_interval = getattr(config, 'GPT_TECHNICAL_OPTIMIZATION_INTERVAL', 168)  # 시간 (기본 1주일)
         self.last_technical_optimization_time = None
         
+        # 완전 자동화 모드 설정 (신규 추가)
+        self.fully_autonomous_mode = getattr(config, 'GPT_FULLY_AUTONOMOUS_MODE', True)
+        self.autonomous_trading_interval = getattr(config, 'GPT_AUTONOMOUS_TRADING_INTERVAL', 5)  # 분 단위
+        self.realtime_market_scan_interval = getattr(config, 'GPT_REALTIME_MARKET_SCAN_INTERVAL', 15)  # 분 단위
+        self.autonomous_max_positions = getattr(config, 'GPT_AUTONOMOUS_MAX_POSITIONS', 7)
+        self.autonomous_max_trade_amount = getattr(config, 'GPT_AUTONOMOUS_MAX_TRADE_AMOUNT', 1000000)  # 자동 매매 최대 금액
+        
+        # 고급 설정
+        self.aggressive_mode = getattr(config, 'GPT_AGGRESSIVE_MODE', False)  # 공격적 매매 모드
+        self.auto_restart_enabled = getattr(config, 'GPT_AUTO_RESTART_ENABLED', True)  # 자동 재시작 기능
+        self.risk_management_enabled = getattr(config, 'GPT_RISK_MANAGEMENT_ENABLED', True)  # 위험 관리 기능
+        
         # 상태 변수
         self.is_running = False
         self.last_selection_time = None
@@ -72,7 +93,26 @@ class GPTAutoTrader:
         self.holdings = {}  # {symbol: {quantity, avg_price, market, entry_time, ...}}
         self.trade_history = []  # 매매 기록
         
-        logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'}, 기술적 지표 최적화: {'활성화' if self.optimize_technical_indicators else '비활성화'})")
+        # 자동 거래 스레드 (신규 추가)
+        self.autonomous_thread = None
+        self.autonomous_thread_running = False
+        self.realtime_scan_thread = None
+        self.realtime_scan_thread_running = False
+        
+        # 자동 매매 실적 통계 (신규 추가)
+        self.autonomous_stats = {
+            'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
+            'total_profit': 0.0,
+            'total_loss': 0.0,
+            'start_time': None,
+            'last_updated': None
+        }
+        
+        logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'}, "
+                  f"완전자율거래: {'활성화' if self.fully_autonomous_mode else '비활성화'}, "
+                  f"공격적모드: {'활성화' if self.aggressive_mode else '비활성화'})")
         
     def is_trading_time(self, market="KR"):
         """
@@ -220,6 +260,11 @@ class GPTAutoTrader:
                 self.auto_trader.simulation_mode = True
                 logger.info("AutoTrader를 시뮬레이션 모드로 설정했습니다.")
             
+            # RealtimeTrader에도 시뮬레이션 모드 설정 (신규 추가)
+            if self.realtime_trader:
+                self.realtime_trader.simulation_mode = True
+                logger.info("RealtimeTrader를 시뮬레이션 모드로 설정했습니다.")
+            
             # 시뮬레이션 모드 알림
             if self.notifier:
                 self.notifier.send_message("🔧 GPT 자동 매매가 시뮬레이션 모드로 실행됩니다.")
@@ -231,6 +276,11 @@ class GPTAutoTrader:
         if self.auto_trader:
             self.auto_trader.start_trading_session()
             logger.info(f"AutoTrader 시작 상태: {self.auto_trader.is_running}")
+        
+        # RealtimeTrader 시작 (신규 추가)
+        if self.realtime_trader:
+            self.realtime_trader.start()
+            logger.info(f"RealtimeTrader 시작 상태: {self.realtime_trader.is_running}")
         
         # 초기 종목 선정 실행
         try:
@@ -246,6 +296,16 @@ class GPTAutoTrader:
         except Exception as e:
             logger.error(f"보유 종목 로드 중 오류 발생: {e}")
             # 오류가 발생해도 계속 진행
+            
+        # 완전 자율 거래 스레드 시작 (신규 추가)
+        if self.fully_autonomous_mode:
+            self._start_autonomous_thread()
+            self._start_realtime_scan_thread()
+            logger.info("GPT 완전 자율 거래 스레드 시작")
+        
+        # 자동 매매 통계 초기화 (신규 추가)
+        self.autonomous_stats['start_time'] = get_current_time()
+        self.autonomous_stats['last_updated'] = get_current_time()
         
         # 알림 전송
         if self.notifier:
@@ -255,6 +315,16 @@ class GPTAutoTrader:
             message += f"• 종목당 최대 투자금: {self.max_investment_per_stock:,}원\n"
             message += f"• 종목 선정 주기: {self.selection_interval}시간\n"
             message += f"• 모니터링 간격: {self.monitoring_interval}분\n"
+            
+            # 추가된 설정 정보 알림 (신규 추가)
+            if self.fully_autonomous_mode:
+                message += f"\n🚀 완전 자율 거래 모드: 활성화\n"
+                message += f"• 자율 거래 간격: {self.autonomous_trading_interval}분\n"
+                message += f"• 실시간 시장 스캔: {self.realtime_market_scan_interval}분\n"
+                message += f"• 자율 최대 종목 수: {self.autonomous_max_positions}개\n"
+                message += f"• 자율 거래당 최대 금액: {self.autonomous_max_trade_amount:,}원\n"
+                message += f"• 공격적 매매 모드: {'활성화' if self.aggressive_mode else '비활성화'}\n"
+            
             message += f"• 모드: {'시뮬레이션' if simulation_mode else '실거래'}\n"
             self.notifier.send_message(message)
             
@@ -271,15 +341,446 @@ class GPTAutoTrader:
         logger.info("GPT 자동 매매 시스템을 중지합니다.")
         
         # AutoTrader 중지
-        self.auto_trader.stop_trading_session()
+        if self.auto_trader:
+            self.auto_trader.stop_trading_session()
+            logger.info("AutoTrader 중지됨")
+            
+        # RealtimeTrader 중지 (신규 추가)
+        if self.realtime_trader:
+            self.realtime_trader.stop()
+            logger.info("RealtimeTrader 중지됨")
+            
+        # 완전 자율 거래 스레드 중지 (신규 추가)
+        self._stop_autonomous_thread()
+        self._stop_realtime_scan_thread()
+        
+        # 자동화 통계 요약 (신규 추가)
+        stats_summary = self._get_autonomous_stats_summary()
+        logger.info(f"자동화 매매 통계 요약: {stats_summary}")
         
         # 알림 전송
         if self.notifier:
             message = f"🛑 GPT 자동 매매 시스템 중지 ({get_current_time_str()})"
+            
+            # 완전 자율 모드였다면 통계 추가 (신규 추가)
+            if self.fully_autonomous_mode:
+                message += f"\n\n📊 자율 매매 통계:\n"
+                message += f"• 총 거래 횟수: {self.autonomous_stats['total_trades']}회\n"
+                message += f"• 승률: {self._calculate_win_rate():.1f}%\n"
+                message += f"• 총 수익: {self.autonomous_stats['total_profit']:,.0f}원\n"
+                message += f"• 총 손실: {self.autonomous_stats['total_loss']:,.0f}원\n"
+            
             self.notifier.send_message(message)
             
         return True
+    
+    def _start_autonomous_thread(self):
+        """완전 자율 거래 스레드 시작 (신규 추가)"""
+        if self.autonomous_thread is not None and self.autonomous_thread_running:
+            logger.warning("자율 거래 스레드가 이미 실행 중입니다.")
+            return False
+            
+        self.autonomous_thread_running = True
+        self.autonomous_thread = threading.Thread(target=self._autonomous_trading_loop, name="GPT_Autonomous_Trading")
+        self.autonomous_thread.daemon = True
+        self.autonomous_thread.start()
+        logger.info("GPT 자율 거래 스레드 시작됨")
+        return True
         
+    def _stop_autonomous_thread(self):
+        """완전 자율 거래 스레드 중지 (신규 추가)"""
+        self.autonomous_thread_running = False
+        if self.autonomous_thread is not None:
+            try:
+                if self.autonomous_thread.is_alive():
+                    logger.info("자율 거래 스레드 종료 대기 중...")
+                    self.autonomous_thread.join(timeout=5)
+                    logger.info("자율 거래 스레드 종료됨")
+            except Exception as e:
+                logger.error(f"자율 거래 스레드 종료 중 오류: {e}")
+                
+        self.autonomous_thread = None
+        return True
+        
+    def _start_realtime_scan_thread(self):
+        """실시간 시장 스캔 스레드 시작 (신규 추가)"""
+        if self.realtime_scan_thread is not None and self.realtime_scan_thread_running:
+            logger.warning("실시간 시장 스캔 스레드가 이미 실행 중입니다.")
+            return False
+            
+        self.realtime_scan_thread_running = True
+        self.realtime_scan_thread = threading.Thread(target=self._realtime_market_scan_loop, name="GPT_Market_Scanner")
+        self.realtime_scan_thread.daemon = True
+        self.realtime_scan_thread.start()
+        logger.info("GPT 실시간 시장 스캔 스레드 시작됨")
+        return True
+        
+    def _stop_realtime_scan_thread(self):
+        """실시간 시장 스캔 스레드 중지 (신규 추가)"""
+        self.realtime_scan_thread_running = False
+        if self.realtime_scan_thread is not None:
+            try:
+                if self.realtime_scan_thread.is_alive():
+                    logger.info("실시간 시장 스캔 스레드 종료 대기 중...")
+                    self.realtime_scan_thread.join(timeout=5)
+                    logger.info("실시간 시장 스캔 스레드 종료됨")
+            except Exception as e:
+                logger.error(f"실시간 시장 스캔 스레드 종료 중 오류: {e}")
+                
+        self.realtime_scan_thread = None
+        return True
+        
+    def _autonomous_trading_loop(self):
+        """GPT 완전 자율 거래 루프 실행 (신규 추가)"""
+        logger.info("GPT 자율 거래 루프 시작")
+        
+        while self.autonomous_thread_running and self.is_running:
+            try:
+                # 거래 시간인지 확인
+                if not is_market_open("KR"):
+                    logger.info("현재 거래 시간이 아닙니다. 10분 후에 다시 확인합니다.")
+                    for _ in range(10 * 60):  # 10분 대기 (1초 단위로 중단 체크)
+                        if not self.autonomous_thread_running:
+                            break
+                        time.sleep(1)
+                    continue
+                
+                logger.info("자율 거래 사이클 시작")
+                
+                # 현재 보유 포지션 업데이트
+                self._load_current_holdings()
+                
+                # 계좌 잔고 확인
+                balance_info = self.broker.get_balance()
+                available_cash = balance_info.get('주문가능금액', balance_info.get('예수금', 0))
+                logger.info(f"계좌 잔고: {available_cash:,.0f}원")
+                
+                # 시장 데이터 가져오기 (관심종목 + 현재 보유종목)
+                market_data = self._get_market_data()
+                
+                # GPT 자율적인 매매 결정
+                decisions = self.gpt_strategy.fully_autonomous_decision(
+                    market_data=market_data,
+                    available_cash=available_cash,
+                    current_positions=self.holdings
+                )
+                
+                # 매도 결정 실행
+                for sell_decision in decisions.get('sell_decisions', []):
+                    symbol = sell_decision.get('symbol')
+                    reason = sell_decision.get('reason', 'GPT 자율 매도 결정')
+                    logger.info(f"자율 매도 결정: {symbol}, 이유: {reason}")
+                    
+                    try:
+                        if self._execute_sell(symbol):
+                            # 매도 성공 시 통계 업데이트
+                            profit_pct = sell_decision.get('profit_loss_pct', 0)
+                            amount = sell_decision.get('quantity', 0) * sell_decision.get('price', 0)
+                            
+                            if profit_pct > 0:
+                                self.autonomous_stats['winning_trades'] += 1
+                                self.autonomous_stats['total_profit'] += amount * (profit_pct / 100)
+                            else:
+                                self.autonomous_stats['losing_trades'] += 1
+                                self.autonomous_stats['total_loss'] += abs(amount * (profit_pct / 100))
+                                
+                            self.autonomous_stats['total_trades'] += 1
+                            self.autonomous_stats['last_updated'] = get_current_time()
+                    except Exception as e:
+                        logger.error(f"{symbol} 자율 매도 실행 중 오류: {e}")
+                
+                # 매수 결정 실행
+                for buy_decision in decisions.get('buy_decisions', []):
+                    symbol = buy_decision.get('symbol')
+                    reason = buy_decision.get('reason', 'GPT 자율 매수 결정')
+                    logger.info(f"자율 매수 결정: {symbol}, 이유: {reason}")
+                    
+                    try:
+                        if self._execute_buy_decision(buy_decision):
+                            # 매수 성공 시 통계 업데이트
+                            self.autonomous_stats['total_trades'] += 1
+                            self.autonomous_stats['last_updated'] = get_current_time()
+                    except Exception as e:
+                        logger.error(f"{symbol} 자율 매수 실행 중 오류: {e}")
+                
+                # 다음 사이클까지 대기
+                logger.info(f"자율 거래 사이클 완료. {self.autonomous_trading_interval}분 후에 다시 실행합니다.")
+                for _ in range(self.autonomous_trading_interval * 60):  # 분 단위를 초 단위로 변환
+                    if not self.autonomous_thread_running:
+                        break
+                    time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"자율 거래 루프 중 오류 발생: {e}")
+                time.sleep(60)  # 오류 발생 시 1분 대기 후 재시도
+    
+    def _realtime_market_scan_loop(self):
+        """실시간 시장 스캔 루프 실행 (신규 추가)"""
+        logger.info("실시간 시장 스캔 루프 시작")
+        
+        while self.realtime_scan_thread_running and self.is_running:
+            try:
+                # 거래 시간인지 확인
+                if not is_market_open("KR"):
+                    logger.info("현재 거래 시간이 아닙니다. 실시간 시장 스캔은 5분 후에 다시 확인합니다.")
+                    for _ in range(5 * 60):  # 5분 대기 (1초 단위로 중단 체크)
+                        if not self.realtime_scan_thread_running:
+                            break
+                        time.sleep(1)
+                    continue
+                
+                logger.info("실시간 시장 스캔 시작")
+                
+                # 시장 데이터 수집
+                self._scan_market_opportunities()
+                
+                # 다음 스캔까지 대기
+                logger.info(f"실시간 시장 스캔 완료. {self.realtime_market_scan_interval}분 후에 다시 실행합니다.")
+                for _ in range(self.realtime_market_scan_interval * 60):  # 분 단위를 초 단위로 변환
+                    if not self.realtime_scan_thread_running:
+                        break
+                    time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"실시간 시장 스캔 루프 중 오류 발생: {e}")
+                time.sleep(60)  # 오류 발생 시 1분 대기 후 재시도
+    
+    def _scan_market_opportunities(self):
+        """실시간 시장 기회 스캔 (단타매매 및 급등주 분석을 GPT에게 전적으로 맡김)"""
+        try:
+            logger.info("GPT 기반 실시간 단타매매 및 급등주 기회 스캔 시작")
+            
+            # GPT에게 직접 단타 매매용 종목 추천 요청 (디비/캐시 사용 안함)
+            kr_symbols = self.gpt_strategy.get_day_trading_candidates('KR', max_count=10)
+            us_symbols = []
+            
+            # 미국 주식 거래가 활성화된 경우에만 미국 종목도 요청
+            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+            if us_stock_trading_enabled:
+                us_symbols = self.gpt_strategy.get_day_trading_candidates('US', max_count=5)
+                
+            # 종목 목록 합치기
+            all_symbols = [(symbol, 'KR') for symbol in kr_symbols] + [(symbol, 'US') for symbol in us_symbols]
+            
+            logger.info(f"GPT 추천 단타매매 종목: 한국 {len(kr_symbols)}개, 미국 {len(us_symbols)}개")
+            
+            # 모멘텀/급등주 분석 결과 저장용
+            momentum_stocks = []
+            
+            # 종목별로 GPT 분석 요청 (디비/캐시 사용 안함)
+            for symbol, market in all_symbols:
+                try:
+                    # 데이터는 바로 데이터 제공자에게서 가져옴 (캐시/디비 사용 안함)
+                    stock_data = self.data_provider.get_stock_data(symbol, days=5)
+                    current_price = self.data_provider.get_current_price(symbol, market)
+                    
+                    if stock_data is None or stock_data.empty or current_price is None:
+                        logger.warning(f"{symbol} 데이터 가져오기 실패, 건너뜁니다.")
+                        continue
+                    
+                    # GPT에 직접 분석 요청 (캐시 사용하지 않음)
+                    analysis = self.gpt_strategy.analyze_momentum_stock(
+                        symbol=symbol, 
+                        stock_data=stock_data,
+                        current_price=current_price,
+                        use_cache=False  # 캐시 사용 안함
+                    )
+                    
+                    # 분석 결과에서 모멘텀 점수와 단타매매 적합도 추출
+                    if analysis:
+                        momentum_score = analysis.get('momentum_score', 0)
+                        day_trading_score = analysis.get('day_trading_score', 0)
+                        
+                        # 스코어가 충분히 높은 종목만 추가 (모멘텀 또는 단타 스코어가 70점 이상)
+                        if momentum_score > 70 or day_trading_score > 70:
+                            # 종목명 가져오기
+                            stock_info = self.data_provider.get_stock_info(symbol, market)
+                            name = stock_info.get('name', symbol) if stock_info else symbol
+                            
+                            analysis['symbol'] = symbol
+                            analysis['name'] = name
+                            analysis['price'] = current_price
+                            analysis['market'] = market
+                            
+                            # 모멘텀/단타 점수 중 더 높은 점수 기준으로 정렬하기 위한 최종 점수 계산
+                            final_score = max(momentum_score, day_trading_score)
+                            momentum_stocks.append((symbol, final_score, analysis))
+                            
+                            # 로그로 분석 결과 요약 기록
+                            logger.info(f"{symbol} 분석 완료: 모멘텀 {momentum_score}, 단타 {day_trading_score}")
+                
+                except Exception as e:
+                    logger.error(f"{symbol} 분석 중 오류: {e}")
+                    continue
+            
+            # 스코어 기준 정렬 및 상위 종목 추출
+            momentum_stocks.sort(key=lambda x: x[1], reverse=True)
+            top_momentum = momentum_stocks[:5]  # 상위 5개 종목
+            
+            if not top_momentum:
+                logger.info("GPT 분석 결과 현재 급등주/단타 기회가 없습니다.")
+                return False
+                
+            # 결과 처리 및 알림
+            logger.info(f"GPT 분석으로 {len(top_momentum)}개의 급등주/단타 기회를 발견했습니다")
+            
+            # 메시지 구성
+            message = f"📈 GPT 실시간 단타/급등주 감지 ({get_current_time_str()})\n\n"
+            
+            for symbol, score, analysis in top_momentum:
+                name = analysis.get('name', symbol)
+                price = analysis.get('price', 0)
+                target = analysis.get('target_price', price * 1.05)
+                stop_loss = analysis.get('stop_loss', price * 0.95)
+                momentum_score = analysis.get('momentum_score', 0)
+                day_trading_score = analysis.get('day_trading_score', 0)
+                strategy = analysis.get('strategy', '분석 없음')
+                duration = analysis.get('momentum_duration', '확인 불가')
+                
+                message += f"• {name} ({symbol})\n"
+                message += f"  현재가: {price:,.0f}원 / 목표가: {target:,.0f}원\n"
+                message += f"  손절가: {stop_loss:,.0f}원\n"
+                message += f"  모멘텀 점수: {momentum_score}/100, 단타 적합도: {day_trading_score}/100\n"
+                message += f"  전략: {strategy}\n"
+                message += f"  예상 지속 기간: {duration}\n\n"
+                
+                # 메모리에 기회 저장 (디비/캐시 사용하지 않음)
+                self.gpt_strategy.add_momentum_opportunity({
+                    'symbol': symbol,
+                    'name': name,
+                    'price': price,
+                    'target_price': target,
+                    'stop_loss': stop_loss,
+                    'momentum_score': momentum_score,
+                    'day_trading_score': day_trading_score,
+                    'strategy': strategy,
+                    'market': analysis.get('market', 'KR'),
+                    'entry_time': get_current_time().strftime('%Y-%m-%d %H:%M:%S')
+                })
+            
+            # 알림 발송
+            if self.notifier:
+                self.notifier.send_message(message)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"실시간 시장 스캔 중 오류 발생: {e}")
+            return False
+    
+    def _get_market_data(self):
+        """시장 데이터 가져오기 (신규 추가)"""
+        try:
+            # 관심 종목 목록 구성
+            interest_symbols = []
+            
+            # 1. 추천 종목 추가
+            kr_symbols = [stock.get('symbol') for stock in self.gpt_selections.get('KR', [])]
+            interest_symbols.extend(kr_symbols)
+            
+            # 2. 현재 보유 종목 추가
+            holding_symbols = list(self.holdings.keys())
+            interest_symbols.extend(holding_symbols)
+            
+            # 3. 추가 관심 종목 추가
+            additional_symbols = getattr(self.config, 'ADDITIONAL_INTEREST_SYMBOLS', [])
+            if isinstance(additional_symbols, list):
+                interest_symbols.extend(additional_symbols)
+                
+            # 4. 코스피/코스닥 주요 지수 구성 종목 (실시간 급등주 스캐닝을 위한 추가 데이터)
+            index_symbols = getattr(self.config, 'INDEX_COMPONENT_SYMBOLS', [])
+            if isinstance(index_symbols, list):
+                interest_symbols.extend(index_symbols)
+                
+            # 중복 제거 및 유효한 종목 코드만 추출
+            interest_symbols = list(set([s for s in interest_symbols if s and isinstance(s, str)]))
+            
+            # 최대 100개 종목으로 제한 (API 부하 고려)
+            if len(interest_symbols) > 100:
+                logger.info(f"관심 종목이 너무 많아({len(interest_symbols)}개) 100개로 제한합니다")
+                interest_symbols = interest_symbols[:100]
+            
+            # 시장 데이터 딕셔너리 초기화
+            market_data = {}
+            
+            # 종목별 시세 데이터 가져오기
+            for symbol in interest_symbols:
+                try:
+                    # 한국 종목 포맷 검사 (기본 6자리 숫자)
+                    market = "KR"
+                    
+                    # 과거 데이터 가져오기 (20일)
+                    df = self.data_provider.get_historical_data(symbol, market, period="1mo")
+                    
+                    if df is not None and not df.empty:
+                        # 기술적 지표 추가
+                        # RSI
+                        try:
+                            delta = df['Close'].diff()
+                            gain = delta.where(delta > 0, 0)
+                            loss = -delta.where(delta < 0, 0)
+                            avg_gain = gain.rolling(window=14).mean()
+                            avg_loss = loss.rolling(window=14).mean()
+                            rs = avg_gain / avg_loss
+                            df['RSI'] = 100 - (100 / (1 + rs))
+                        except:
+                            pass
+                            
+                        # 이동평균선
+                        try:
+                            df['SMA_short'] = df['Close'].rolling(window=10).mean()
+                            df['SMA_long'] = df['Close'].rolling(window=30).mean()
+                        except:
+                            pass
+                            
+                        # MACD
+                        try:
+                            exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+                            exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+                            df['MACD'] = exp1 - exp2
+                            df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+                        except:
+                            pass
+                        
+                        market_data[symbol] = df
+                except Exception as e:
+                    logger.error(f"{symbol} 시장 데이터 가져오기 중 오류: {e}")
+            
+            logger.info(f"시장 데이터 수집 완료: {len(market_data)}개 종목")
+            return market_data
+            
+        except Exception as e:
+            logger.error(f"시장 데이터 수집 중 오류: {e}")
+            return {}
+    
+    def _calculate_win_rate(self):
+        """승률 계산 (신규 추가)"""
+        total = self.autonomous_stats['winning_trades'] + self.autonomous_stats['losing_trades']
+        if total == 0:
+            return 0
+        return (self.autonomous_stats['winning_trades'] / total) * 100
+    
+    def _get_autonomous_stats_summary(self):
+        """자율 매매 통계 요약 (신규 추가)"""
+        if self.autonomous_stats['start_time'] is None:
+            return "통계 없음"
+            
+        # 운영 기간 계산
+        now = get_current_time()
+        duration = now - self.autonomous_stats['start_time']
+        days = duration.days
+        hours = duration.seconds // 3600
+        
+        # 승률 계산
+        win_rate = self._calculate_win_rate()
+        
+        # 순이익 계산
+        net_profit = self.autonomous_stats['total_profit'] - self.autonomous_stats['total_loss']
+        
+        return (f"총 {self.autonomous_stats['total_trades']}회 거래, 승률 {win_rate:.1f}%, "
+              f"총수익 {self.autonomous_stats['total_profit']:,.0f}원, 총손실 {self.autonomous_stats['total_loss']:,.0f}원, "
+              f"순이익 {net_profit:,.0f}원 (운영기간: {days}일 {hours}시간)")
+              
     def _select_stocks(self):
         """GPT를 사용하여 주식 선정"""
         try:
@@ -306,26 +807,189 @@ class GPTAutoTrader:
             
             logger.info(f"{self.strategy} 전략으로 GPT 종목 선정 시작")
             
-            # 한국 주식 추천
-            kr_recommendations = self.stock_selector.recommend_stocks(
-                market="KR", 
-                count=self.max_positions,
-                strategy=self.strategy
-            )
+            # 설정 확인 - 단타 매매 모드와 급등주 감지 모드 확인
+            day_trading_mode = getattr(self.config, 'DAY_TRADING_MODE', False)
+            surge_detection_enabled = getattr(self.config, 'SURGE_DETECTION_ENABLED', False)
             
-            # 미국 주식 추천 (설정이 활성화된 경우에만)
-            us_recommendations = {"recommended_stocks": []}
-            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
-            
-            if us_stock_trading_enabled:
-                logger.info("미국 주식 거래가 활성화되어 있습니다. 미국 주식 추천을 요청합니다.")
-                us_recommendations = self.stock_selector.recommend_stocks(
-                    market="US", 
+            # 단타 매매 또는 급등주 감지 모드가 활성화된 경우
+            if day_trading_mode or surge_detection_enabled:
+                kr_recommendations = {"recommended_stocks": []}
+                us_recommendations = {"recommended_stocks": []}
+                
+                logger.info(f"단타 매매 모드: {day_trading_mode}, 급등주 감지 모드: {surge_detection_enabled}")
+                
+                # 단타 매매 모드가 활성화된 경우
+                if day_trading_mode:
+                    logger.info("단타 매매 모드로 종목 선정을 시작합니다.")
+                    try:
+                        # 한국 주식 단타 매매 종목 추천
+                        day_trading_symbols = self.gpt_strategy.get_day_trading_candidates(
+                            market="KR", 
+                            max_count=self.max_positions,
+                            min_score=70,
+                            use_cache=False  # 캐시 사용 안함
+                        )
+                        
+                        # 단타 매매 종목 정보 구성
+                        for symbol in day_trading_symbols:
+                            # 종목 정보 가져오기
+                            stock_info = self.data_provider.get_stock_info(symbol, "KR")
+                            name = stock_info.get('name', symbol) if stock_info else symbol
+                            
+                            # 현재가 가져오기
+                            price = self.data_provider.get_current_price(symbol, "KR") or 0
+                            
+                            # 단타 매매 종목 데이터 분석
+                            analysis = self.gpt_strategy.analyze_momentum_stock(
+                                symbol=symbol,
+                                use_cache=False
+                            )
+                            
+                            # 단타 점수와 목표가 가져오기
+                            day_trading_score = analysis.get('day_trading_score', 75) if analysis else 75
+                            target_price = analysis.get('target_price', price * 1.1) if analysis else price * 1.1
+                            
+                            # 추천 종목에 추가
+                            kr_recommendations["recommended_stocks"].append({
+                                'symbol': symbol,
+                                'name': name,
+                                'suggested_weight': min(day_trading_score / 2, 40),  # 최대 40%
+                                'target_price': target_price,
+                                'risk_level': 10 - int(day_trading_score / 10),  # 변환 (점수가 높을수록 위험도 낮음)
+                                'type': 'day_trading',
+                                'day_trading_score': day_trading_score
+                            })
+                        
+                        logger.info(f"단타 매매 종목 선정 완료: {len(day_trading_symbols)}개 종목")
+                    except Exception as e:
+                        logger.error(f"단타 매매 종목 선정 중 오류 발생: {e}")
+                
+                # 급등주 감지 모드가 활성화된 경우
+                if surge_detection_enabled:
+                    logger.info("급등주 감지 모드로 종목 선정을 시작합니다.")
+                    try:
+                        # 현재 메모리에 저장된 모멘텀 기회 활용
+                        momentum_opportunities = self.gpt_strategy.get_momentum_opportunities(min_score=80)
+                        
+                        # 기회가 충분하지 않으면 새로 스캔
+                        if len(momentum_opportunities) < 3:
+                            self._scan_market_opportunities()
+                            momentum_opportunities = self.gpt_strategy.get_momentum_opportunities(min_score=80)
+                        
+                        # 급등주 정보 구성
+                        for opp in momentum_opportunities:
+                            symbol = opp.get('symbol')
+                            if not symbol:
+                                continue
+                                
+                            # 이미 단타 매매 종목에 있는지 확인
+                            already_selected = False
+                            for stock in kr_recommendations["recommended_stocks"]:
+                                if stock.get('symbol') == symbol:
+                                    already_selected = True
+                                    break
+                            
+                            if already_selected:
+                                continue
+                                
+                            # 종목 정보 및 현재가
+                            name = opp.get('name') or symbol
+                            price = opp.get('price') or self.data_provider.get_current_price(symbol, "KR") or 0
+                            
+                            # 모멘텀 점수 가져오기
+                            momentum_score = opp.get('momentum_score', 0)
+                            target_price = opp.get('target_price', price * 1.1)
+                            
+                            # 추천 종목에 추가
+                            kr_recommendations["recommended_stocks"].append({
+                                'symbol': symbol,
+                                'name': name,
+                                'suggested_weight': min(momentum_score / 2, 40),  # 최대 40%
+                                'target_price': target_price,
+                                'risk_level': 10 - int(momentum_score / 10),  # 변환
+                                'type': 'momentum',
+                                'momentum_score': momentum_score
+                            })
+                        
+                        logger.info(f"급등주 감지 종목 선정 완료: {len(momentum_opportunities)}개 종목 확인")
+                    except Exception as e:
+                        logger.error(f"급등주 감지 종목 선정 중 오류 발생: {e}")
+                
+                # 미국 주식 추천 (단타/급등주 모드에서도 미국 주식 지원)
+                us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+                if us_stock_trading_enabled:
+                    logger.info("미국 주식 단타/급등주 종목 선정 시작")
+                    try:
+                        # 미국 단타 매매 종목 가져오기
+                        us_symbols = self.gpt_strategy.get_day_trading_candidates(
+                            market="US", 
+                            max_count=3,
+                            use_cache=False
+                        )
+                        
+                        # 미국 종목 정보 구성
+                        for symbol in us_symbols:
+                            # 종목 정보 가져오기
+                            stock_info = self.data_provider.get_stock_info(symbol, "US")
+                            name = stock_info.get('name', symbol) if stock_info else symbol
+                            price = self.data_provider.get_current_price(symbol, "US") or 0
+                            
+                            # 분석 (선택 사항)
+                            analysis = None
+                            try:
+                                analysis = self.gpt_strategy.analyze_momentum_stock(
+                                    symbol=symbol,
+                                    use_cache=False
+                                )
+                            except:
+                                pass
+                            
+                            score = analysis.get('day_trading_score', 75) if analysis else 75
+                            target_price = analysis.get('target_price', price * 1.1) if analysis else price * 1.1
+                            
+                            # 추천 종목에 추가
+                            us_recommendations["recommended_stocks"].append({
+                                'symbol': symbol,
+                                'name': name,
+                                'suggested_weight': min(score / 2, 30),  # 최대 30%
+                                'target_price': target_price,
+                                'risk_level': 10 - int(score / 10),
+                                'type': 'us_day_trading',
+                                'score': score
+                            })
+                    except Exception as e:
+                        logger.error(f"미국 단타/급등주 종목 선정 중 오류 발생: {e}")
+                        
+                # 시장 분석 추가
+                kr_recommendations["market_analysis"] = "단타 매매 및 급등주 감지 모드로 선정된 종목입니다."
+                kr_recommendations["investment_strategy"] = "단기간 목표가 도달 시 익절, 손실 발생 시 빠르게 손절하는 단타 전략을 구사하세요."
+                
+                if us_recommendations["recommended_stocks"]:
+                    us_recommendations["market_analysis"] = "미국 시장 단타 매매 종목입니다."
+                    us_recommendations["investment_strategy"] = "미국 시장 변동성을 고려하여 적극적인 익절 전략을 사용하세요."
+                
+            else:
+                # 기존 일반 종목 추천 로직 (단타/급등주 모드가 비활성화된 경우)
+                # 한국 주식 추천
+                kr_recommendations = self.stock_selector.recommend_stocks(
+                    market="KR", 
                     count=self.max_positions,
                     strategy=self.strategy
                 )
-            else:
-                logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 추천을 건너뜁니다.")
+                
+                # 미국 주식 추천 (설정이 활성화된 경우에만)
+                us_recommendations = {"recommended_stocks": []}
+                us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
+                
+                if us_stock_trading_enabled:
+                    logger.info("미국 주식 거래가 활성화되어 있습니다. 미국 주식 추천을 요청합니다.")
+                    us_recommendations = self.stock_selector.recommend_stocks(
+                        market="US", 
+                        count=self.max_positions,
+                        strategy=self.strategy
+                    )
+                else:
+                    logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 추천을 건너뜁니다.")
             
             logger.info(f"GPT 종목 선정 완료: 한국 {len(kr_recommendations.get('recommended_stocks', []))}개, "
                       f"미국 {len(us_recommendations.get('recommended_stocks', []))}개")
@@ -353,8 +1017,10 @@ class GPTAutoTrader:
                 risk = stock.get('risk_level', 5)
                 target = stock.get('target_price', 0)
                 weight = stock.get('suggested_weight', 0)
+                stock_type = stock.get('type', '일반')
                 
-                kr_summary += f"• {name} ({symbol}): 목표가 {target:,.0f}원, 비중 {weight}%, 위험도 {risk}/10\n"
+                type_emoji = "🔄" if stock_type == 'day_trading' else "📈" if stock_type == 'momentum' else "📊"
+                kr_summary += f"{type_emoji} {name} ({symbol}): 목표가 {target:,.0f}원, 비중 {weight}%, 위험도 {risk}/10\n"
                 
             us_summary = "\n🇺🇸 미국 추천 종목:\n"
             for stock in self.gpt_selections['US']:
@@ -363,23 +1029,34 @@ class GPTAutoTrader:
                 risk = stock.get('risk_level', 5)
                 target = stock.get('target_price', 0)
                 weight = stock.get('suggested_weight', 0)
+                stock_type = stock.get('type', '일반')
                 
-                us_summary += f"• {name} ({symbol}): 목표가 ${target:,.0f}, 비중 {weight}%, 위험도 {risk}/10\n"
+                type_emoji = "🔄" if 'day_trading' in stock_type else "📈" if 'momentum' in stock_type else "📊"
+                us_summary += f"{type_emoji} {name} ({symbol}): 목표가 ${target:,.0f}, 비중 {weight}%, 위험도 {risk}/10\n"
             
             # 분석 내용 포함
             kr_analysis = kr_recommendations.get('market_analysis', '')
             us_analysis = us_recommendations.get('market_analysis', '')
             investment_strategy = kr_recommendations.get('investment_strategy', '')
             
+            # 모드 정보 추가
+            mode_info = ""
+            if day_trading_mode:
+                mode_info += "단타매매 "
+            if surge_detection_enabled:
+                mode_info += "급등주감지 "
+            if not mode_info:
+                mode_info = "일반투자 "
+            
             # 알림 전송
             if self.notifier:
                 # 메시지 길이 제한을 고려하여 나눠서 전송
                 selection_mode = "동적" if self.use_dynamic_selection else "고정"
-                self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드\n\n{kr_summary}")
+                self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드, {mode_info}\n\n{kr_summary}")
                 
                 # 미국 주식 거래가 활성화된 경우에만 미국 종목 정보 전송
                 if us_stock_trading_enabled and self.gpt_selections['US']:
-                    self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드\n\n{us_summary}")
+                    self.notifier.send_message(f"📊 GPT 종목 추천 ({get_current_time_str()}) - {selection_mode} 선정 모드, {mode_info}\n\n{us_summary}")
                 
                 if kr_analysis:
                     self.notifier.send_message(f"🧠 시장 분석\n\n{kr_analysis[:500]}...")
@@ -886,927 +1563,372 @@ class GPTAutoTrader:
             logger.error(f"매도 실행 중 오류 발생: {e}")
             return False
     
-    def _update_positions(self):
+    def get_gpt_insights_for_realtime_trading(self, symbol, stock_data, current_price=None, is_holding=False, avg_price=0):
         """
-        보유 종목 현황 업데이트 (계좌 정보 동기화)
-        
-        Returns:
-            bool: 업데이트 성공 여부
-        """
-        return self._load_current_holdings()
-    
-    def run_cycle(self):
-        """
-        트레이딩 사이클 실행 - 시간 기반으로 주식 선정 및 매매 결정
-        """
-        try:
-            logger.info("=== GPT 트레이딩 사이클 시작 ===")
-            
-            # 현재 시간이 거래 시간인지 확인
-            now = get_current_time()
-            
-            if not self.is_trading_time():  # datetime 매개변수 제거하고 기본 "KR" 시장 사용
-                logger.info("현재는 거래 시간이 아닙니다.")
-                return
-            
-            # 기술적 지표 최적화 실행 (필요한 경우)
-            if self.optimize_technical_indicators:
-                self._optimize_technical_indicators()
-            
-            # 캐시된 GPT 추천 정보 로드 (GPT 선정 데이터가 없을 경우 대비)
-            self._load_cached_recommendations()
-                
-            # 종목 선정 (필요한 경우)
-            self._select_stocks()
-            
-            # 보유 종목 현황 업데이트
-            self._update_positions()
-            
-            # 계좌 잔고 확인
-            balance_info = self.broker.get_balance()
-            available_cash = balance_info.get('주문가능금액', balance_info.get('예수금', 0))
-            logger.info(f"계좌 잔고: {available_cash:,.0f}원")
-            
-            # 매매 결정 및 실행 (한국 주식)
-            logger.info("=== 한국 주식 매매 시작 ===")
-            self._process_kr_stocks(available_cash)
-            
-            # 미국 주식 매매 (설정이 활성화된 경우에만)
-            us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
-            
-            if us_stock_trading_enabled:
-                logger.info("=== 미국 주식 매매 시작 ===")
-                self._process_us_stocks(available_cash)
-            else:
-                logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 매매를 건너뜁니다.")
-            
-            logger.info("=== GPT 트레이딩 사이클 완료 ===")
-            
-        except Exception as e:
-            logger.error(f"GPT 트레이딩 사이클 중 오류 발생: {e}")
-            if self.notifier:
-                self.notifier.send_message(f"⚠️ GPT 트레이딩 오류: {str(e)}")
-                
-        return
-    
-    def _process_kr_stocks(self, available_cash):
-        """
-        한국 주식 매매 처리
+        GPT 모델에서 실시간 트레이딩을 위한 분석 요청
         
         Args:
-            available_cash: 주문 가능 현금
+            symbol (str): 종목 코드
+            stock_data (DataFrame): 종목 주가 데이터
+            current_price (float, optional): 현재가. None이면 stock_data에서 가져옴
+            is_holding (bool): 현재 보유 중인 종목인지 여부
+            avg_price (float): 보유 중인 경우 평균 매수가
             
         Returns:
-            bool: 처리 성공 여부
+            dict: 분석 결과 및 매매 신호
         """
         try:
-            # 디버그: 캐시된 추천 종목 로그
-            logger.info("=== KR 추천 종목 목록 로그 확인 ===")
-            for stock in self.gpt_selections.get('KR', []):
-                symbol = stock.get('symbol', '')
-                # 비중이 없거나 0인 경우 기본값 20%로 설정 (로그용)
-                weight = stock.get('suggested_weight', 0)
-                if weight == 0:
-                    weight = 20
-                    # 실제 데이터도 업데이트
-                    stock['suggested_weight'] = 20
-                name = stock.get('name', symbol)
-                logger.info(f"추천 종목: {name}({symbol}), 추천 비중: {weight}%")
+            logger.info(f"{symbol} 종목에 대한 실시간 GPT 분석 요청")
             
-            # 1. 매도 결정
-            sell_candidates = []
-            for symbol in list(self.holdings.keys()):
-                position = self.holdings[symbol]
-                if position.get('market') == 'KR':
-                    if self._should_sell(symbol):
-                        sell_candidates.append(symbol)
+            # 현재가가 없는 경우 데이터에서 가져옴
+            if current_price is None and not stock_data.empty:
+                current_price = stock_data['Close'].iloc[-1]
             
-            # 매도 실행
-            for symbol in sell_candidates:
-                logger.info(f"{symbol} 매도 진행")
-                self._execute_sell(symbol)
+            # 종목명 조회 (가능한 경우)
+            name = None
+            if hasattr(self.broker, 'get_stock_name'):
+                try:
+                    name = self.broker.get_stock_name(symbol)
+                except:
+                    name = symbol  # 조회 실패시 코드 사용
             
-            # 매도 후 계좌 잔고 다시 확인 (매도했을 경우 잔고 증가)
-            if sell_candidates:
-                updated_balance = self.broker.get_balance()
-                available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
-                logger.info(f"매도 후 업데이트된 주문가능금액: {available_cash:,.0f}원")
+            # GPT 트레이딩 전략 객체로 분석 요청
+            result = self.gpt_strategy.analyze_realtime_trading(
+                symbol=symbol,
+                stock_data=stock_data,
+                current_price=current_price,
+                is_holding=is_holding,
+                avg_price=avg_price,
+                name=name
+            )
             
-            # 2. 매수 결정
-            kr_recommendations = self.gpt_selections.get('KR', [])
-            buy_candidates = []
+            # 결과 로깅
+            action = result.get('action', 'HOLD')
+            confidence = result.get('confidence', 0.0)
             
-            # 현재 시장에 있는 종목 코드와 추천 종목 코드가 일치하는지 확인
-            # 추천 종목 코드를 정규화 (숫자만 추출)
-            normalized_recommendations = []
-            for stock in kr_recommendations:
-                symbol = stock.get('symbol', '')
+            if action != 'HOLD' and action != 'ERROR':
+                logger.info(f"GPT 실시간 분석 결과 - {symbol}: {action} 신호 (신뢰도: {confidence:.2f})")
                 
-                # 종목코드에서 숫자만 추출 (예: "005930(삼성전자)" -> "005930")
-                if '(' in symbol:
-                    symbol = symbol.split('(')[0].strip()
-                
-                # 원래 데이터 복사 후 정규화된 종목 코드로 교체
-                stock_copy = stock.copy()
-                stock_copy['symbol'] = symbol
-                
-                # 비중이 없거나 0인 경우 기본값 20%로 설정
-                if not stock_copy.get('suggested_weight') or stock_copy.get('suggested_weight') == 0:
-                    stock_copy['suggested_weight'] = 20
-                
-                normalized_recommendations.append(stock_copy)
-                
-                # 로그에 기록할 비중 값은 위에서 설정한 값을 사용
-                logger.info(f"정규화된 종목코드: {symbol}, 추천 비중: {stock_copy.get('suggested_weight')}%")
+                # 중요 매매 신호는 알림 발송 (높은 신뢰도)
+                if self.notifier and confidence > 0.8:
+                    summary = result.get('analysis_summary', '분석 없음')
+                    if action == 'BUY':
+                        self.notifier.send_message(f"🔵 매수 신호 감지: {symbol} ({name})\n신뢰도: {confidence:.2f}\n{summary}")
+                    elif action == 'SELL':
+                        self.notifier.send_message(f"🔴 매도 신호 감지: {symbol} ({name})\n신뢰도: {confidence:.2f}\n{summary}")
             
-            # 정규화된 추천 목록으로 교체
-            kr_recommendations = normalized_recommendations
-            
-            for stock_data in kr_recommendations:
-                if self._should_buy(stock_data):
-                    buy_candidates.append(stock_data)
-            
-            # 매수 실행 (자금 상황 고려)
-            for stock_data in buy_candidates:
-                # 현재 자금 상황 실시간 확인을 위해 API에서 다시 조회
-                current_balance = self.broker.get_balance()
-                current_cash = current_balance.get('주문가능금액', current_balance.get('예수금', 0))
-                logger.info(f"현재 주문가능금액: {current_cash:,.0f}원")
-                
-                if current_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
-                    logger.info(f"남은 자금({current_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
-                    break
-                
-                symbol = stock_data.get('symbol')
-                name = stock_data.get('name', symbol)
-                weight = stock_data.get('suggested_weight', 20)  # 기본값 20%
-                logger.info(f"{symbol}({name}) 매수 진행 - 추천 비중: {weight}%")
-                
-                if self._execute_buy(stock_data):
-                    # 매수 성공 시 가용 자금 업데이트 - 최신 주문가능금액 조회
-                    time.sleep(2)  # API 응답 시간을 고려해 잠시 대기
-                    updated_balance = self.broker.get_balance()
-                    available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
-                    logger.info(f"매수 후 업데이트된 주문가능금액: {available_cash:,.0f}원")
-            
-            return True
+            return result
             
         except Exception as e:
-            logger.error(f"한국 주식 처리 중 오류 발생: {e}")
-            return False
-            
-    def _process_us_stocks(self, available_cash):
+            logger.error(f"{symbol} 실시간 GPT 분석 요청 중 오류 발생: {e}")
+            return {
+                'symbol': symbol,
+                'action': 'ERROR',
+                'confidence': 0.0,
+                'analysis_summary': f'GPT 분석 중 오류: {str(e)}',
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+    def _execute_buy_decision(self, buy_decision):
         """
-        미국 주식 매매 처리
+        GPT가 제안한 매수 결정 실행 (신규 추가)
         
         Args:
-            available_cash: 주문 가능 현금
-            
-        Returns:
-            bool: 처리 성공 여부
-        """
-        try:
-            # 미국 시장 거래 시간인지 확인
-            if not self.is_trading_time("US"):
-                logger.info("현재는 미국 시장 거래 시간이 아닙니다.")
-                return False
-                
-            # 1. 매도 결정
-            sell_candidates = []
-            for symbol in list(self.holdings.keys()):
-                position = self.holdings[symbol]
-                if position.get('market') == 'US':
-                    if self._should_sell(symbol):
-                        sell_candidates.append(symbol)
-            
-            # 매도 실행
-            for symbol in sell_candidates:
-                logger.info(f"{symbol} 매도 진행")
-                self._execute_sell(symbol)
-            
-            # 2. 매수 결정
-            us_recommendations = self.gpt_selections.get('US', [])
-            buy_candidates = []
-            
-            for stock_data in us_recommendations:
-                if self._should_buy(stock_data):
-                    buy_candidates.append(stock_data)
-            
-            # 매수 실행 (자금 상황 고려)
-            for stock_data in buy_candidates:
-                if available_cash < 500000:  # 최소 50만원 이상의 투자 자금 필요
-                    logger.info(f"남은 자금({available_cash:,.0f}원)이 부족하여 추가 매수를 중단합니다.")
-                    break
-                
-                symbol = stock_data.get('symbol')
-                logger.info(f"{symbol} 매수 진행")
-                if self._execute_buy(stock_data):
-                    # 매수 성공 시 가용 자금 업데이트
-                    updated_balance = self.broker.get_balance()
-                    available_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"미국 주식 처리 중 오류 발생: {e}")
-            return False
-    
-    def _execute_buy_decision(self, stock_data):
-        """
-        매수 결정에 따른 매수 실행
-        
-        Args:
-            stock_data: GPT 추천 종목 데이터
+            buy_decision (dict): 매수 결정 정보
             
         Returns:
             bool: 매수 성공 여부
         """
         try:
-            symbol = stock_data.get('symbol')
-            market = stock_data.get('market', 'KR')
-            if not market:
-                market = "KR" if len(symbol) == 6 and symbol.isdigit() else "US"
-                
-            name = stock_data.get('name', symbol)
-            target_price = stock_data.get('target_price', 0)
+            symbol = buy_decision.get('symbol')
+            price = buy_decision.get('price', 0)
+            amount = buy_decision.get('amount', 0)  # 금액 기준
+            quantity = buy_decision.get('quantity', 0)  # 수량 기준
+            market = "KR" if len(symbol) == 6 and symbol.isdigit() else "US"
             
-            # 현재가 확인
+            # 종목명 가져오기
+            stock_info = self.data_provider.get_stock_info(symbol, market)
+            name = stock_info.get('name', symbol) if stock_info else symbol
+            
+            # 1. 현재 가격 확인
             current_price = self.data_provider.get_current_price(symbol, market)
             if not current_price:
                 logger.warning(f"{symbol} 현재가를 가져올 수 없습니다.")
                 return False
                 
-            # 계좌 잔고 확인 (매수 전 잔고)
-            initial_balance_info = self.broker.get_balance()
-            available_cash = initial_balance_info.get('주문가능금액', initial_balance_info.get('예수금', 0))
+            # 2. 금액이 지정되어 있으면 수량 계산
+            if amount > 0 and quantity == 0:
+                quantity = int(amount / current_price)
+                if quantity < 1:
+                    logger.warning(f"{symbol} 매수 수량({quantity})이 1보다 작아 매수하지 않습니다.")
+                    return False
             
-            logger.info(f"사용 가능 현금(주문가능금액): {available_cash:,}원")
-            
-            if available_cash < 100000:
-                logger.warning(f"주문가능금액({available_cash:,}원)이 부족하여 매수할 수 없습니다.")
+            # 3. 수량이 지정되어 있지 않으면 매수 불가
+            if quantity == 0:
+                logger.warning(f"{symbol} 매수 수량이 지정되어 있지 않습니다.")
                 return False
                 
-            # 투자 금액 결정
-            investment_ratio = stock_data.get('suggested_weight', 10) / 100
-            investment_amount = min(self.max_investment_per_stock, available_cash * investment_ratio)
+            total_amount = quantity * current_price
             
-            # 최소 100만원 확인
-            if investment_amount < 1000000:
-                investment_amount = 1000000
-                
-            # 투자 금액이 주문가능금액을 초과하는지 확인
-            if investment_amount > available_cash:
-                investment_amount = available_cash
-                
-            # 매수 수량 계산
-            quantity = int(investment_amount / current_price)
+            # 4. 자율 매매 최대 금액 체크
+            if total_amount > self.autonomous_max_trade_amount:
+                old_quantity = quantity
+                quantity = int(self.autonomous_max_trade_amount / current_price)
+                logger.info(f"{symbol} 매수 금액({total_amount:,.0f}원)이 최대 허용 금액({self.autonomous_max_trade_amount:,.0f}원)을 초과하여 수량을 {old_quantity}주에서 {quantity}주로 조정")
+                total_amount = quantity * current_price
             
-            # 최소 1주 확인
-            if quantity < 1:
-                logger.warning(f"{symbol} 현재가({current_price:,}원)로 최소 1주도 구매할 수 없습니다.")
-                return False
-                
-            # 실제 투자 금액 재계산
-            actual_investment = quantity * current_price
+            # 5. 매수 실행
+            logger.info(f"{symbol} 매수 실행: {quantity}주 × {current_price:,.0f}원 = {total_amount:,.0f}원")
             
-            # 매수 실행
-            logger.info(f"매수 주문 실행: {name} ({symbol}), {quantity}주, 현재가 {current_price:,}원, 총 투자금액: {actual_investment:,}원")
+            # 시뮬레이션 모드 확인
+            simulation_mode = getattr(self.config, 'SIMULATION_MODE', False)
             
-            # 알림 데이터 준비
-            if self.notifier:
-                logger.info(f"알림 데이터 확인: symbol={symbol}, name={name}")
-                self.notifier.send_stock_alert(
+            if not simulation_mode:
+                # 실제 매수 실행
+                order_result = self.auto_trader._execute_order(
                     symbol=symbol,
-                    stock_name=name,
-                    action="BUY",
+                    action=TradeAction.BUY,
                     quantity=quantity,
-                    price=current_price,
-                    reason=f"GPT 추천 종목 ({stock_data.get('suggested_weight', 0)}% 비중)",
-                    target_price=target_price
+                    market=market
                 )
                 
-            # 시뮬레이션 모드 확인
-            if getattr(self.auto_trader, 'simulation_mode', False):
-                logger.info(f"시뮬레이션 모드: 실제 매수는 실행되지 않습니다.")
-                return True
-                
-            # 주문 실행
-            order_result = self.auto_trader.buy(symbol, quantity, market=market)
-            
-            if order_result.get('success', False):
-                # 주문 성공 로그
-                logger.info(f"{symbol} 매수 주문 체결 완료")
-                
-                # 주문 처리 후 잠시 대기하여 API 서버에 반영될 시간을 줌
-                time.sleep(2)
-                
-                # 주문 후 잔고 강제 리프레시 (최대 3회 시도)
-                refreshed = False
-                for i in range(3):
-                    try:
-                        # 잔고 업데이트 강제 시도
-                        updated_balance = self.broker.get_balance()
-                        updated_cash = updated_balance.get('주문가능금액', updated_balance.get('예수금', 0))
-                        
-                        logger.info(f"주문 후 잔고 확인 (시도 {i+1}/3): {updated_cash:,}원")
-                        
-                        # 잔고가 변경되었는지 확인
-                        if updated_cash < available_cash:
-                            logger.info(f"잔고 업데이트 확인됨: {available_cash:,}원 -> {updated_cash:,}원 (차액: {available_cash - updated_cash:,}원)")
-                            refreshed = True
-                            break
-                        
-                        # 잔고가 변경되지 않은 경우 더 긴 대기 후 재시도
-                        logger.warning(f"잔고가 업데이트되지 않았습니다. 더 대기 후 재시도합니다.")
-                        time.sleep(3 * (i + 1))  # 점진적으로 대기 시간 증가
-                    except Exception as e:
-                        logger.error(f"잔고 업데이트 확인 중 오류: {e}")
-                        time.sleep(1)
-                
-                # 잔고 업데이트 여부에 따른 처리
-                if not refreshed:
-                    logger.warning("모의투자 환경에서 잔고 업데이트가 즉시 반영되지 않았습니다. 이는 모의투자 API의 제한사항일 수 있습니다.")
+                if order_result.get('status') == 'EXECUTED':
+                    logger.info(f"{symbol} 매수 주문 체결 완료")
                     
-                    # 거래 정보 저장
-                    self.trade_history.append({
-                        'timestamp': get_current_time().strftime("%Y-%m-%d %H:%M:%S"),
+                    # 매매 기록에 추가
+                    trade_record = {
+                        'timestamp': get_current_time().isoformat(),
                         'symbol': symbol,
                         'name': name,
                         'action': 'BUY',
                         'quantity': quantity,
                         'price': current_price,
-                        'amount': actual_investment,
-                        'success': True,
-                        'order_id': order_result.get('order_no', '')
-                    })
+                        'total': total_amount,
+                        'market': market,
+                        'source': 'GPT_AUTONOMOUS',
+                        'order_id': order_result.get('order_id', ''),
+                        'reason': buy_decision.get('reason', 'GPT 자율 매매')
+                    }
+                    self.trade_history.append(trade_record)
                     
-                    # 강제로 현재 보유 종목에 추가
-                    if symbol not in self.holdings:
-                        self.holdings[symbol] = {
-                            'symbol': symbol,
-                            'name': name,
-                            'quantity': quantity,
-                            'avg_price': current_price,
-                            'current_price': current_price,
-                            'market': market,
-                            'entry_time': get_current_time().isoformat()
-                        }
-                        logger.info(f"{symbol} 보유 종목 목록에 수동 추가됨")
+                    # 주문 후 잔고 변화 확인을 위해 지연시간 추가
+                    time.sleep(2)
                     
-                return True
+                    # 보유 종목 업데이트
+                    self._load_current_holdings()
+                    
+                    # 알림 전송
+                    if self.notifier:
+                        message = f"🤖 GPT 자율 매수: {name}({symbol})\n"
+                        message += f"• 수량: {quantity:,}주\n"
+                        message += f"• 단가: {current_price:,}원\n"
+                        message += f"• 총액: {total_amount:,}원\n"
+                        message += f"• 근거: {buy_decision.get('reason', '자율 투자 결정')}"
+                        self.notifier.send_message(message)
+                    
+                    return True
+                else:
+                    logger.warning(f"{symbol} 매수 주문 실패: {order_result.get('message', '알 수 없는 오류')}")
+                    return False
             else:
-                logger.error(f"{symbol} 매수 주문 실패: {order_result.get('error', '알 수 없는 오류')}")
-                return False
+                # 시뮬레이션 모드일 경우
+                logger.info(f"{symbol} 매수 주문 시뮬레이션 완료 - 실제 거래는 발생하지 않음")
                 
-        except Exception as e:
-            logger.error(f"매수 실행 중 오류 발생: {e}")
-            return False
-    
-    def _execute_sell(self, symbol):
-        """
-        보유 종목 매도 실행
-        
-        Args:
-            symbol: 종목 코드
-            
-        Returns:
-            bool: 매도 성공 여부
-        """
-        try:
-            if symbol not in self.holdings:
-                logger.warning(f"{symbol} 보유하고 있지 않은 종목입니다.")
-                return False
-                
-            position = self.holdings[symbol]
-            quantity = position.get('quantity', 0)
-            market = position.get('market', 'KR')
-            name = position.get('name', symbol)
-            
-            if quantity <= 0:
-                logger.warning(f"{symbol} 매도 가능한 수량이 없습니다.")
-                return False
-                
-            # 현재가 확인
-            current_price = self.data_provider.get_current_price(symbol, market)
-            
-            logger.info(f"{symbol} 매도 실행: {quantity}주 × {current_price:,.0f}원 = {quantity * current_price:,.0f}원")
-            
-            # 매도 실행
-            order_result = self.auto_trader._execute_order(
-                symbol=symbol,
-                action=TradeAction.SELL,
-                quantity=quantity,
-                market=market
-            )
-            
-            if order_result.get('status') == 'EXECUTED':
-                logger.info(f"{symbol} 매도 주문 체결 완료")
-                
-                # 매매 기록에 추가
+                # 매매 기록에 추가 (시뮬레이션 표시)
                 trade_record = {
                     'timestamp': get_current_time().isoformat(),
                     'symbol': symbol,
                     'name': name,
-                    'action': 'SELL',
+                    'action': 'BUY (SIM)',  # 시뮬레이션 표시
                     'quantity': quantity,
                     'price': current_price,
-                    'total': quantity * current_price,
+                    'total': total_amount,
                     'market': market,
-                    'source': 'GPT',
-                    'order_id': order_result.get('order_id', '')
+                    'source': 'GPT_AUTONOMOUS',
+                    'reason': buy_decision.get('reason', 'GPT 자율 매매 (시뮬레이션)')
                 }
                 self.trade_history.append(trade_record)
                 
-                # 보유 종목 업데이트
-                self._load_current_holdings()
+                # 시뮬레이션 보유 종목에 추가
+                if symbol not in self.holdings:
+                    self.holdings[symbol] = {
+                        'symbol': symbol,
+                        'name': name,
+                        'quantity': quantity,
+                        'avg_price': current_price,
+                        'current_price': current_price,
+                        'market': market,
+                        'entry_time': get_current_time().isoformat(),
+                        'simulation': True  # 시뮬레이션 표시
+                    }
+                
+                # 알림 전송
+                if self.notifier:
+                    message = f"🤖 GPT 시뮬레이션 매수: {name}({symbol})\n"
+                    message += f"• 수량: {quantity:,}주\n"
+                    message += f"• 단가: {current_price:,}원\n"
+                    message += f"• 총액: {total_amount:,}원\n"
+                    message += f"• 근거: {buy_decision.get('reason', '자율 투자 결정')}\n"
+                    message += f"• 모드: 시뮬레이션 (실제 거래 없음)"
+                    self.notifier.send_message(message)
                 
                 return True
-            else:
-                logger.warning(f"{symbol} 매도 주문 실패: {order_result.get('message', '알 수 없는 오류')}")
-                return False
                 
         except Exception as e:
-            logger.error(f"매도 실행 중 오류 발생: {e}")
+            logger.error(f"매수 결정 실행 중 오류 발생: {e}")
             return False
-    
-    def _optimize_technical_indicators(self):
+
+    def evaluate_autonomous_trade(self, symbol, market_data=None):
         """
-        기술적 지표 파라미터 최적화
-        
-        주식 분석에 사용되는 기술적 지표의 파라미터를 최적화합니다.
-        일정 주기마다 시장 상황에 맞게 최적의 파라미터를 찾습니다.
-        """
-        try:
-            now = get_current_time()
-            
-            # 최적화가 필요한지 확인
-            if self.last_technical_optimization_time:
-                hours_passed = (now - self.last_technical_optimization_time).total_seconds() / 3600
-                if hours_passed < self.technical_optimization_interval:
-                    logger.debug(f"기술적 지표 최적화 주기({self.technical_optimization_interval}시간)가 지나지 않았습니다. ({hours_passed:.1f}시간 경과)")
-                    return False
-            
-            logger.info("기술적 지표 파라미터 최적화 시작...")
-            
-            # 대표 종목들의 최근 데이터를 가져와 분석
-            benchmark_symbols = ["005930", "000660", "035420"]  # 삼성전자, SK하이닉스, NAVER
-            
-            results = {}
-            for symbol in benchmark_symbols:
-                try:
-                    # 과거 데이터 가져오기 (최근 3개월)
-                    df = self.data_provider.get_historical_data(symbol, "KR", period="3mo")
-                    
-                    if df is None or len(df) < 60:  # 최소 60일 데이터 필요
-                        logger.warning(f"{symbol} 기술적 지표 최적화를 위한 충분한 데이터가 없습니다.")
-                        continue
-                    
-                    # 1. RSI 파라미터 최적화 (기간)
-                    best_rsi_period = self._find_best_rsi_period(df)
-                    
-                    # 2. 이동평균선 파라미터 최적화
-                    best_ma_short = self._find_best_ma_short_period(df)
-                    best_ma_long = self._find_best_ma_long_period(df, best_ma_short)
-                    
-                    # 3. MACD 파라미터 최적화
-                    best_macd_params = self._find_best_macd_params(df)
-                    
-                    # 4. 볼린저 밴드 파라미터 최적화
-                    best_bollinger_params = self._find_best_bollinger_params(df)
-                    
-                    results[symbol] = {
-                        "best_rsi_period": best_rsi_period,
-                        "best_ma_short": best_ma_short,
-                        "best_ma_long": best_ma_long,
-                        "best_macd_params": best_macd_params,
-                        "best_bollinger_params": best_bollinger_params
-                    }
-                    
-                    logger.info(f"{symbol} 기술적 지표 최적화 결과: RSI 기간={best_rsi_period}, "
-                              f"단기이평={best_ma_short}, 장기이평={best_ma_long}")
-                    
-                except Exception as e:
-                    logger.error(f"{symbol} 기술적 지표 최적화 중 오류 발생: {e}")
-            
-            # 결과가 없으면 종료
-            if not results:
-                logger.warning("기술적 지표 최적화 결과가 없습니다.")
-                return False
-            
-            # 평균 최적 파라미터 계산
-            avg_rsi_period = int(sum(r["best_rsi_period"] for r in results.values()) / len(results))
-            avg_ma_short = int(sum(r["best_ma_short"] for r in results.values()) / len(results))
-            avg_ma_long = int(sum(r["best_ma_long"] for r in results.values()) / len(results))
-            
-            # 기본 지표는 대표 종목들의 평균값으로 설정하되, 일반적인 범위 내에 있도록 제한
-            rsi_period = max(9, min(21, avg_rsi_period))
-            ma_short = max(5, min(20, avg_ma_short))
-            ma_long = max(20, min(60, avg_ma_long))
-            
-            # 기술적 지표 설정 업데이트
-            # 여기서는 실제로 설정을 변경하진 않고 로깅만 수행
-            logger.info(f"기술적 지표 최적화 완료: RSI 기간={rsi_period}, 단기이평={ma_short}, 장기이평={ma_long}")
-            
-            # 최적화 시간 업데이트
-            self.last_technical_optimization_time = now
-            
-            # 알림 전송
-            if self.notifier:
-                self.notifier.send_message(f"📊 기술적 지표 최적화 완료\n\n"
-                                         f"• RSI 기간: {rsi_period}\n"
-                                         f"• 단기 이동평균: {ma_short}\n"
-                                         f"• 장기 이동평균: {ma_long}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"기술적 지표 최적화 중 오류 발생: {e}")
-            return False
-    
-    def _find_best_rsi_period(self, df, min_period=5, max_period=25):
-        """
-        최적의 RSI 기간 탐색
+        자율 투자 종목의 성과를 평가하여 매도 여부 결정 (신규 추가)
         
         Args:
-            df: 주가 데이터
-            min_period: 최소 RSI 기간
-            max_period: 최대 RSI 기간
+            symbol (str): 종목 코드
+            market_data (dict, optional): 미리 수집된 시장 데이터
             
         Returns:
-            int: 최적의 RSI 기간
+            dict: 평가 결과 (매도 여부, 이유 등)
         """
         try:
-            # 기본 RSI 기간
-            default_period = 14
-            
-            # 데이터가 충분하지 않으면 기본값 반환
-            if len(df) < 50:
-                return default_period
+            if symbol not in self.holdings:
+                return {'action': 'NO_ACTION', 'reason': '보유 중이 아님'}
                 
-            # 실험해볼 RSI 기간 목록
-            periods = range(min_period, max_period + 1, 2)
+            # 보유 정보 가져오기
+            position = self.holdings[symbol]
+            avg_price = position.get('avg_price', 0)
+            quantity = position.get('quantity', 0)
+            market = position.get('market', 'KR')
             
-            # 각 기간별 RSI 계산 및 성과 측정
-            best_period = default_period
-            best_score = -float('inf')
+            # 현재 가격 가져오기
+            current_price = self.data_provider.get_current_price(symbol, market)
+            if not current_price:
+                return {'action': 'ERROR', 'reason': '현재가 조회 실패'}
+                
+            # 손익률 계산
+            profit_pct = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
             
-            for period in periods:
-                try:
-                    # RSI 계산
-                    import pandas as pd
-                    import numpy as np
-                    
-                    delta = df['Close'].diff()
-                    gain = delta.where(delta > 0, 0)
-                    loss = -delta.where(delta < 0, 0)
-                    
-                    avg_gain = gain.rolling(window=period).mean()
-                    avg_loss = loss.rolling(window=period).mean()
-                    
-                    rs = avg_gain / avg_loss
-                    rsi = 100 - (100 / (1 + rs))
-                    
-                    # 과매수/과매도 시그널 생성 (RSI < 30 => 매수, RSI > 70 => 매도)
-                    buy_signals = (rsi < 30).astype(int)
-                    sell_signals = (rsi > 70).astype(int)
-                    
-                    # 모의 거래 성과 계산
-                    position = 0
-                    returns = []
-                    
-                    for i in range(period, len(df)):
-                        if buy_signals.iloc[i] and position == 0:
-                            position = 1  # 매수
-                            entry_price = df['Close'].iloc[i]
-                        elif sell_signals.iloc[i] and position == 1:
-                            position = 0  # 매도
-                            exit_price = df['Close'].iloc[i]
-                            returns.append((exit_price / entry_price) - 1)
-                    
-                    # 성과 지표 계산
-                    if returns:
-                        avg_return = np.mean(returns)
-                        win_rate = sum(1 for r in returns if r > 0) / len(returns)
-                        
-                        # 종합 점수 계산 (수익률 + 승률)
-                        score = avg_return * 100 + win_rate * 50
-                        
-                        if score > best_score:
-                            best_score = score
-                            best_period = period
-                except Exception as e:
-                    logger.debug(f"RSI 기간 {period} 테스트 중 오류: {e}")
+            # GPT 분석 요청
+            insights = self.get_gpt_insights_for_realtime_trading(symbol, market_data)
             
-            return best_period
+            # 자체 매도 조건 확인 (손절/익절)
+            result = {'action': 'NO_ACTION', 'reason': '분석 결과 보유 유지', 'profit_pct': profit_pct}
+            
+            # 1. 급격한 하락 발생 시 즉시 매도 (손절)
+            if profit_pct < -10:  # 10% 이상 손실
+                result = {'action': 'SELL', 'reason': f'손절: {profit_pct:.1f}% 손실', 'profit_pct': profit_pct}
+            
+            # 2. 높은 이익 실현 (익절)
+            elif profit_pct > 15:  # 15% 이상 이익
+                result = {'action': 'SELL', 'reason': f'익절: {profit_pct:.1f}% 이익', 'profit_pct': profit_pct}
+            
+            # 3. GPT 분석이 매도 권고할 경우
+            elif insights and insights.get('action') == 'SELL' and insights.get('confidence', 0) > 0.7:
+                result = {
+                    'action': 'SELL', 
+                    'reason': f"GPT 매도 권고: {insights.get('analysis_summary', '추가 상승 여력 제한')}",
+                    'profit_pct': profit_pct
+                }
+            
+            # 4. 손실 상태에서 더 큰 하락이 예상되는 경우 (신뢰도 높은 경우)
+            elif profit_pct < 0 and insights and insights.get('action') == 'SELL' and insights.get('confidence', 0) > 0.8:
+                result = {
+                    'action': 'SELL',
+                    'reason': f"손실 확대 방지: {insights.get('analysis_summary', '추가 하락 예상')}",
+                    'profit_pct': profit_pct
+                }
+                
+            # 기타 정보 추가
+            result['symbol'] = symbol
+            result['current_price'] = current_price
+            result['avg_price'] = avg_price
+            result['quantity'] = quantity
+            result['total_investment'] = avg_price * quantity
+            result['current_value'] = current_price * quantity
+            result['profit_amount'] = (current_price - avg_price) * quantity
+            
+            return result
             
         except Exception as e:
-            logger.error(f"최적 RSI 기간 탐색 중 오류: {e}")
-            return 14  # 오류 발생시 기본값
+            logger.error(f"{symbol} 자율 투자 평가 중 오류: {e}")
+            return {'action': 'ERROR', 'reason': f'평가 오류: {str(e)}', 'symbol': symbol}
     
-    def _find_best_ma_short_period(self, df, min_period=5, max_period=20):
+    def run_cycle(self):
         """
-        최적의 단기 이동평균선 기간 탐색
+        GPT 매매 사이클 실행 - 현재 보유 중인 종목을 확인하고 매수/매도 결정을 내림
         
-        Args:
-            df: 주가 데이터
-            min_period: 최소 기간
-            max_period: 최대 기간
-            
         Returns:
-            int: 최적의 단기 이동평균선 기간
+            dict: 사이클 실행 결과 요약
         """
+        logger.info("GPT 매매 사이클 실행 시작")
+        
         try:
-            # 기본 단기 이동평균 기간
-            default_period = 10
+            # 자동 매매가 실행 중이 아니면 자동으로 시작
+            if not self.is_running:
+                logger.info("GPT 자동 매매가 실행 중이 아닙니다. 자동으로 시작합니다.")
+                start_success = self.start()
+                if not start_success:
+                    logger.error("GPT 자동 매매 시작 실패")
+                    return {"status": "error", "message": "GPT 자동 매매가 실행 중이 아니고 자동 시작에 실패했습니다."}
+                logger.info("GPT 자동 매매 자동 시작 성공")
             
-            # 데이터가 충분하지 않으면 기본값 반환
-            if len(df) < 50:
-                return default_period
+            # 현재 시간에 거래가 가능한지 확인
+            if not self.is_trading_time("KR"):
+                logger.info("현재 거래 시간이 아닙니다.")
+                return {"status": "skip", "message": "현재 거래 시간이 아닙니다."}
                 
-            # 실험해볼 기간 목록
-            periods = range(min_period, max_period + 1)
+            # 현재 보유 중인 종목 정보 로드
+            self._load_current_holdings()
             
-            # 각 기간별 이동평균 계산 및 성과 측정
-            best_period = default_period
-            best_sharpe = -float('inf')
-            
-            for period in periods:
-                try:
-                    # 이동평균 계산
-                    ma = df['Close'].rolling(window=period).mean()
-                    
-                    # 매매 시그널 생성 (주가 > MA => 매수 포지션, 주가 < MA => 매도 포지션)
-                    position = (df['Close'] > ma).astype(int)
-                    
-                    # 수익률 계산
-                    df['Returns'] = df['Close'].pct_change()
-                    strategy_returns = df['Returns'].shift(-1) * position
-                    
-                    # 샤프 비율 계산
-                    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
-                    
-                    # 성과 측정
-                    # 표준편차가 0이거나 NaN인 경우 처리
-                    std_dev = strategy_returns.std()
-                    if std_dev == 0 or np.isnan(std_dev):
-                        sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+            # 1. 매도 결정 처리
+            sell_results = []
+            for symbol in list(self.holdings.keys()):
+                if self._should_sell(symbol):
+                    logger.info(f"{symbol} 매도 결정")
+                    if self._execute_sell(symbol):
+                        sell_results.append({"symbol": symbol, "status": "success"})
                     else:
-                        sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
-                    
-                    if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
-                        best_sharpe = sharpe_ratio
-                        best_period = period
-                except Exception as e:
-                    logger.debug(f"MA 기간 {period} 테스트 중 오류: {e}")
-            
-            return best_period
-            
-        except Exception as e:
-            logger.error(f"최적 단기 이동평균 기간 탐색 중 오류: {e}")
-            return 10  # 오류 발생시 기본값
-    
-    def _find_best_ma_long_period(self, df, short_period, min_period=20, max_period=60):
-        """
-        최적의 장기 이동평균선 기간 탐색
-        
-        Args:
-            df: 주가 데이터
-            short_period: 단기 이동평균선 기간
-            min_period: 최소 기간
-            max_period: 최대 기간
-            
-        Returns:
-            int: 최적의 장기 이동평균선 기간
-        """
-        try:
-            # 기본 장기 이동평균 기간
-            default_period = 30
-            
-            # 단기 이동평균보다 길어야 함
-            min_period = max(min_period, short_period + 5)
-            
-            # 데이터가 충분하지 않으면 기본값 반환
-            if len(df) < max_period * 2:
-                return default_period
+                        sell_results.append({"symbol": symbol, "status": "fail"})
+                        
+            # 2. 매수 결정 처리
+            buy_results = []
+            # 추천 종목이 없으면 종목 선정 먼저 실행
+            if not self.gpt_selections['KR'] and not self.gpt_selections['US']:
+                self._select_stocks()
                 
-            # 실험해볼 기간 목록
-            periods = range(min_period, max_period + 1, 5)  # 5일 단위로 테스트
-            
-            # 각 기간별 이동평균 골든크로스/데드크로스 전략 테스트
-            best_period = default_period
-            best_sharpe = -float('inf')
-            
-            # 단기 이동평균 계산
-            short_ma = df['Close'].rolling(window=short_period).mean()
-            
-            for period in periods:
-                try:
-                    # 장기 이동평균 계산
-                    long_ma = df['Close'].rolling(window=period).mean()
-                    
-                    # 골든 크로스/데드 크로스 시그널 생성
-                    # 골든 크로스 (단기선이 장기선 위로): 매수 시그널
-                    # 데드 크로스 (단기선이 장기선 아래로): 매도 시그널
-                    position = (short_ma > long_ma).astype(int)
-                    
-                    # 수익률 계산
-                    df['Returns'] = df['Close'].pct_change()
-                    strategy_returns = df['Returns'].shift(-1) * position
-                    
-                    # 전략 성과 측정
-                    sharpe_ratio = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252)
-                    
-                    # 성과 측정
-                    # 표준편차가 0이거나 NaN인 경우 처리
-                    std_dev = strategy_returns.std()
-                    if std_dev == 0 or np.isnan(std_dev):
-                        sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
-                    else:
-                        sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
-                    
-                    if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
-                        best_sharpe = sharpe_ratio
-                        best_period = period
-                except Exception as e:
-                    logger.debug(f"장기 MA 기간 {period} 테스트 중 오류: {e}")
-            
-            return best_period
-            
-        except Exception as e:
-            logger.error(f"최적 장기 이동평균 기간 탐색 중 오류: {e}")
-            return 30  # 오류 발생시 기본값
-    
-    def _find_best_macd_params(self, df):
-        """
-        최적의 MACD 파라미터 탐색
-        
-        Args:
-            df: 주가 데이터
-            
-        Returns:
-            dict: 최적의 MACD 파라미터 (fast, slow, signal)
-        """
-        # 기본값
-        default_params = {"fast": 12, "slow": 26, "signal": 9}
-        
-        try:
-            # 데이터가 충분하지 않으면 기본값 반환
-            if len(df) < 100:
-                return default_params
-                
-            # 실험해볼 파라미터 조합
-            fast_periods = [8, 10, 12, 14]
-            slow_periods = [20, 24, 26, 30]
-            signal_periods = [7, 9, 11]
-            
-            best_params = default_params
-            best_sharpe = -float('inf')
-            
-            for fast in fast_periods:
-                for slow in slow_periods:
-                    if fast >= slow:  # fast 기간은 slow 기간보다 짧아야 함
-                        continue
-                        
-                    for signal in signal_periods:
-                        try:
-                            # MACD 계산
-                            exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
-                            exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
-                            macd = exp1 - exp2
-                            signal_line = macd.ewm(span=signal, adjust=False).mean()
-                            
-                            # 매매 시그널 생성 (MACD > Signal Line => 매수, MACD < Signal Line => 매도)
-                            position = (macd > signal_line).astype(int)
-                            
-                            # 수익률 계산
-                            df['Returns'] = df['Close'].pct_change()
-                            strategy_returns = df['Returns'].shift(-1) * position
-                            
-                            # 성과 측정
-                            # 표준편차가 0이거나 NaN인 경우 처리
-                            std_dev = strategy_returns.std()
-                            if std_dev == 0 or np.isnan(std_dev):
-                                sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
-                            else:
-                                sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
-                            
-                            if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
-                                best_sharpe = sharpe_ratio
-                                best_params = {"fast": fast, "slow": slow, "signal": signal}
-                        except Exception as e:
-                            logger.debug(f"MACD 파라미터 테스트 중 오류: fast={fast}, slow={slow}, signal={signal}, 오류: {e}")
-            
-            return best_params
-            
-        except Exception as e:
-            logger.error(f"최적 MACD 파라미터 탐색 중 오류: {e}")
-            return default_params
-    
-    def _find_best_bollinger_params(self, df):
-        """
-        최적의 볼린저 밴드 파라미터 탐색
-        
-        Args:
-            df: 주가 데이터
-            
-        Returns:
-            dict: 최적의 볼린저 밴드 파라미터 (기간, 표준편차 배수)
-        """
-        # 기본값
-        default_params = {"window": 20, "num_std": 2.0}
-        
-        try:
-            # 데이터가 충분하지 않으면 기본값 반환
-            if len(df) < 60:
-                return default_params
-                
-            # 실험해볼 파라미터 조합
-            windows = [10, 15, 20, 25, 30]
-            std_devs = [1.5, 2.0, 2.5, 3.0]
-            
-            best_params = default_params
-            best_sharpe = -float('inf')
-            
-            for window in windows:
-                for num_std in std_devs:
-                    try:
-                        # 볼린저 밴드 계산
-                        rolling_mean = df['Close'].rolling(window=window).mean()
-                        rolling_std = df['Close'].rolling(window=window).std()
-                        
-                        upper_band = rolling_mean + (rolling_std * num_std)
-                        lower_band = rolling_mean - (rolling_std * num_std)
-                        
-                        # 매매 전략: 가격이 하단밴드 아래면 매수, 상단밴드 위면 매도
-                        long_signal = (df['Close'] < lower_band).astype(int)
-                        short_signal = (df['Close'] > upper_band).astype(int) * -1
-                        
-                        position = long_signal + short_signal
-                        
-                        # 수익률 계산
-                        df['Returns'] = df['Close'].pct_change()
-                        strategy_returns = df['Returns'].shift(-1) * position
-                        
-                        # 성과 측정
-                        # 표준편차가 0이거나 NaN인 경우 처리
-                        std_dev = strategy_returns.std()
-                        if std_dev == 0 or np.isnan(std_dev):
-                            sharpe_ratio = 0  # 표준편차가 0이면 Sharpe ratio는 정의할 수 없으므로 0으로 설정
+            for market, selections in self.gpt_selections.items():
+                for stock_data in selections:
+                    if self._should_buy(stock_data):
+                        symbol = stock_data.get('symbol')
+                        logger.info(f"{symbol} 매수 결정")
+                        if self._execute_buy(stock_data):
+                            buy_results.append({"symbol": symbol, "status": "success"})
                         else:
-                            sharpe_ratio = strategy_returns.mean() / std_dev * np.sqrt(252)
-                        
-                        if not np.isnan(sharpe_ratio) and sharpe_ratio > best_sharpe:
-                            best_sharpe = sharpe_ratio
-                            best_params = {"window": window, "num_std": num_std}
+                            buy_results.append({"symbol": symbol, "status": "fail"})
+            
+            # 3. 기술적 지표 최적화 검사 (필요시 실행)
+            if self.optimize_technical_indicators:
+                if (self.last_technical_optimization_time is None or 
+                    (get_current_time() - self.last_technical_optimization_time).total_seconds() / 3600 > self.technical_optimization_interval):
+                    logger.info("기술적 지표 최적화 실행")
+                    try:
+                        if hasattr(self.gpt_strategy, 'optimize_technical_indicators'):
+                            self.gpt_strategy.optimize_technical_indicators()
+                        self.last_technical_optimization_time = get_current_time()
                     except Exception as e:
-                        logger.debug(f"볼린저 밴드 파라미터 테스트 중 오류: window={window}, num_std={num_std}, 오류: {e}")
+                        logger.error(f"기술적 지표 최적화 중 오류 발생: {e}")
             
-            return best_params
+            # 결과 요약
+            summary = {
+                "status": "success",
+                "timestamp": get_current_time_str(),
+                "holdings_count": len(self.holdings),
+                "sell_orders": sell_results,
+                "buy_orders": buy_results
+            }
             
-        except Exception as e:
-            logger.error(f"최적 볼린저 밴드 파라미터 탐색 중 오류: {e}")
-            return default_params
-            
-    def _load_cached_recommendations(self):
-        """
-        캐시된 GPT 추천 종목 정보 로드
-        """
-        try:
-            import os
-            import json
-            
-            # 캐시 디렉토리 확인
-            cache_dir = "cache"
-            if not os.path.exists(cache_dir):
-                logger.info("캐시 디렉토리가 없습니다.")
-                return False
-                
-            # 한국 주식 추천 캐시 로드
-            kr_cache_path = os.path.join(cache_dir, "kr_stock_recommendations.json")
-            if os.path.exists(kr_cache_path):
-                try:
-                    with open(kr_cache_path, "r", encoding="utf-8") as f:
-                        kr_data = json.load(f)
-                        if kr_data and "recommended_stocks" in kr_data:
-                            self.gpt_selections['KR'] = kr_data.get("recommended_stocks", [])
-                            logger.info(f"한국 주식 추천 캐시 로드 성공: {len(self.gpt_selections['KR'])}개 종목")
-                except Exception as e:
-                    logger.error(f"한국 주식 추천 캐시 로드 중 오류: {e}")
-                    
-            # 미국 주식 추천 캐시 로드
-            us_cache_path = os.path.join(cache_dir, "us_stock_recommendations.json")
-            if os.path.exists(us_cache_path):
-                try:
-                    with open(us_cache_path, "r", encoding="utf-8") as f:
-                        us_data = json.load(f)
-                        if us_data and "recommended_stocks" in us_data:
-                            self.gpt_selections['US'] = us_data.get("recommended_stocks", [])
-                            logger.info(f"미국 주식 추천 캐시 로드 성공: {len(self.gpt_selections['US'])}개 종목")
-                except Exception as e:
-                    logger.error(f"미국 주식 추천 캐시 로드 중 오류: {e}")
-            
-            return True
+            logger.info(f"GPT 매매 사이클 완료: {len(sell_results)}개 매도, {len(buy_results)}개 매수")
+            return summary
             
         except Exception as e:
-            logger.error(f"캐시된 추천 정보 로드 중 오류: {e}")
-            return False
+            logger.error(f"GPT 매매 사이클 실행 중 오류 발생: {e}")
+            return {"status": "error", "message": f"오류 발생: {str(e)}"}

@@ -164,7 +164,7 @@ class StockData:
             
         logger.info("모든 주식 데이터 업데이트 및 DB 저장 완료")
     
-    def get_historical_data(self, symbol, market="KR", days=90, period=None):
+    def get_historical_data(self, symbol, market="KR", days=90, period=None, interval=None):
         """
         기존 주식 데이터 반환 또는 신규 수집
         데이터베이스에서 먼저 검색하고, 없으면 API에서 가져와 DB에 저장
@@ -174,6 +174,7 @@ class StockData:
             market: 시장 구분 ('KR' 또는 'US')
             days: 데이터를 가져올 기간 (일)
             period: 기간 문자열 (예: "1mo", "3mo", "6mo", "1y") - days 대신 사용 가능
+            interval: 데이터 간격 (예: "1d", "5m", "1h") - 일부 API에서만 지원
             
         Returns:
             DataFrame: 주가 데이터
@@ -191,6 +192,10 @@ class StockData:
                     days = 365
                 else:
                     logger.warning(f"인식할 수 없는 period 값: {period}, 기본값 90일 사용")
+            
+            # interval 로깅 (실제로 사용되지 않더라도 기록)
+            if interval:
+                logger.debug(f"{symbol}({market}) 데이터 요청 간격: {interval}")
             
             # 1. 메모리에 이미 데이터가 있는지 확인
             data_dict = self.kr_data if market == "KR" else self.us_data

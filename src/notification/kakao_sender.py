@@ -551,6 +551,22 @@ class KakaoSender:
         # 매매 수량, 보유량 값 검증 및 로깅
         logger.info(f"매매 수량: {trade_quantity}, 이전 보유량: {prev_quantity}, 현재 보유량: {total_quantity}, 계좌잔고: {balance}")
         
+        # API 응답에서 직접 보유수량 검색 - bfdy_buy_qty, bfdy_sll_qty, hldg_qty 값을 사용 (KIS API)
+        api_response = signal_data.get('api_response', {})
+        hldg_qty = 0
+        if 'output1' in api_response and isinstance(api_response['output1'], list):
+            for item in api_response['output1']:
+                if item.get('pdno') == symbol:
+                    hldg_qty = int(item.get('hldg_qty', 0))
+                    logger.info(f"API 응답에서 직접 추출한 보유수량: {hldg_qty}")
+                    break
+        
+        # 총 보유 수량 - API 응답 > total_quantity > trade_quantity 순으로 확인
+        if hldg_qty > 0:
+            total_quantity = hldg_qty
+        elif total_quantity == 0 and signal_type == "BUY":
+            total_quantity = trade_quantity + prev_quantity
+            
         # 포맷팅에 사용될 값들이 None이 아닌지 확인하고 숫자형으로 변환
         try:
             if prev_quantity is None:
@@ -583,11 +599,17 @@ class KakaoSender:
         order_no = trade_info.get('order_no', '')  # 주문 번호
         executed_price = trade_info.get('executed_price', price)  # 체결 가격
         
+        # executed_price 값 검증 및 로깅 추가
+        logger.info(f"체결 가격 확인: executed_price={executed_price}, price={price}")
+        
         # executed_price가 문자열인 경우 숫자로 변환
         try:
             if isinstance(executed_price, str):
                 executed_price = float(executed_price.replace(',', ''))
-        except Exception:
+            elif executed_price is None or executed_price == 0:
+                executed_price = price  # 체결가격이 없으면 기본 price 값 사용
+        except Exception as e:
+            logger.warning(f"체결 가격 형식 변환 중 오류: {e}, price 값으로 대체: {price}")
             executed_price = price  # 변환 실패 시 기본 price 값 사용
             
         executed_qty = trade_info.get('executed_qty', trade_quantity)  # 체결 수량
@@ -605,64 +627,53 @@ class KakaoSender:
         if executed_price and executed_qty:
             trade_amount = executed_price * executed_qty
 
-        # ----- 새로운 메시지 형식 설계 -----
+        # ----- 간결한 메시지 포맷 -----
         
-        # 매수/매도 구분을 위한 이모지와 색상 지정
+        # 매수/매도 구분을 위한 이모지 지정
         if signal_type == "BUY":
             emoji = "🟢"
-            action_text = "매수 체결"
-            # HTML 색상 형식으로 헤더 설정
-            border_color = "#4CAF50"  # 초록색
+            action_text = "매수 체결 알림"
         else:  # SELL
             emoji = "🔴"
-            action_text = "매도 체결"
-            border_color = "#F44336"  # 빨간색
+            action_text = "매도 체결 알림"
 
-        # 1. 헤더 부분 (종목명, 체결 정보)
-        message = f"{emoji} {action_text} 알림 {emoji}\n"
-        message += f"━━━━━━━━━━━━━━━━━\n"
+        # 메시지 생성 (깔끔하고 간결한 형태)
+        message = f"{emoji} {action_text} {emoji}\n\n"
         
-        # 종목명 (코드 포함) 표시
+        # 종목 정보
         if stock_name:
-            message += f"『{stock_name}』({symbol})\n"
+            message += f"{stock_name}({symbol})\n"
         else:
-            message += f"『{symbol}』\n"
+            message += f"{symbol}\n"
         
-        # 체결 정보 (수량, 가격)
         message += f"체결시간: {transaction_time}\n\n"
         
-        # 2. 매매 상세 정보 (체결수량, 체결가격, 체결금액)
+        # 거래 상세 정보
         message += f"📊 거래 상세 정보\n"
-        message += f"┌────────────────────\n"
-        
-        # 체결 수량 및 가격
-        message += f"│ 체결수량: {executed_qty}주\n"
+        message += f"체결수량: {executed_qty}주\n"
         
         if executed_price > 0:
-            message += f"│ 체결가격: {int(executed_price):,}원\n"
+            message += f"체결가격: {int(executed_price):,}원\n"
         else:
-            message += f"│ 체결가격: {int(price):,}원\n"
+            message += f"체결가격: {int(price):,}원\n"
             
         # 체결 금액
         if trade_amount > 0:
-            message += f"│ 체결금액: {int(trade_amount):,}원\n"
+            message += f"체결금액: {int(trade_amount):,}원\n"
             
         # 수수료 정보 (있는 경우)
         if fee > 0:
-            message += f"│ 수수료: {int(fee):,}원\n"
+            message += f"수수료: {int(fee):,}원\n"
             
-        message += f"└────────────────────\n\n"
+        message += f"\n"
         
-        # 3. 보유 현황 정보
+        # 보유 현황 정보
         message += f"💼 보유 현황\n"
-        message += f"┌────────────────────\n"
-        
-        # 보유량 변화 표시 (이전 → 현재)
-        message += f"│ 보유수량: {prev_quantity}주 → {total_quantity}주\n"
+        message += f"보유수량: {prev_quantity}주 → {total_quantity}주\n"
         
         # 평단가 (.0 제거를 위해 정수로 변환)
         if avg_price > 0:
-            message += f"│ 평단가: {int(avg_price):,}원\n"
+            message += f"평단가: {int(avg_price):,}원\n"
         
         # 매도일 경우 손익 정보 추가
         if signal_type == "SELL" and profit_loss != 0:
@@ -672,25 +683,22 @@ class KakaoSender:
             else:
                 profit_emoji = "📉"
                 
-            message += f"│ {profit_emoji} 손익: {int(profit_loss):,}원 ({profit_loss_pct:.2f}%)\n"
+            message += f"{profit_emoji} 손익: {int(profit_loss):,}원 ({profit_loss_pct:.2f}%)\n"
             
-        message += f"└────────────────────\n\n"
+        message += f"\n"
         
-        # 4. 계좌 정보 요약
+        # 계좌 정보 요약
         message += f"💰 계좌 정보\n"
-        message += f"┌────────────────────\n"
         
         # 계좌 잔고
         if balance > 0:
-            message += f"│ 주문가능금액: {int(balance):,}원\n"
+            message += f"주문가능금액: {int(balance):,}원\n"
             
         # 총평가금액 (있는 경우)
         if total_eval > 0:
-            message += f"│ 총평가금액: {int(total_eval):,}원\n"
+            message += f"총평가금액: {int(total_eval):,}원\n"
         
-        message += f"└────────────────────\n"
-
-        # 5. 주문 정보 추가 (주문번호 있는 경우)
+        # 주문 정보 추가 (주문번호 있는 경우)
         if order_no:
             message += f"\n📝 주문번호: {order_no}"
             
@@ -818,6 +826,123 @@ class KakaoSender:
         result_message = '\n'.join(result_parts)
         return self.send_message(result_message)
     
+    def send_account_summary(self, stock_balance, account_info):
+        """
+        계좌 요약 정보를 카카오톡으로 전송
+        
+        Args:
+            stock_balance: 주식 잔고 정보 (output1 형식)
+            account_info: 계좌 정보 (output2 형식)
+            
+        Returns:
+            bool: 전송 성공 여부
+        """
+        try:
+            # 계좌 정보가 비어있는 경우 처리
+            if not account_info or not isinstance(account_info, list) or len(account_info) == 0:
+                logger.error("계좌 정보가 없습니다.")
+                return False
+                
+            # 주식 정보가 비어있는 경우 처리
+            if not stock_balance or not isinstance(stock_balance, list):
+                stock_balance = []  # 빈 리스트로 초기화
+                
+            # 계좌 정보 추출
+            account_data = account_info[0]
+            
+            # 현재 시간
+            current_time = get_current_time_str(format_str='%Y-%m-%d %H:%M:%S')
+            
+            # 메시지 작성
+            message = f"💰 계좌 요약 정보 ({current_time})\n"
+            message += f"━━━━━━━━━━━━━━━━━\n\n"
+            
+            # 1. 계좌 요약
+            message += f"📊 계좌 요약\n"
+            message += f"┌────────────────────\n"
+            
+            # 예수금 정보
+            deposit_amount = int(float(account_data.get('dnca_tot_amt', '0')))
+            available_amount = int(float(account_data.get('nxdy_excc_amt', '0')))
+            message += f"│ 예수금 총액: {deposit_amount:,}원\n"
+            message += f"│ 주문가능금액: {available_amount:,}원\n"
+            
+            # 주식 평가 정보
+            stock_eval_amount = int(float(account_data.get('scts_evlu_amt', '0')))
+            message += f"│ 주식 평가금액: {stock_eval_amount:,}원\n"
+            
+            # 총 평가 정보
+            total_eval_amount = int(float(account_data.get('tot_evlu_amt', '0')))
+            total_asset_amount = int(float(account_data.get('nass_amt', '0')))
+            message += f"│ 총 평가금액: {total_eval_amount:,}원\n"
+            message += f"│ 순자산: {total_asset_amount:,}원\n"
+            
+            # 손익 정보
+            profit_loss = int(float(account_data.get('evlu_pfls_smtl_amt', '0')))
+            profit_loss_rate = float(account_data.get('asst_icdc_erng_rt', '0'))
+            
+            # 손익 부호에 따라 이모지 설정
+            if profit_loss > 0:
+                profit_emoji = "📈"
+            else:
+                profit_emoji = "📉"
+                
+            message += f"│ {profit_emoji} 평가손익: {profit_loss:,}원 ({profit_loss_rate:.2f}%)\n"
+            message += f"└────────────────────\n\n"
+            
+            # 2. 보유 주식 정보 (최대 5개까지만 표시)
+            if stock_balance:
+                message += f"📈 보유 주식 정보\n"
+                message += f"┌────────────────────\n"
+                
+                # 주식 정보는 최대 5개까지만 표시
+                display_count = min(5, len(stock_balance))
+                for i in range(display_count):
+                    stock = stock_balance[i]
+                    
+                    # 종목 정보 추출
+                    stock_code = stock.get('pdno', '')
+                    stock_name = stock.get('prdt_name', stock_code)
+                    hold_qty = int(float(stock.get('hldg_qty', '0')))
+                    avg_price = int(float(stock.get('pchs_avg_pric', '0')))
+                    curr_price = int(float(stock.get('prpr', '0')))
+                    stock_pl = int(float(stock.get('evlu_pfls_amt', '0')))
+                    stock_pl_rate = float(stock.get('evlu_pfls_rt', '0'))
+                    
+                    # 손익 부호에 따라 이모지 설정
+                    if stock_pl > 0:
+                        stock_emoji = "🔺"
+                    elif stock_pl < 0:
+                        stock_emoji = "🔻"
+                    else:
+                        stock_emoji = "▪️"
+                    
+                    message += f"│ {stock_name} ({stock_code})\n"
+                    message += f"│   {hold_qty}주 / {avg_price:,}원 → {curr_price:,}원\n"
+                    message += f"│   {stock_emoji} {stock_pl:,}원 ({stock_pl_rate}%)\n"
+                    
+                    # 마지막 항목이 아니면 구분선 추가
+                    if i < display_count - 1:
+                        message += f"│ ----------------------\n"
+                
+                # 보유 종목이 5개 이상이면 추가 정보 메시지
+                if len(stock_balance) > 5:
+                    remain_count = len(stock_balance) - 5
+                    message += f"│ 외 {remain_count}종목 더 있음\n"
+                    
+                message += f"└────────────────────\n"
+                
+            # 3. 갱신 정보
+            message += f"\n⏱️ {current_time} 기준"
+            
+            # 메시지 전송
+            logger.info(f"계좌 요약 정보 메시지 전송: {len(message)}자")
+            return self.send_message(message)
+            
+        except Exception as e:
+            logger.error(f"계좌 요약 정보 전송 중 오류: {e}")
+            return False
+    
     def _get_stock_name(self, symbol):
         """종목 코드에 해당하는 종목 이름 반환
 
@@ -860,3 +985,156 @@ class KakaoSender:
         import re
         clean = re.compile('<.*?>')
         return re.sub(clean, '', text)
+    
+    def send_trading_message(self, message_data):
+        """
+        매매 관련 메시지 전송
+        
+        Args:
+            message_data: 메시지 데이터 (거래 정보 포함)
+        """
+        try:
+            # 기본 정보 확인
+            if not isinstance(message_data, dict):
+                self.logger.error("유효하지 않은 메시지 데이터 형식")
+                return False
+                
+            # 주요 필드 확인
+            symbol = message_data.get('symbol', '')
+            name = message_data.get('name', symbol)
+            signals = message_data.get('signals', [])
+            
+            if not symbol or not signals:
+                self.logger.error("필수 메시지 데이터 누락")
+                return False
+                
+            # 첫 번째 신호 기준 처리
+            signal = signals[0]
+            signal_type = signal.get('type', '').upper()  # 'BUY', 'SELL'
+            
+            # 표시할 이모지 및 색상 결정
+            if signal_type == 'BUY':
+                emoji = '🟢'
+                prefix = '매수'
+            elif signal_type == 'SELL':
+                emoji = '🔴'
+                prefix = '매도'
+            else:
+                emoji = '🔷'
+                prefix = '알림'
+                
+            # 거래 정보 (특히 체결 수량과 가격)
+            trade_info = message_data.get('trade_info', {})
+            
+            # 메시지 구성
+            message_title = f"{emoji} {name} ({symbol}) {prefix} 체결"
+            message_body = []
+            
+            # 상세 정보 추가 (체결 내역이 있는지 확인하고 추가)
+            if 'quantity' in trade_info or 'executed_qty' in trade_info:
+                # 체결수량 (실행수량) 정보
+                quantity = trade_info.get('executed_qty', trade_info.get('quantity', 0))
+                message_body.append(f"체결수량: {quantity}주")
+            
+            # 체결가격 정보
+            price = trade_info.get('executed_price', trade_info.get('price', 0))
+            formatted_price = self._format_number(price) + "원"
+            message_body.append(f"체결가격: {formatted_price}")
+            
+            # 총 체결금액
+            total_amount = trade_info.get('total_amount', trade_info.get('trade_amount', 0))
+            if not total_amount and price and quantity:
+                total_amount = price * quantity
+            formatted_amount = self._format_number(total_amount) + "원"
+            message_body.append(f"체결금액: {formatted_amount}")
+
+            # 체결 번호 (있는 경우)
+            exec_no = trade_info.get('exec_no', '')
+            if exec_no:
+                message_body.append(f"체결번호: {exec_no}")
+            
+            # 주문 번호 (있는 경우)
+            order_no = trade_info.get('order_no', '')
+            if order_no:
+                message_body.append(f"주문번호: {order_no}")
+
+            # 체결 상태 (있는 경우)
+            order_status = trade_info.get('order_status', '')
+            if order_status:
+                message_body.append(f"체결상태: {order_status}")
+
+            # 구분선 추가
+            message_body.append("─────────────────")
+            
+            # 보유수량 정보 (매수인 경우)
+            if signal_type == 'BUY':
+                # 체결전 보유수량
+                prev_quantity = trade_info.get('prev_quantity', 0)
+                
+                # 체결후 보유수량
+                total_quantity = trade_info.get('total_quantity', 0)
+                
+                if prev_quantity == 0 and total_quantity > 0:
+                    # 신규 매수의 경우
+                    message_body.append(f"보유수량: {total_quantity}주 (신규)")
+                elif prev_quantity > 0 and total_quantity > prev_quantity:
+                    # 기존 보유 종목 추가 매수의 경우
+                    # 기존에는 0주 → 전체수량으로 표시했으나, 기존수량 → 전체수량으로 표시하도록 수정
+                    message_body.append(f"보유수량: {prev_quantity}주 → {total_quantity}주 (+{total_quantity - prev_quantity}주)")
+                else:
+                    # 기타 경우
+                    message_body.append(f"보유수량: {total_quantity}주")
+                    
+                # 평단가 정보
+                avg_price = trade_info.get('avg_price', 0)
+                if avg_price > 0:
+                    formatted_avg_price = self._format_number(avg_price) + "원"
+                    message_body.append(f"평단가: {formatted_avg_price}")
+            
+            # 매도인 경우 손익 정보 추가
+            if signal_type == 'SELL':
+                profit_loss = trade_info.get('profit_loss', 0)
+                profit_loss_pct = trade_info.get('profit_loss_pct', 0)
+                
+                if profit_loss != 0:
+                    profit_loss_sign = "+" if profit_loss > 0 else ""
+                    formatted_profit_loss = self._format_number(profit_loss) + "원"
+                    message_body.append(f"손익: {profit_loss_sign}{formatted_profit_loss} ({profit_loss_pct:.2f}%)")
+                
+                # 매도 후 잔여 보유수량 표시
+                prev_quantity = trade_info.get('prev_quantity', 0)
+                total_quantity = trade_info.get('total_quantity', 0)
+                
+                if prev_quantity > 0 and total_quantity == 0:
+                    message_body.append(f"보유수량: {prev_quantity}주 → 전량매도")
+                elif prev_quantity > total_quantity:
+                    message_body.append(f"보유수량: {prev_quantity}주 → {total_quantity}주 (-{prev_quantity - total_quantity}주)")
+                else:
+                    message_body.append(f"보유수량: {total_quantity}주")
+            
+            # 계좌 잔고 정보
+            account_balance = trade_info.get('account_balance', trade_info.get('balance', 0))
+            if account_balance:
+                formatted_balance = self._format_number(account_balance) + "원"
+                message_body.append(f"계좌잔고: {formatted_balance}")
+                
+            # 총평가금액 정보 (있을 경우만)
+            total_eval = trade_info.get('total_eval', 0)
+            if total_eval:
+                formatted_total_eval = self._format_number(total_eval) + "원"
+                message_body.append(f"총평가금액: {formatted_total_eval}")
+            
+            # 주문일시
+            transaction_time = trade_info.get('transaction_time', '')
+            if transaction_time:
+                message_body.append(f"체결시간: {transaction_time}")
+                
+            # 메시지 조합
+            full_message = message_title + "\n\n" + "\n".join(message_body)
+            
+            # 메시지 전송
+            return self.send_message(full_message)
+            
+        except Exception as e:
+            self.logger.exception(f"매매 메시지 전송 중 오류: {e}")
+            return False

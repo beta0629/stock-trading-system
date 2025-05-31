@@ -67,9 +67,11 @@ class ChatGPTAnalyzer:
         if self.api_key:
             openai.api_key = self.api_key
             self.client = openai.OpenAI(api_key=self.api_key)
+            self.openai_client = self.client  # openai_client 속성 추가
             logger.info(f"ChatGPT 분석기 초기화 완료 (모델: {self.model})")
         else:
             self.client = None
+            self.openai_client = None
             
         # 요청 제한 관리
         self.last_request_time = 0

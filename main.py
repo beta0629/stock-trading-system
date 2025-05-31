@@ -1577,6 +1577,39 @@ class StockAnalysisSystem:
             self.send_notification('status', message)
         except Exception as e:
             logger.error(f"종료 메시지 전송 실패: {e}")
+    
+    def force_select_stocks(self):
+        """단타매매와 급등주 감지 모드를 위한 종목 강제 재선정"""
+        logger.info("단타매매/급등주 감지 모드를 위한 종목 강제 재선정 시작")
+        
+        # GPT 자동 매매 시스템이 초기화되었는지 확인
+        if not self.gpt_auto_trader:
+            logger.warning("GPT 자동 매매 시스템이 초기화되지 않았습니다.")
+            return False
+        
+        # GPT 트레이딩 전략이 초기화되었는지 확인
+        if not self.gpt_trading_strategy:
+            logger.warning("GPT 트레이딩 전략이 초기화되지 않았습니다.")
+            return False
+        
+        try:
+            # 마지막 종목 선정 시간 강제 초기화
+            if hasattr(self.gpt_auto_trader, 'last_selection_time'):
+                self.gpt_auto_trader.last_selection_time = None
+                logger.info("마지막 종목 선정 시간 초기화 완료")
+            
+            # 종목 선정 강제 실행
+            self.gpt_auto_trader._select_stocks()
+            logger.info("강제 종목 선정 실행 완료")
+            
+            # 알림 전송
+            self.send_notification('status', "🔄 단타매매/급등주 감지를 위한 종목 강제 재선정이 완료되었습니다.")
+            
+            return True
+        except Exception as e:
+            logger.error(f"종목 강제 재선정 중 오류 발생: {e}")
+            self.send_notification('status', f"⚠️ 종목 재선정 중 오류 발생: {str(e)}")
+            return False
 
 
 # 명령줄 인자 처리

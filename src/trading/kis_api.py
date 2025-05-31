@@ -31,7 +31,7 @@ class TradeAction(Enum):
 logger = logging.getLogger('KISAPI')
 
 # API 호출 관련 상수
-API_RATE_LIMIT_DELAY = 1.0  # 초당 API 호출 최대 횟수를 고려한 딜레이 (초) - 0.5초에서 1초로 증가
+API_RATE_LIMIT_DELAY = 3.0  # 초당 API 호출 최대 횟수를 고려한 딜레이 (초) - 1초에서 3초로 증가
 LAST_API_CALL_TIMES = {}  # API 종류별 마지막 호출 시간 기록
 
 def ensure_api_rate_limit(api_name, is_real_trading=False):
@@ -570,12 +570,13 @@ class KISAPI(BrokerBase):
             self.logger.exception(f"계좌 잔고 조회 중 예외 발생: {e}")
             return {"error": str(e)}
     
-    def get_positions(self, account_number=None):
+    def get_positions(self, account_number=None, force_refresh=False):
         """
         보유 종목 조회
         
         Args:
             account_number: 계좌번호 (None인 경우 기본 계좌 사용)
+            force_refresh: 강제 갱신 여부
             
         Returns:
             list: 보유 종목 목록
@@ -610,7 +611,7 @@ class KISAPI(BrokerBase):
             cano = account_number
             acnt_prdt_cd = "01"
             
-            logger.info(f"보유 종목 조회 요청: {cano}-{acnt_prdt_cd}")
+            logger.info(f"보유 종목 조회 요청: {cano}-{acnt_prdt_cd}, force_refresh={force_refresh}")
             
             params = {
                 "CANO": cano,
@@ -626,8 +627,18 @@ class KISAPI(BrokerBase):
                 "CTX_AREA_NK100": ""
             }
             
+            # 강제 갱신 요청 시 타임스탬프 추가로 캐싱 방지
+            if force_refresh:
+                params["_ts"] = int(time.time() * 1000)
+                headers["Cache-Control"] = "no-cache, no-store"
+                headers["Pragma"] = "no-cache"
+                logger.debug("강제 갱신 요청으로 캐시 무효화 헤더 추가")
+            
             response = requests.get(url, headers=headers, params=params)
             response_data = response.json()
+            
+            # API 응답 저장
+            self.store_api_response(response_data)
             
             logger.debug(f"보유 종목 API 응답 데이터: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
             
@@ -656,6 +667,8 @@ class KISAPI(BrokerBase):
                             if qty_field in item and 'quantity' not in position_info:
                                 try:
                                     position_info['quantity'] = int(float(item.get(qty_field, '0')))
+                                    # 중요: 보유수량 필드를 명시적으로 추가
+                                    position_info['보유수량'] = position_info['quantity']
                                     break
                                 except (ValueError, TypeError):
                                     continue
@@ -664,6 +677,8 @@ class KISAPI(BrokerBase):
                             if avg_price_field in item and 'avg_price' not in position_info:
                                 try:
                                     position_info['avg_price'] = int(float(item.get(avg_price_field, '0')))
+                                    # 중요: 평균단가 필드를 명시적으로 추가
+                                    position_info['평균단가'] = position_info['avg_price']
                                     break
                                 except (ValueError, TypeError):
                                     continue
@@ -672,6 +687,8 @@ class KISAPI(BrokerBase):
                             if curr_price_field in item and 'current_price' not in position_info:
                                 try:
                                     position_info['current_price'] = int(float(item.get(curr_price_field, '0')))
+                                    # 중요: 현재가 필드를 명시적으로 추가
+                                    position_info['현재가'] = position_info['current_price']
                                     break
                                 except (ValueError, TypeError):
                                     continue
@@ -681,6 +698,8 @@ class KISAPI(BrokerBase):
                             if eval_amt_field in item and 'eval_amount' not in position_info:
                                 try:
                                     position_info['eval_amount'] = int(float(item.get(eval_amt_field, '0')))
+                                    # 중요: 평가금액 필드를 명시적으로 추가
+                                    position_info['평가금액'] = position_info['eval_amount']
                                     break
                                 except (ValueError, TypeError):
                                     continue
@@ -689,6 +708,8 @@ class KISAPI(BrokerBase):
                             if pnl_field in item and 'pnl_amount' not in position_info:
                                 try:
                                     position_info['pnl_amount'] = int(float(item.get(pnl_field, '0')))
+                                    # 중요: 손익금액 필드를 명시적으로 추가
+                                    position_info['손익금액'] = position_info['pnl_amount']
                                     break
                                 except (ValueError, TypeError):
                                     continue
@@ -714,21 +735,30 @@ class KISAPI(BrokerBase):
                         # 계산된 값들로 보정
                         if 'quantity' in position_info and 'current_price' in position_info and 'eval_amount' not in position_info:
                             position_info['eval_amount'] = position_info['quantity'] * position_info['current_price']
+                            position_info['평가금액'] = position_info['eval_amount']
                         
                         if 'quantity' in position_info and 'avg_price' in position_info and 'current_price' in position_info:
                             if 'pnl_amount' not in position_info:
                                 position_info['pnl_amount'] = (position_info['current_price'] - position_info['avg_price']) * position_info['quantity']
+                                position_info['손익금액'] = position_info['pnl_amount']
                             
                             if 'pnl_rate' not in position_info and position_info['avg_price'] > 0:
                                 position_info['pnl_rate'] = ((position_info['current_price'] - position_info['avg_price']) / position_info['avg_price']) * 100
+                                position_info['손익률'] = position_info['pnl_rate']
                         
                         # 매도 가능 수량이 없으면 수량과 동일하게 설정
                         if 'quantity' in position_info and 'sellable_quantity' not in position_info:
                             position_info['sellable_quantity'] = position_info['quantity']
                         
+                        # 모든 원본 데이터도 함께 저장 (향후 참조를 위해)
+                        for key, value in item.items():
+                            if key not in position_info:
+                                position_info[key] = value
+                        
                         # 필수 필드가 있는 경우에만 결과에 추가
-                        if ('종목코드' in position_info and '종목명' in position_info and 
-                            'quantity' in position_info and position_info.get('quantity', 0) > 0):
+                        if ('종목코드' in position_info or 'pdno' in position_info) and \
+                           ('quantity' in position_info or '보유수량' in position_info or 'hldg_qty' in position_info) and \
+                           position_info.get('quantity', 0) > 0:
                             
                             # 수량이 있으면 보유종목으로 간주하고 목록에 추가
                             positions.append(position_info)
