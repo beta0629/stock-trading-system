@@ -146,6 +146,47 @@ class StockData:
             logger.error(f"미국 주식 {symbol} 데이터 수집 실패: {e}")
             return pd.DataFrame()
     
+    def get_stock_data(self, symbol, days=90):
+        """
+        종목 코드에 따라 한국/미국 주식 데이터 수집
+        
+        Args:
+            symbol: 종목 코드/티커 (예: '005930', 'AAPL')
+            days: 데이터를 가져올 기간 (일)
+            
+        Returns:
+            DataFrame: 주가 데이터
+        """
+        try:
+            # 종목 코드 형태로 국내/해외 구분
+            if len(symbol) == 6 and symbol.isdigit():
+                # 국내 종목 (6자리 숫자)
+                logger.info(f"{symbol}: 한국 주식으로 인식")
+                return self.get_korean_stock_data(symbol, days)
+            elif symbol.isalpha() or (len(symbol) <= 5 and any(c.isalpha() for c in symbol)):
+                # 영문자만 있거나 5자 이하의 영숫자 혼합 코드는 미국 주식으로 간주
+                # 예: AAPL, NVDA, AMD, TSLA, MS, F 등
+                logger.info(f"{symbol}: 미국 주식으로 인식")
+                return self.get_us_stock_data(symbol, days)
+            else:
+                # 판별이 어려운 종목은 기본적으로 한국 주식으로 시도 후 실패 시 미국 주식 시도
+                logger.info(f"{symbol}: 형식 판별 불가, 한국 주식으로 먼저 시도")
+                try:
+                    df = self.get_korean_stock_data(symbol, days)
+                    if df is not None and not df.empty:
+                        return df
+                    
+                    # 한국 주식으로 가져오기 실패했으면 미국 주식으로 시도
+                    logger.info(f"{symbol}: 한국 주식 데이터 수집 실패, 미국 주식으로 재시도")
+                    return self.get_us_stock_data(symbol, days)
+                except Exception as e:
+                    logger.error(f"{symbol} 한국 주식 처리 중 오류, 미국 주식으로 재시도: {e}")
+                    return self.get_us_stock_data(symbol, days)
+                
+        except Exception as e:
+            logger.error(f"주식 데이터 수집 중 오류 발생 ({symbol}): {e}")
+            return pd.DataFrame()
+    
     def update_all_data(self):
         """모든 주식 데이터 업데이트 및 DB에 저장"""
         logger.info("모든 주식 데이터 업데이트 시작")
@@ -180,6 +221,14 @@ class StockData:
             DataFrame: 주가 데이터
         """
         try:
+            # 심볼에 따라 시장 자동 판별 - 잘못된 market 파라미터가 전달된 경우 수정
+            correct_market = self._detect_market_from_symbol(symbol)
+            
+            # market 파라미터가 심볼에 맞지 않으면 수정하고 로그 출력
+            if market != correct_market:
+                logger.warning(f"심볼 {symbol}에 잘못된 시장 '{market}' 지정됨. 자동으로 '{correct_market}'으로 수정합니다.")
+                market = correct_market
+            
             # period 문자열이 제공된 경우 days로 변환
             if period:
                 if period == "1mo":
@@ -293,6 +342,14 @@ class StockData:
         Returns:
             Series: 최신 주가 데이터
         """
+        # 심볼에 따라 시장 자동 판별
+        correct_market = self._detect_market_from_symbol(symbol)
+        
+        # market 파라미터가 심볼에 맞지 않으면 수정
+        if market != correct_market:
+            logger.warning(f"심볼 {symbol}에 잘못된 시장 '{market}' 지정됨. 자동으로 '{correct_market}'으로 수정합니다.")
+            market = correct_market
+            
         if market == "KR":
             if symbol in self.kr_data and not self.kr_data[symbol].empty:
                 return self.kr_data[symbol].iloc[-1]
@@ -300,6 +357,14 @@ class StockData:
             if symbol in self.us_data and not self.us_data[symbol].empty:
                 return self.us_data[symbol].iloc[-1]
         
+        # 데이터가 없는 경우 데이터 로드 시도
+        try:
+            df = self.get_historical_data(symbol, market, days=30)
+            if df is not None and not df.empty:
+                return df.iloc[-1]
+        except Exception as e:
+            logger.error(f"{symbol}({market}) 최신 데이터 로드 실패: {e}")
+            
         return None
     
     def get_current_price(self, symbol, market="KR"):
@@ -314,6 +379,14 @@ class StockData:
             float: 현재 주가 (종가)
         """
         try:
+            # 심볼에 따라 시장 자동 판별
+            correct_market = self._detect_market_from_symbol(symbol)
+            
+            # market 파라미터가 심볼에 맞지 않으면 수정
+            if market != correct_market:
+                logger.warning(f"심볼 {symbol}에 잘못된 시장 '{market}' 지정됨. 자동으로 '{correct_market}'으로 수정합니다.")
+                market = correct_market
+                
             latest_data = self.get_latest_data(symbol, market)
             if latest_data is not None and 'Close' in latest_data:
                 return latest_data['Close']
@@ -334,3 +407,88 @@ class StockData:
         except Exception as e:
             logger.error(f"현재 주가 조회 중 오류 발생: {e}")
             return 0
+            
+    def get_stock_info(self, symbol, market="KR"):
+        """
+        종목 기본 정보 조회 (신규 추가)
+        
+        Args:
+            symbol: 주식 코드/티커
+            market: 시장 구분 ('KR' 또는 'US')
+            
+        Returns:
+            dict: 종목 정보
+        """
+        try:
+            # 기본 정보 구성
+            info = {'symbol': symbol, 'market': market}
+            
+            # 종목명 조회 시도
+            name = symbol  # 기본값으로 심볼 사용
+            
+            # 한국 주식인 경우 pykrx 라이브러리 활용
+            if market == "KR":
+                try:
+                    # 현재 날짜 기준으로 시장 정보 가져오기
+                    today = get_current_time(timezone=KST).strftime("%Y%m%d")
+                    stock_info = stock.get_market_ticker_name(symbol)
+                    if stock_info:
+                        name = stock_info
+                except:
+                    # pykrx에서 정보를 가져오지 못하면 DB에서 조회
+                    if self.db_manager:
+                        db_info = self.db_manager.get_stock_info(symbol, market)
+                        if db_info and 'name' in db_info:
+                            name = db_info['name']
+            
+            # 미국 주식인 경우 yfinance 활용
+            else:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    ticker_info = ticker.info
+                    if ticker_info and 'shortName' in ticker_info:
+                        name = ticker_info['shortName']
+                        
+                        # 추가 정보
+                        if 'sector' in ticker_info:
+                            info['sector'] = ticker_info['sector']
+                        if 'industry' in ticker_info:
+                            info['industry'] = ticker_info['industry']
+                        if 'website' in ticker_info:
+                            info['website'] = ticker_info['website']
+                except:
+                    # yfinance에서 정보를 가져오지 못하면 DB에서 조회
+                    if self.db_manager:
+                        db_info = self.db_manager.get_stock_info(symbol, market)
+                        if db_info and 'name' in db_info:
+                            name = db_info['name']
+            
+            # 종목명 설정
+            info['name'] = name
+            
+            return info
+            
+        except Exception as e:
+            logger.error(f"종목 정보 조회 중 오류 발생: {e}")
+            return {'symbol': symbol, 'name': symbol, 'market': market}
+    
+    def _detect_market_from_symbol(self, symbol):
+        """
+        심볼에 따라 시장을 자동으로 판별
+        
+        Args:
+            symbol: 주식 코드/티커
+            
+        Returns:
+            str: 시장 구분 ('KR' 또는 'US')
+        """
+        try:
+            if len(symbol) == 6 and symbol.isdigit():
+                return "KR"  # 6자리 숫자는 한국 주식으로 간주
+            elif symbol.isalpha() or (len(symbol) <= 5 and any(c.isalpha() for c in symbol)):
+                return "US"  # 영문자만 있거나 5자 이하의 영숫자 혼합 코드는 미국 주식으로 간주
+            else:
+                return "KR"  # 기본값은 한국 주식으로 설정
+        except Exception as e:
+            logger.error(f"심볼 {symbol}에 대한 시장 판별 중 오류 발생: {e}")
+            return "KR"  # 오류 발생 시 기본값으로 한국 주식 설정
