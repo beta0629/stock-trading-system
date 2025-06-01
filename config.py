@@ -54,9 +54,32 @@ KST = pytz.timezone('Asia/Seoul')
 EST = pytz.timezone('US/Eastern')
 
 # 미국 주식 거래 설정
-US_STOCK_TRADING_ENABLED = os.environ.get("US_STOCK_TRADING_ENABLED", "False").lower() == "true"  # 미국 주식 거래 활성화 여부 (기본값: 비활성화)
-# 환경 변수로 설정하지 않은 경우 여기서 직접 변경 가능 (True: 활성화, False: 비활성화)
-# US_STOCK_TRADING_ENABLED = True  # 주석을 제거하고 True로 설정하면 미국 주식 거래가 활성화됩니다.
+US_STOCK_TRADING_ENABLED = True  # 미국 주식 거래 활성화 여부 (기본값: 활성화)
+
+# 미국 주식 시장 시간 (미국 동부시간 기준)
+US_MARKET_OPEN_TIME = "09:30"  # 미국 시장 개장 시간 (EST)
+US_MARKET_CLOSE_TIME = "16:00"  # 미국 시장 폐장 시간 (EST)
+
+# 미국 주식 시장 시간 (한국 시간 기준) - 시차 적용
+US_MARKET_OPEN_TIME_KST = "22:30"  # 미국 시장 개장 시간 (KST)
+US_MARKET_CLOSE_TIME_KST = "05:00"  # 미국 시장 폐장 시간 (KST)
+
+# 미국 시장 애프터마켓/프리마켓 설정
+US_AFTER_MARKET_ENABLED = True  # 미국 애프터 마켓 활성화 여부
+US_AFTER_MARKET_OPEN_TIME = "16:00"  # 미국 애프터 마켓 시작 시간 (EST)
+US_AFTER_MARKET_CLOSE_TIME = "20:00"  # 미국 애프터 마켓 종료 시간 (EST)
+US_PRE_MARKET_ENABLED = True  # 미국 프리 마켓 활성화 여부
+US_PRE_MARKET_OPEN_TIME = "05:00"  # 미국 프리 마켓 시작 시간 (EST)
+US_PRE_MARKET_CLOSE_TIME = "09:30"  # 미국 프리 마켓 종료 시간 (EST)
+
+# 한국 시간 기준 미국 시장 확장 거래 시간
+US_AFTER_MARKET_OPEN_TIME_KST = "05:00"  # 미국 애프터 마켓 시작 시간 (KST)
+US_AFTER_MARKET_CLOSE_TIME_KST = "09:00"  # 미국 애프터 마켓 종료 시간 (KST)
+US_PRE_MARKET_OPEN_TIME_KST = "18:00"  # 미국 프리 마켓 시작 시간 (KST)
+US_PRE_MARKET_CLOSE_TIME_KST = "22:30"  # 미국 프리 마켓 종료 시간 (KST)
+
+# 미국 주식 시간외 거래 설정
+US_AFTER_MARKET_TRADING = True  # 미국 시간외 거래 활성화 여부
 
 # 텔레그램 설정
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # 텔레그램 봇 토큰
@@ -72,6 +95,13 @@ USE_KAKAO = os.environ.get("USE_KAKAO", "True").lower() == "true"  # 카카오�
 # 국내 주식 설정
 KR_MARKET_OPEN_TIME = "09:00"  # 한국 시장 개장 시간
 KR_MARKET_CLOSE_TIME = "15:30"  # 한국 시장 폐장 시간
+
+# 애프터 마켓(시간외 거래) 설정 추가
+KR_AFTER_MARKET_ENABLED = True  # 애프터 마켓 활성화 여부
+KR_AFTER_MARKET_OPEN_TIME = "16:00"  # 시간외 거래 개장 시간
+KR_AFTER_MARKET_CLOSE_TIME = "18:00"  # 시간외 거래 폐장 시간
+KR_AFTER_MARKET_TRADING = True  # 시간외 거래 활성화 여부
+USE_EXTENDED_HOURS = True  # 확장 거래 시간 사용 여부
 
 # 미국 주식 설정
 US_MARKET_OPEN_TIME = "09:30"  # 미국 시장 개장 시간 (EST)
@@ -260,3 +290,31 @@ logger.info(f"데이터베이스 사용: {USE_DATABASE} (타입: {DB_TYPE})")
 logger.info(f"증권사 API 모드: {'실전투자' if KIS_REAL_TRADING else '모의투자'}")
 logger.info(f"GPT 자동 매매 기능: {GPT_AUTO_TRADING} (완전자율모드: {GPT_FULLY_AUTONOMOUS_MODE})")
 logger.info(f"실시간 GPT 연동: {REALTIME_GPT_INTEGRATION} (모멘텀 감지: {REALTIME_MOMENTUM_DETECTION})")
+
+# 스윙매매 설정
+SWING_TRADING_MODE = os.environ.get("SWING_TRADING_MODE", "False").lower() == "true"  # 스윙 매매 모드 활성화 여부
+SWING_TRADING_MAX_POSITIONS = int(os.environ.get("SWING_TRADING_MAX_POSITIONS", "5"))  # 스윙 매매 최대 포지션 수
+SWING_TRADING_PROFIT_THRESHOLD = float(os.environ.get("SWING_TRADING_PROFIT_THRESHOLD", "10.0"))  # 스윙 매매 이익 실현 기준 (%)
+SWING_TRADING_STOP_LOSS = float(os.environ.get("SWING_TRADING_STOP_LOSS", "5.0"))  # 스윙 매매 손절 기준 (%)
+SWING_TRADING_MIN_HOLDING_DAYS = int(os.environ.get("SWING_TRADING_MIN_HOLDING_DAYS", "2"))  # 스윙 매매 최소 보유 일수
+SWING_TRADING_MAX_HOLDING_DAYS = int(os.environ.get("SWING_TRADING_MAX_HOLDING_DAYS", "15"))  # 스윙 매매 최대 보유 일수
+SWING_TRADING_MONITOR_INTERVAL = int(os.environ.get("SWING_TRADING_MONITOR_INTERVAL", "60"))  # 스윙 매매 모니터링 간격 (분)
+SWING_SCORE_THRESHOLD = int(os.environ.get("SWING_SCORE_THRESHOLD", "75"))  # 스윙 매매 점수 임계값 (0-100)
+
+# 초보자 실전투자 설정 (스윙매매 중심 전략)
+GPT_STRATEGY_TYPE = "swing"  # 스윙매매 중심 전략 설정
+GPT_AGGRESSIVE_MODE = False  # 보수적 전략 사용
+DAY_TRADING_MODE = False  # 단타 매매 모드 비활성화
+SWING_TRADING_MODE = True  # 스윙 매매 모드 활성화
+SWING_TRADING_ALLOCATION = 0.8  # 자본금의 80%를 스윙매매에 할당
+DAY_TRADING_ALLOCATION = 0.2  # 자본금의 20%를 단타매매에 할당
+
+# 리스크 관리 설정 최적화
+SWING_TRADING_STOP_LOSS = 4.0  # 스윙 매매 손절 기준 (%)
+SWING_TRADING_PROFIT_THRESHOLD = 8.0  # 스윙 매매 익절 기준 (%)
+SWING_TRADING_MIN_HOLDING_DAYS = 3  # 스윙 매매 최소 보유 일수
+SWING_TRADING_MAX_HOLDING_DAYS = 10  # 스윙 매매 최대 보유 일수
+SWING_SCORE_THRESHOLD = 80  # 스윙 매매 점수 임계값 (0-100)
+BEGINNER_MODE = True  # 초보자 모드 활성화 (위험 관리 강화)
+MAX_OPEN_POSITIONS = 2  # 동시 오픈 포지션 제한 (초보자용)
+MAX_DAILY_TRADES = 3  # 일일 최대 거래 횟수 제한

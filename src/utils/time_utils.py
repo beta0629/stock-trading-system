@@ -474,3 +474,92 @@ def get_datetime_from_days_ago(days, timezone=KST):
             timezone = KST
             
     return get_current_time(timezone) - datetime.timedelta(days=days)
+
+def is_after_market_open(market="KR", config=None):
+    """
+    시간외 거래(애프터 마켓)가 현재 열려 있는지 확인
+    
+    Args:
+        market: 시장 코드 ("KR" 또는 "US")
+        config: 설정 모듈 (기본값: None, 전역 config 또는 환경 변수 사용)
+        
+    Returns:
+        bool: 시간외 거래 개장 여부
+    """
+    # 시간외 거래 활성화 여부 확인
+    if market == "KR":
+        after_market_enabled = get_config_value('KR_AFTER_MARKET_ENABLED', False, config)
+        after_market_trading = get_config_value('KR_AFTER_MARKET_TRADING', False, config)
+    else:  # US 시장
+        after_market_enabled = get_config_value('US_AFTER_MARKET_ENABLED', False, config)
+        after_market_trading = get_config_value('US_AFTER_MARKET_TRADING', False, config)
+    
+    # 시간외 거래가 비활성화된 경우 즉시 False 반환
+    if not after_market_enabled or not after_market_trading:
+        return False
+        
+    # 강제 개장 설정 확인
+    force_open = get_config_value('FORCE_MARKET_OPEN', False, config)
+    if isinstance(force_open, str):
+        force_open = force_open.lower() == "true"
+    
+    if force_open:
+        return True
+        
+    now = get_current_time(KST if market == "KR" else EST)
+    today = now.strftime("%Y-%m-%d")
+    weekday = now.weekday()  # 0=월요일, 6=일요일
+    
+    # 주말 확인
+    if weekday >= 5:  # 토, 일
+        return False
+    
+    # 시장별 시간외 거래 시간 확인
+    if market == "KR":
+        start_time = get_config_value('KR_AFTER_MARKET_OPEN_TIME', "16:00", config)
+        end_time = get_config_value('KR_AFTER_MARKET_CLOSE_TIME', "18:00", config)
+    else:
+        start_time = get_config_value('US_AFTER_MARKET_OPEN_TIME', "16:00", config)
+        end_time = get_config_value('US_AFTER_MARKET_CLOSE_TIME', "20:00", config)
+    
+    # 시간 변환
+    start_dt = datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
+    end_dt = datetime.datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
+    
+    # 현재 시간에서 시간/분만 추출
+    current_time = now.replace(tzinfo=None)
+    
+    # 시간외 거래 시간인지 확인
+    return start_dt <= current_time <= end_dt
+
+def is_trading_time(market="KR", config=None, include_after_hours=True):
+    """
+    현재가 거래 시간(정규장 또는 시간외 거래)인지 확인
+    
+    Args:
+        market: 시장 코드 ("KR" 또는 "US")
+        config: 설정 모듈
+        include_after_hours: 시간외 거래 포함 여부
+        
+    Returns:
+        bool: 거래 가능 시간 여부
+    """
+    # 강제 개장 설정 확인
+    force_open = get_config_value('FORCE_MARKET_OPEN', False, config)
+    if isinstance(force_open, str):
+        force_open = force_open.lower() == "true"
+    
+    if force_open:
+        return True
+    
+    # 정규장 확인
+    if is_market_open(market, config):
+        return True
+    
+    # 시간외 거래 확인 (설정 활성화 & 포함 옵션 활성화시)
+    if include_after_hours:
+        use_extended_hours = get_config_value('USE_EXTENDED_HOURS', False, config)
+        if use_extended_hours and is_after_market_open(market, config):
+            return True
+    
+    return False
