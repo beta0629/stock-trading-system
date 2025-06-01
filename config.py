@@ -247,7 +247,7 @@ REALTIME_TRADE_NOTIFICATION = True  # 실시간 거래 알림 활성화
 REALTIME_PERFORMANCE_METRICS_INTERVAL = 60  # 성능 지표 계산 간격 (분)
 
 # 미국 주식 종목 설정
-US_STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
+US_STOCKS = []
 
 # 데이터베이스 설정
 USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"  # 데이터베이스 사용 여부
@@ -272,7 +272,7 @@ FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '051910', 'name': 'LG화학'}, {'code': '035420', 'name': 'NAVER'}]
+# 주의: KR_STOCK_INFO = [{'code': 'NVDA', 'name': 'NVIDIA Corporation'}, {'code': 'TSLA', 'name': 'Tesla, Inc.'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'AAPL', 'name': 'Apple Inc.'}, {'code': '035420', 'name': 'NAVER'}, {'code': 'MSFT', 'name': 'Microsoft Corporation'}, {'code': '068270', 'name': '셀트리온'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 
@@ -318,3 +318,7 @@ SWING_SCORE_THRESHOLD = 80  # 스윙 매매 점수 임계값 (0-100)
 BEGINNER_MODE = True  # 초보자 모드 활성화 (위험 관리 강화)
 MAX_OPEN_POSITIONS = 2  # 동시 오픈 포지션 제한 (초보자용)
 MAX_DAILY_TRADES = 3  # 일일 최대 거래 횟수 제한
+
+
+# GPT에 의해 추천된 미국 종목 정보 (코드와 이름)
+US_STOCK_INFO = [{'code': 'TSLA', 'name': 'Tesla, Inc.'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'AAPL', 'name': 'Apple Inc.'}]
