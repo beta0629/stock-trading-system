@@ -7,7 +7,7 @@ import numpy as np
 import datetime
 from src.ai_analysis.chatgpt_analyzer import ChatGPTAnalyzer
 # 시간 유틸리티 추가
-from src.utils.time_utils import get_current_time, get_current_time_str, format_timestamp
+from src.utils.time_utils import get_current_time, get_current_time_str, format_timestamp, is_market_open
 from enum import Enum
 
 # 로깅 설정
@@ -1125,11 +1125,16 @@ class GPTTradingStrategy:
             data['upper_band'] = data['MA20'] + (data['stddev'] * 2)
             data['lower_band'] = data['MA20'] - (data['stddev'] * 2)
             
-            # RSI 계산 (14일)
+            # RSI 계산 (14일) - 0으로 나누기 오류 방지 개선
             delta = data['close'].diff()
             gain = delta.where(delta > 0, 0).rolling(window=14).mean()
             loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-            rs = gain / loss
+            
+            # 0으로 나누기 방지를 위한 강화된 안전장치
+            epsilon = 1e-10  # 아주 작은 값으로 대체
+            
+            # loss가 0에 가까우면 RSI는 100에 가까워짐 (모든 변화가 긍정적인 경우)
+            rs = gain / (loss + epsilon)
             data['RSI'] = 100 - (100 / (1 + rs))
             
             # MACD 계산
@@ -1328,20 +1333,21 @@ class GPTTradingStrategy:
 5. 예상 보유기간
 
 결과는 반드시 다음 키를 포함한 JSON 형식으로 제공해주세요:
-- action: "BUY", "SELL", "HOLD" 중 하나
-- confidence: 0.0~1.0 사이의 신뢰도
-- analysis_summary: 분석 요약 (200자 이내)
-- target_price: 목표가
-- stop_loss: 손절가
-- expected_holding_period: 예상 보유 기간
-"""
+{{"action": "BUY", "SELL", 또는 "HOLD" 중 하나,
+"confidence": 0.0~1.0 사이의 신뢰도,
+"analysis_summary": "분석 요약 (200자 이내)",
+"target_price": 목표가,
+"stop_loss": 손절가,
+"expected_holding_period": "예상 보유 기간"}}
+
+반드시 올바른 JSON 형식으로 응답해주세요. 모든 문자열은 쌍따옴표로 감싸주세요."""
 
             # GPT에 직접 요청
             response = self.analyzer.openai_client.chat.completions.create(
                 model="gpt-4o",
                 temperature=0.7,
                 messages=[
-                    {"role": "system", "content": "당신은 실시간 주식 트레이딩 신호 분석 전문가입니다."},
+                    {"role": "system", "content": "당신은 실시간 주식 트레이딩 신호 분석 전문가입니다. 응답은 항상 올바른 JSON 형식으로 제공해주세요."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -1352,10 +1358,27 @@ class GPTTradingStrategy:
             import re
             import json
             
+            # 응답에서 JSON 부분만 추출
             json_match = re.search(r'```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})', response_content)
+            
             if json_match:
+                # JSON 문자열 추출 및 전처리
                 json_str = json_match.group(1) or json_match.group(2)
+                
+                # JSON 문법 오류 수정을 위한 전처리
+                # 1. 작은따옴표를 큰따옴표로 변경
+                json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
+                json_str = re.sub(r':\s*\'([^\']*)\'', r': "\1"', json_str)
+                
+                # 2. 후행 쉼표 제거
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                # 3. 키와 문자열 값이 큰따옴표로 감싸져 있는지 확인
+                json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
+                
                 try:
+                    # 전처리된 JSON 문자열 파싱
                     result = json.loads(json_str)
                     
                     # 필요한 필드 추가
@@ -1366,12 +1389,50 @@ class GPTTradingStrategy:
                     if 'timestamp' not in result:
                         result['timestamp'] = datetime.datetime.now().isoformat()
                     
+                    logger.info(f"{symbol} JSON 파싱 성공")
                     return result
                     
-                except Exception as e:
-                    logger.error(f"GPT 응답 JSON 파싱 중 오류: {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON 파싱 오류 (전처리 후): {e}, JSON 문자열: {json_str[:100]}...")
+                    
+                    # 파싱 실패 시 더 강력한 정규식으로 재시도
+                    try:
+                        # 모든 키-값 쌍을 개별적으로 추출
+                        action_match = re.search(r'"action"\s*:\s*"([^"]*)"', json_str)
+                        confidence_match = re.search(r'"confidence"\s*:\s*([\d\.]+)', json_str)
+                        summary_match = re.search(r'"analysis_summary"\s*:\s*"([^"]*)"', json_str)
+                        target_match = re.search(r'"target_price"\s*:\s*([\d\.]+)', json_str)
+                        stop_match = re.search(r'"stop_loss"\s*:\s*([\d\.]+)', json_str)
+                        period_match = re.search(r'"expected_holding_period"\s*:\s*"([^"]*)"', json_str)
+                        
+                        # 수동으로 결과 딕셔너리 구성
+                        manual_result = {
+                            'symbol': symbol,
+                            'current_price': current_price,
+                            'timestamp': datetime.datetime.now().isoformat()
+                        }
+                        
+                        if action_match:
+                            manual_result['action'] = action_match.group(1)
+                        if confidence_match:
+                            manual_result['confidence'] = float(confidence_match.group(1))
+                        if summary_match:
+                            manual_result['analysis_summary'] = summary_match.group(1)
+                        if target_match:
+                            manual_result['target_price'] = float(target_match.group(1))
+                        if stop_match:
+                            manual_result['stop_loss'] = float(stop_match.group(1))
+                        if period_match:
+                            manual_result['expected_holding_period'] = period_match.group(1)
+                            
+                        logger.info(f"{symbol} 수동 파싱 성공")
+                        return manual_result
+                        
+                    except Exception as e2:
+                        logger.error(f"수동 파싱 시도 중 오류: {e2}")
             
             # JSON 파싱 실패 시 기본 결과 반환
+            logger.warning(f"{symbol} JSON 파싱 실패, 기본 결과 반환")
             from datetime import datetime
             
             # 텍스트 분석으로 action 결정 시도
@@ -1386,8 +1447,8 @@ class GPTTradingStrategy:
                 'action': action,
                 'confidence': 0.6,  # 중간 신뢰도
                 'analysis_summary': response_content[:200] + "...",
-                'target_price': current_price * 1.05,
-                'stop_loss': current_price * 0.95,
+                'target_price': current_price * 1.05 if action == "BUY" else (current_price * 0.95 if action == "SELL" else current_price),
+                'stop_loss': current_price * 0.95 if action == "BUY" else (current_price * 1.05 if action == "SELL" else current_price),
                 'expected_holding_period': "1-3일",
                 'timestamp': datetime.now().isoformat(),
                 'raw_response': response_content[:500]
@@ -1461,7 +1522,10 @@ class GPTTradingStrategy:
                     # 매도 결정
                     if action == 'SELL' and confidence >= self.sell_confidence_threshold:
                         # 매도 결정에 필요한 정보 추가
-                        profit_loss_pct = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
+                        # 0으로 나누기 방지 로직 추가
+                        profit_loss_pct = 0.0
+                        if avg_price > 0:
+                            profit_loss_pct = ((current_price / avg_price) - 1) * 100
                         
                         sell_decision = {
                             'symbol': symbol,
@@ -1561,6 +1625,11 @@ class GPTTradingStrategy:
                     day_trading_score = candidate.get('day_trading_score', 0)
                     price = candidate.get('current_price', 0)
                     
+                    # 가격이 0이거나 None인 경우 처리
+                    if price is None or price <= 0:
+                        logger.warning(f"{symbol} 가격이 유효하지 않습니다: {price}")
+                        continue
+                    
                     # 점수가 충분히 높은 경우만 매수 고려
                     if momentum_score >= 80 or day_trading_score >= 80:
                         # 단타 매매에 적합한 금액 결정 (가용 현금의 10-20%)
@@ -1578,8 +1647,11 @@ class GPTTradingStrategy:
                             self.autonomous_max_trade_amount
                         )
                         
-                        # 수량 계산
-                        quantity = int(max_amount / price)
+                        # 수량 계산 (0으로 나누기 방지)
+                        quantity = 0
+                        if price > 0:
+                            quantity = int(max_amount / price)
+                            
                         if quantity < 1:
                             continue
                             
@@ -1713,7 +1785,7 @@ class GPTTradingStrategy:
                     logger.error(f"GPT 응답 JSON 파싱 중 오류: {e}")
             
             # JSON 파싱 실패 시 기본 종목 반환 (빈 리스트)
-            logger.error("GPT 응답에서 유효한 JSON을 추출할 수 없습니다")
+            logger.error(f"{market} 시장에서 유효한 JSON을 추출할 수 없습니다")
             return []
             
         except Exception as e:
@@ -1742,6 +1814,20 @@ class GPTTradingStrategy:
             if stock_data is not None and not stock_data.empty:
                 # 기본 주가 정보
                 try:
+                    # RSI 재계산 추가 - 0으로 나누기 오류 방지 (개선된 버전)
+                    if 'Close' in stock_data.columns and len(stock_data) > 14 and 'RSI' not in stock_data.columns:
+                        delta = stock_data['Close'].diff()
+                        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+                        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+                        
+                        # 더 강화된 0으로 나누기 방지를 위한 안전장치
+                        epsilon = 1e-10  # 아주 작은 값으로 대체
+                        
+                        # loss가 0이면 RSI = 100 (모든 변화가 긍정적인 경우)
+                        # loss가 0이 아니면 일반적인 RSI 공식 적용
+                        rs = gain / (loss + epsilon)
+                        stock_data['RSI'] = 100 - (100 / (1 + rs))
+                    
                     recent_close = stock_data['Close'].iloc[-1]
                     if current_price is None:
                         current_price = recent_close
@@ -1758,20 +1844,26 @@ class GPTTradingStrategy:
                     if 'Volume' in stock_data.columns and len(stock_data) >= 20:
                         avg_volume = stock_data['Volume'].tail(20).mean()
                         latest_volume = stock_data['Volume'].iloc[-1]
-                        volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1
+                        volume_ratio = latest_volume / (avg_volume + epsilon) if avg_volume > 0 else 1
                         
                         data_summary['volume_ratio'] = f"{volume_ratio:.2f}x"
                     
-                    # 기술적 지표 추가
-                    if 'RSI' in stock_data.columns:
+                    # 기술적 지표 추가 - None 체크 추가
+                    if 'RSI' in stock_data.columns and not pd.isna(stock_data['RSI'].iloc[-1]):
                         data_summary['RSI'] = f"{stock_data['RSI'].iloc[-1]:.2f}"
                         
-                    if 'MACD' in stock_data.columns and 'MACD_signal' in stock_data.columns:
+                    if ('MACD' in stock_data.columns and 'MACD_signal' in stock_data.columns and 
+                        not pd.isna(stock_data['MACD'].iloc[-1]) and not pd.isna(stock_data['MACD_signal'].iloc[-1])):
                         data_summary['MACD'] = f"{stock_data['MACD'].iloc[-1]:.4f}"
                         data_summary['MACD_signal'] = f"{stock_data['MACD_signal'].iloc[-1]:.4f}"
                 
                 except Exception as e:
                     logger.error(f"{symbol} 주가 데이터 요약 중 오류: {e}")
+            
+            # 현재가 값이 None인 경우 기본값 설정
+            if current_price is None:
+                current_price = 0
+                logger.warning(f"{symbol} 현재가 정보가 없어 기본값 0으로 설정합니다.")
             
             # GPT 프롬프트 구성
             prompt = f"""다음 종목에 대한 급등주 분석과 단타매매 적합성을 평가해주세요:
@@ -1789,7 +1881,7 @@ class GPTTradingStrategy:
 4. 추천 매매 전략 (예: 돌파 매수, 조정 후 매수, 추세 추종 등)
 5. 모멘텀 점수 (0-100)와 단타매매 적합성 점수 (0-100)
 
-결과는 다음과 같은 JSON 형식으로 제공해주세요:
+결과는 반드시 다음과 같은 JSON 형식으로 제공해주세요:
 {{
   "is_momentum": true/false,
   "momentum_reason": "모멘텀 판단 이유",
@@ -1801,27 +1893,45 @@ class GPTTradingStrategy:
   "momentum_score": 모멘텀 점수 (0-100),
   "day_trading_score": 단타매매 적합성 점수 (0-100),
   "holding_period": "추천 보유 기간 (예: '당일', '1-2일')"
-}}"""
+}}
+
+반드시 올바른 JSON 형식으로 응답해주세요. 모든 문자열은 쌍따옴표로 감싸주세요."""
 
             # GPT에 직접 요청
             response = self.analyzer.openai_client.chat.completions.create(
                 model="gpt-4o",
                 temperature=0.7,
                 messages=[
-                    {"role": "system", "content": "당신은 주식 모멘텀 분석 및 단타매매 전문가입니다."},
+                    {"role": "system", "content": "당신은 주식 모멘텀 분석 및 단타매매 전문가입니다. 응답은 항상 올바른 JSON 형식으로 제공해주세요."},
                     {"role": "user", "content": prompt}
                 ]
             )
             
             response_content = response.choices[0].message.content
             
-            # JSON 추출
+            # JSON 추출 시도
             import re
             import json
             
+            # 응답에서 JSON 부분만 추출
             json_match = re.search(r'```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})', response_content)
+            
             if json_match:
+                # JSON 문자열 추출 및 전처리
                 json_str = json_match.group(1) or json_match.group(2)
+                
+                # JSON 문법 오류 수정을 위한 전처리
+                # 1. 작은따옴표를 큰따옴표로 변경
+                json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
+                json_str = re.sub(r':\s*\'([^\']*)\'', r': "\1"', json_str)
+                
+                # 2. 후행 쉼표 제거
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                # 3. 키와 문자열 값이 큰따옴표로 감싸져 있는지 확인
+                json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
+                
                 try:
                     result = json.loads(json_str)
                     
@@ -1834,6 +1944,7 @@ class GPTTradingStrategy:
                     if result.get('momentum_score', 0) >= 70 or result.get('day_trading_score', 0) >= 70:
                         self.add_momentum_opportunity({
                             'symbol': symbol,
+                            'name': symbol,
                             'momentum_score': result.get('momentum_score', 0),
                             'day_trading_score': result.get('day_trading_score', 0),
                             'current_price': current_price,
@@ -1847,8 +1958,58 @@ class GPTTradingStrategy:
                     
                     return result
                     
-                except Exception as e:
-                    logger.error(f"GPT 응답 JSON 파싱 중 오류: {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON 파싱 오류 (전처리 후): {e}, JSON 문자열: {json_str[:100]}...")
+                    
+                    # 파싱 실패 시 더 강력한 정규식으로 재시도
+                    try:
+                        # 모든 키-값 쌍을 개별적으로 추출
+                        is_momentum_match = re.search(r'"is_momentum"\s*:\s*(true|false)', json_str)
+                        momentum_reason_match = re.search(r'"momentum_reason"\s*:\s*"([^"]*)"', json_str)
+                        day_trading_suitable_match = re.search(r'"day_trading_suitable"\s*:\s*(true|false)', json_str)
+                        day_trading_reason_match = re.search(r'"day_trading_reason"\s*:\s*"([^"]*)"', json_str)
+                        target_price_match = re.search(r'"target_price"\s*:\s*([\d\.]+)', json_str)
+                        stop_loss_match = re.search(r'"stop_loss"\s*:\s*([\d\.]+)', json_str)
+                        strategy_match = re.search(r'"strategy"\s*:\s*"([^"]*)"', json_str)
+                        momentum_score_match = re.search(r'"momentum_score"\s*:\s*([\d\.]+)', json_str)
+                        day_trading_score_match = re.search(r'"day_trading_score"\s*:\s*([\d\.]+)', json_str)
+                        holding_period_match = re.search(r'"holding_period"\s*:\s*"([^"]*)"', json_str)
+                        
+                        # 수동으로 결과 딕셔너리 구성
+                        manual_result = {
+                            'symbol': symbol,
+                            'current_price': current_price,
+                            'timestamp': datetime.datetime.now().isoformat()
+                        }
+                        
+                        if is_momentum_match:
+                            manual_result['is_momentum'] = is_momentum_match.group(1) == 'true'
+                        if momentum_reason_match:
+                            manual_result['momentum_reason'] = momentum_reason_match.group(1)
+                        if day_trading_suitable_match:
+                            manual_result['day_trading_suitable'] = day_trading_suitable_match.group(1) == 'true'
+                        if day_trading_reason_match:
+                            manual_result['day_trading_reason'] = day_trading_reason_match.group(1)
+                        if target_price_match:
+                            manual_result['target_price'] = float(target_price_match.group(1))
+                        if stop_loss_match:
+                            manual_result['stop_loss'] = float(stop_loss_match.group(1))
+                        if strategy_match:
+                            manual_result['strategy'] = strategy_match.group(1)
+                        if momentum_score_match:
+                            manual_result['momentum_score'] = float(momentum_score_match.group(1))
+                        if day_trading_score_match:
+                            manual_result['day_trading_score'] = float(day_trading_score_match.group(1))
+                        if holding_period_match:
+                            manual_result['holding_period'] = holding_period_match.group(1)
+                            
+                        # 필수 필드 확인
+                        if 'momentum_score' in manual_result or 'day_trading_score' in manual_result:
+                            logger.info(f"{symbol} 수동 파싱 성공")
+                            return manual_result
+                            
+                    except Exception as e2:
+                        logger.error(f"수동 파싱 시도 중 오류: {e2}")
             
             # JSON 파싱 실패 시 기본 결과 반환
             logger.error(f"{symbol} GPT 응답에서 유효한 JSON을 추출할 수 없습니다")

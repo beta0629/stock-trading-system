@@ -23,7 +23,7 @@ from src.ai_analysis.gemini_analyzer import GeminiAnalyzer  # Gemini 분석기 �
 from src.ai_analysis.hybrid_analysis_strategy import HybridAnalysisStrategy  # 하이브리드 분석 전략 추가
 from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy, SignalType
 from src.ai_analysis.stock_selector import StockSelector
-from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_market_schedule, get_current_time, get_current_time_str
+from src.utils.time_utils import now, format_time, get_korean_datetime_format, is_market_open, get_market_schedule, get_current_time, get_current_time_str, convert_time
 import config
 
 # 로깅 설정
@@ -369,6 +369,29 @@ class StockAnalysisSystem:
                 logger.warning("GPT 자동 매매 시스템이 초기화되지 않았습니다.")
                 return False
                 
+            # 거래 가능한 시간인지 확인 (한국 시장 또는 미국 시장 중 하나라도 열려있으면 실행)
+            kr_market_status = get_market_schedule(date=None, market="KR", config=self.config)
+            us_market_status = get_market_schedule(date=None, market="US", config=self.config)
+            
+            current_time_str = get_current_time_str(format_str='%H:%M')
+            
+            # 어떤 시장이라도 열려있으면 거래 실행
+            if not kr_market_status['is_open'] and not us_market_status['is_open']:
+                logger.info(f"현재 ({current_time_str}) 한국/미국 시장 모두 개장되지 않았습니다. GPT 매매 사이클을 건너뜁니다.")
+                return False
+                
+            # 한국장 여부 확인
+            if kr_market_status['is_open']:
+                kr_open_time = kr_market_status['open_time'].strftime('%H:%M')
+                kr_close_time = kr_market_status['close_time'].strftime('%H:%M')
+                logger.info(f"현재 한국 시장 거래 시간: {kr_open_time}-{kr_close_time}")
+                
+            # 미국장 여부 확인
+            if us_market_status['is_open']:
+                us_open_time = convert_time(us_market_status['open_time'], from_timezone=self.config.EST, to_timezone=self.config.KST).strftime('%H:%M')
+                us_close_time = convert_time(us_market_status['close_time'], from_timezone=self.config.EST, to_timezone=self.config.KST).strftime('%H:%M')
+                logger.info(f"현재 미국 시장 거래 시간 (한국시간): {us_open_time}-{us_close_time}")
+                
             # GPT 자동 매매 사이클 실행
             self.gpt_auto_trader.run_cycle()
             logger.info("GPT 자동 매매 사이클 완료")
@@ -384,9 +407,15 @@ class StockAnalysisSystem:
         logger.info("한국 주식 분석 시작")
         
         # 시장 개장 여부 확인 (통합 시간 유틸리티 사용)
-        if not is_market_open("KR", self.config):
-            logger.info("현재 한국 시장이 개장되지 않았습니다. 분석을 건너뜁니다.")
+        market_status = get_market_schedule(date=None, market="KR", config=self.config)
+        if not market_status['is_open']:
+            current_time_str = get_current_time_str(format_str='%H:%M')
+            logger.info(f"현재 한국 시장이 개장되지 않았습니다 (현재 시간: {current_time_str}). 분석을 건너뜁니다.")
             return
+        else:
+            open_time_str = market_status['open_time'].strftime('%H:%M')
+            close_time_str = market_status['close_time'].strftime('%H:%M')
+            logger.info(f"한국 시장 거래 시간: {open_time_str}-{close_time_str}")
         
         # 데이터 수집을 위한 딕셔너리 (ChatGPT 일일 리포트용)
         collected_data = {}
@@ -457,13 +486,36 @@ class StockAnalysisSystem:
                     self.send_notification('signal', signals)
                     logger.info(f"종목 {code}에 대한 매매 시그널 감지: {len(signals['signals'])}개")
                     
-                    # 자동 매매 처리
+                    # 자동 매매 처리 - 거래 시간 확인 후 실행
                     if self.auto_trading_enabled and self.auto_trader:
-                        if self.auto_trader.is_trading_allowed(code, "KR"):
-                            logger.info(f"종목 {code}에 대한 자동 매매 처리 시작")
+                        current_time = get_current_time(timezone=self.config.KST).time()
+                        market_open = market_status['open_time'].time()
+                        market_close = market_status['close_time'].time()
+                        
+                        # 장 마감 10분 전까지만 매매 실행 (마감 임박 매매 방지)
+                        closing_time_buffer_minutes = 10
+                        closing_time_buffer = market_close.replace(
+                            minute=market_close.minute - closing_time_buffer_minutes if market_close.minute >= closing_time_buffer_minutes else market_close.minute,
+                            hour=market_close.hour - 1 if market_close.minute < closing_time_buffer_minutes else market_close.hour
+                        )
+                        
+                        # 거래 시간 체크 (개장 후 10분 ~ 마감 10분 전까지)
+                        opening_time_buffer_minutes = 10
+                        opening_time_buffer = market_open.replace(
+                            minute=market_open.minute + opening_time_buffer_minutes,
+                            hour=market_open.hour + 1 if market_open.minute + opening_time_buffer_minutes >= 60 else market_open.hour
+                        )
+                        
+                        is_trading_time = (opening_time_buffer <= current_time <= closing_time_buffer)
+                        
+                        if is_trading_time and self.auto_trader.is_trading_allowed(code, "KR"):
+                            logger.info(f"종목 {code}에 대한 자동 매매 처리 시작 (거래 시간: {current_time.strftime('%H:%M')})")
                             self.auto_trader.process_signals(signals)
                         else:
-                            logger.info(f"종목 {code}에 대한 자동 매매가 현재 허용되지 않습니다.")
+                            if not is_trading_time:
+                                logger.info(f"종목 {code}에 대한 자동 매매가 최적 거래 시간({opening_time_buffer.strftime('%H:%M')}-{closing_time_buffer.strftime('%H:%M')})이 아니어서 보류됩니다.")
+                            else:
+                                logger.info(f"종목 {code}에 대한 자동 매매가 현재 허용되지 않습니다.")
                 
                 # 주기적으로 ChatGPT 상세 분석 실행 (하루에 한 번)
                 # 현재 시각이 오전 10시에서 10시 30분 사이일 경우에만 실행
@@ -509,9 +561,18 @@ class StockAnalysisSystem:
         logger.info("미국 주식 분석 시작")
         
         # 시장 개장 여부 확인 (통합 시간 유틸리티 사용)
-        if not is_market_open("US", self.config):
-            logger.info("현재 미국 시장이 개장되지 않았습니다. 분석을 건너뜁니다.")
+        market_status = get_market_schedule(date=None, market="US", config=self.config)
+        if not market_status['is_open']:
+            current_time_str = get_current_time_str(timezone=self.config.EST, format_str='%H:%M')
+            current_time_kst_str = get_current_time_str(format_str='%H:%M')
+            logger.info(f"현재 미국 시장이 개장되지 않았습니다 (현재 시간 EST: {current_time_str}, KST: {current_time_kst_str}). 분석을 건너뜁니다.")
             return
+        else:
+            open_time_str = market_status['open_time'].strftime('%H:%M')
+            close_time_str = market_status['close_time'].strftime('%H:%M')
+            open_time_kst = convert_time(market_status['open_time'], from_timezone=self.config.EST, to_timezone=self.config.KST).strftime('%H:%M')
+            close_time_kst = convert_time(market_status['close_time'], from_timezone=self.config.EST, to_timezone=self.config.KST).strftime('%H:%M')
+            logger.info(f"미국 시장 거래 시간: {open_time_str}-{close_time_str} (EST) / {open_time_kst}-{close_time_kst} (KST)")
         
         # 데이터 수집을 위한 딕셔너리 (ChatGPT 일일 리포트용)
         collected_data = {}
@@ -582,13 +643,36 @@ class StockAnalysisSystem:
                     self.send_notification('signal', signals)
                     logger.info(f"종목 {symbol}에 대한 매매 시그널 감지: {len(signals['signals'])}개")
                     
-                    # 자동 매매 처리
+                    # 자동 매매 처리 - 거래 시간 확인 후 실행
                     if self.auto_trading_enabled and self.auto_trader:
-                        if self.auto_trader.is_trading_allowed(symbol, "US"):
-                            logger.info(f"종목 {symbol}에 대한 자동 매매 처리 시작")
+                        current_time = get_current_time(timezone=self.config.EST).time()
+                        market_open = market_status['open_time'].time()
+                        market_close = market_status['close_time'].time()
+                        
+                        # 장 마감 15분 전까지만 매매 실행 (마감 임박 매매 방지)
+                        closing_time_buffer_minutes = 15  # 미국 시장은 변동성이 클 수 있어 더 보수적으로 설정
+                        closing_time_buffer = market_close.replace(
+                            minute=market_close.minute - closing_time_buffer_minutes if market_close.minute >= closing_time_buffer_minutes else market_close.minute,
+                            hour=market_close.hour - 1 if market_close.minute < closing_time_buffer_minutes else market_close.hour
+                        )
+                        
+                        # 거래 시간 체크 (개장 후 15분 ~ 마감 15분 전까지)
+                        opening_time_buffer_minutes = 15  # 미국 시장은 개장 초기 변동성이 클 수 있어 더 보수적으로 설정
+                        opening_time_buffer = market_open.replace(
+                            minute=market_open.minute + opening_time_buffer_minutes,
+                            hour=market_open.hour + 1 if market_open.minute + opening_time_buffer_minutes >= 60 else market_open.hour
+                        )
+                        
+                        is_trading_time = (opening_time_buffer <= current_time <= closing_time_buffer)
+                        
+                        if is_trading_time and self.auto_trader.is_trading_allowed(symbol, "US"):
+                            logger.info(f"종목 {symbol}에 대한 자동 매매 처리 시작 (거래 시간 EST: {current_time.strftime('%H:%M')})")
                             self.auto_trader.process_signals(signals)
                         else:
-                            logger.info(f"종목 {symbol}에 대한 자동 매매가 현재 허용되지 않습니다.")
+                            if not is_trading_time:
+                                logger.info(f"종목 {symbol}에 대한 자동 매매가 최적 거래 시간({opening_time_buffer.strftime('%H:%M')}-{closing_time_buffer.strftime('%H:%M')}) EST가 아니어서 보류됩니다.")
+                            else:
+                                logger.info(f"종목 {symbol}에 대한 자동 매매가 현재 허용되지 않습니다.")
                 
                 # 주기적으로 ChatGPT 상세 분석 실행 (하루에 한 번)
                 # 현재 시각이 오후 2시에서 2시 30분 사이일 경우에만 실행

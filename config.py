@@ -91,6 +91,7 @@ KAKAO_API_KEY = os.environ.get("KAKAO_API_KEY")  # 카카오 REST API 키
 KAKAO_ACCESS_TOKEN = os.environ.get("KAKAO_ACCESS_TOKEN")  # 카카오 액세스 토큰
 KAKAO_REFRESH_TOKEN = os.environ.get("KAKAO_REFRESH_TOKEN")  # 카카오 리프레시 토큰
 USE_KAKAO = os.environ.get("USE_KAKAO", "True").lower() == "true"  # 카카오톡 메시지 사용 여부
+KAKAO_MSG_ENABLED = USE_KAKAO  # 코드 일관성을 위해 KAKAO_MSG_ENABLED도 동일하게 설정
 
 # 국내 주식 설정
 KR_MARKET_OPEN_TIME = "09:00"  # 한국 시장 개장 시간
@@ -98,7 +99,7 @@ KR_MARKET_CLOSE_TIME = "15:30"  # 한국 시장 폐장 시간
 
 # 애프터 마켓(시간외 거래) 설정 추가
 KR_AFTER_MARKET_ENABLED = True  # 애프터 마켓 활성화 여부
-KR_AFTER_MARKET_OPEN_TIME = "16:00"  # 시간외 거래 개장 시간
+KR_AFTER_MARKET_OPEN_TIME = "08:00"  # 시간외 거래 개장 시간 (오전 8시부터)
 KR_AFTER_MARKET_CLOSE_TIME = "18:00"  # 시간외 거래 폐장 시간
 KR_AFTER_MARKET_TRADING = True  # 시간외 거래 활성화 여부
 USE_EXTENDED_HOURS = True  # 확장 거래 시간 사용 여부
@@ -133,9 +134,9 @@ KIS_REAL_TRADING = True  # 실전투자 모드로 설정 (False = 모의투자, 
 INITIAL_CAPITAL = 1000000  # 실전투자 초기 자본금 (100만원)
 
 # 하락장 매수 전략 설정
-DIP_BUYING_ONLY = True  # 하락장에서만 매수 (True = 하락장만 매수, False = 상관없이 매수)
-DIP_THRESHOLD_PCT = -3.0  # 하락 기준 퍼센트 (최소 3% 하락한 종목만 매수)
-DIP_PERIOD = 5  # 하락 측정 기간 (최근 5일 동안 가격 변동 측정)
+DIP_BUYING_ONLY = False  # 하락장에서만 매수 (True = 하락장만 매수, False = 상관없이 매수)
+DIP_THRESHOLD_PCT = -2.0  # 하락 기준 퍼센트 완화 (기존 -3.0%)
+DIP_PERIOD = 3  # 하락 측정 기간 단축 (기존 5일)
 
 # 모의투자 시장 제한 설정
 VIRTUAL_TRADING_KR_ONLY = os.environ.get("VIRTUAL_TRADING_KR_ONLY", "True").lower() == "true"  # 모의투자에서 국내주식만 거래 가능 여부
@@ -194,21 +195,20 @@ RSI_OVERSOLD = 25
 RSI_OVERBOUGHT = 75
 
 # 단타 매매 설정
-DAY_TRADING_MODE = os.environ.get("DAY_TRADING_MODE", "True").lower() == "true"  # 단타 매매 모드 활성화 여부
-DAY_TRADING_MAX_POSITIONS = int(os.environ.get("DAY_TRADING_MAX_POSITIONS", "3"))  # 단타 매매 시 최대 동시 포지션 수
-DAY_TRADING_PROFIT_THRESHOLD = float(os.environ.get("DAY_TRADING_PROFIT_THRESHOLD", "2.0"))  # 단타 매매 이익 실현 기준 (%)
-DAY_TRADING_STOP_LOSS = float(os.environ.get("DAY_TRADING_STOP_LOSS", "1.0"))  # 단타 매매 손절 기준 (%)
-DAY_TRADING_MONITOR_INTERVAL = int(os.environ.get("DAY_TRADING_MONITOR_INTERVAL", "3"))  # 단타 매매 모니터링 간격 (분)
-DAY_TRADING_POSITION_HOLD_MAX = int(os.environ.get("DAY_TRADING_POSITION_HOLD_MAX", "180"))  # 단타 매매 최대 보유 시간 (분)
-DAY_TRADING_VOLATILITY_THRESHOLD = float(os.environ.get("DAY_TRADING_VOLATILITY_THRESHOLD", "1.5"))  # 단타 매매 대상 종목 변동성 기준 (%)
-MAX_REALTIME_WATCHLIST = int(os.environ.get("MAX_REALTIME_WATCHLIST", "50"))  # 실시간 모니터링 최대 종목 수
+DAY_TRADING_MODE = True  # 단타 매매 모드 활성화 여부
+DAY_TRADING_MAX_POSITIONS = 5  # 단타 매매 시 최대 동시 포지션 수 증가 (기존 3)
+DAY_TRADING_PROFIT_THRESHOLD = 3.0  # 단타 매매 이익 실현 기준 상향 (기존 2.0%)
+DAY_TRADING_STOP_LOSS = 2.0  # 단타 매매 손절 기준 조정 (기존 1.0%)
+DAY_TRADING_MONITOR_INTERVAL = 2  # 단타 매매 모니터링 간격 단축 (기존 3분)
+DAY_TRADING_POSITION_HOLD_MAX = 120  # 단타 매매 최대 보유 시간 단축 (기존 180분)
+DAY_TRADING_VOLATILITY_THRESHOLD = 2.0  # 단타 매매 대상 종목 변동성 기준 상향 (기존 1.5%)
 
-# 급등주 감지 및 매매 설정 - 최적화
-SURGE_DETECTION_ENABLED = os.environ.get("SURGE_DETECTION_ENABLED", "True").lower() == "true"  # 급등주 감지 활성화
-SURGE_THRESHOLD = float(os.environ.get("SURGE_THRESHOLD", "5.0"))  # 급등 기준(%)
-SURGE_VOLUME_RATIO = float(os.environ.get("SURGE_VOLUME_RATIO", "2.0"))  # 급등주 거래량 증가 비율 기준
-SURGE_SCORE_THRESHOLD = int(os.environ.get("SURGE_SCORE_THRESHOLD", "7"))  # 급등주 매매 점수 기준 (1-10)
-MAX_SURGE_POSITIONS = int(os.environ.get("MAX_SURGE_POSITIONS", "2"))  # 급등주 최대 포지션 수
+# 급등주 감지 및 매매 설정 - 중소형주 중심 최적화
+SURGE_DETECTION_ENABLED = True  # 급등주 감지 활성화
+SURGE_THRESHOLD = 3.0  # 급등 기준 하향 (기존 5.0%)
+SURGE_VOLUME_RATIO = 1.5  # 급등주 거래량 증가 비율 기준 하향 (기존 2.0)
+SURGE_SCORE_THRESHOLD = 6  # 급등주 매매 점수 기준 하향 (기존 7)
+MAX_SURGE_POSITIONS = 3  # 급등주 최대 포지션 수 증가 (기존 2)
 SURGE_SCAN_INTERVAL = int(os.environ.get("SURGE_SCAN_INTERVAL", "10"))  # 급등주 스캔 간격(분)
 SURGE_PROFIT_MULTIPLE = float(os.environ.get("SURGE_PROFIT_MULTIPLE", "1.5"))  # 급등주 익절 배수
 SURGE_GPT_ANALYSIS_ENABLED = os.environ.get("SURGE_GPT_ANALYSIS_ENABLED", "True").lower() == "true"  # GPT를 사용한 급등주 분석 활성화
@@ -221,8 +221,13 @@ REALTIME_MOMENTUM_DETECTION = True  # 실시간 모멘텀 감지 활성화
 MOMENTUM_SCORE_THRESHOLD = 85  # 모멘텀 점수 임계값 (0-100)
 HYBRID_ANALYSIS_MODE = True  # 하이브리드 분석 모드(기술적 지표 + GPT 분석)
 
+# 데이터베이스 설정
+USE_DATABASE = False  # 데이터베이스 사용 비활성화 - 실시간 매매만 사용
+DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # 데이터베이스 타입 (sqlite, mysql)
+
 # 실시간 트레이더 설정
 REALTIME_TRADING_ENABLED = True  # 실시간 트레이딩 활성화
+REALTIME_ONLY_MODE = True  # 실시간 매매 전용 모드로 설정 (추가된 설정)
 REALTIME_SCAN_INTERVAL_SECONDS = 30  # 실시간 스캔 간격 (초)
 REALTIME_USE_GPT_ANALYSIS = True  # 실시간 트레이딩에서 GPT 분석 사용
 REALTIME_GPT_CONFIDENCE_THRESHOLD = 0.8  # 실시간 GPT 신뢰도 임계값
@@ -234,50 +239,42 @@ REALTIME_STOP_LOSS_PERCENT = 3.0  # 실시간 트레이딩 손절 기준 (%)
 REALTIME_TAKE_PROFIT_PERCENT = 5.0  # 실시간 트레이딩 익절 기준 (%)
 REALTIME_MAX_HOLDING_MINUTES = 60  # 실시간 트레이딩 최대 보유 시간 (분)
 
-# GPT와 실시간 트레이딩 통합 설정
-GPT_TRADER_CONNECTION_ENABLED = True  # GPTAutoTrader와 RealtimeTrader 연결 활성화
-GPT_REALTIME_INSIGHTS_CACHE = 10  # GPT 실시간 인사이트 캐시 시간 (분)
-USE_HYBRID_TRADING_STRATEGY = True  # GPT와 기술적 지표를 조합한 하이브리드 매매 전략 사용
-HYBRID_GPT_WEIGHT = 0.7  # 하이브리드 전략에서 GPT 분석 가중치 (0-1)
-HYBRID_TECHNICAL_WEIGHT = 0.3  # 하이브리드 전략에서 기술적 분석 가중치 (0-1)
-
-# 실시간 트레이더 모니터링 설정
-REALTIME_TRADER_LOG_LEVEL = "INFO"  # 실시간 트레이더 로그 레벨 (DEBUG, INFO, WARNING, ERROR)
-REALTIME_TRADE_NOTIFICATION = True  # 실시간 거래 알림 활성화
-REALTIME_PERFORMANCE_METRICS_INTERVAL = 60  # 성능 지표 계산 간격 (분)
-
-# 미국 주식 종목 설정
-US_STOCKS = []
-
-# 데이터베이스 설정
-USE_DATABASE = os.environ.get("USE_DATABASE", "True").lower() == "true"  # 데이터베이스 사용 여부
-DB_TYPE = os.environ.get("DB_TYPE", "sqlite").lower()  # 데이터베이스 타입 (sqlite, mysql)
-
-# 데이터베이스 자동 백업 설정 추가
-DB_AUTO_BACKUP = os.environ.get("DB_AUTO_BACKUP", "True").lower() == "true"  # 자동 백업 여부
-DB_BACKUP_INTERVAL = int(os.environ.get("DB_BACKUP_INTERVAL", "24"))  # 백업 간격 (시간)
-
-# SQLite 설정
-SQLITE_DB_PATH = os.environ.get("SQLITE_DB_PATH", str(Path(__file__).parent / "data" / "stock_trading.db"))
-
-# MySQL 설정
-MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
-MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
-MYSQL_USER = os.environ.get("MYSQL_USER", "root")
-MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
-MYSQL_DB = os.environ.get("MYSQL_DB", "stock_trading")
-
-# 시장 강제 설정 (CI 환경에서 사용)
-FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "True").lower() == "true"  # 강제로 시장을 열림 상태로 간주
-
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': 'NVDA', 'name': 'NVIDIA Corporation'}, {'code': 'TSLA', 'name': 'Tesla, Inc.'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'AAPL', 'name': 'Apple Inc.'}, {'code': '035420', 'name': 'NAVER'}, {'code': 'MSFT', 'name': 'Microsoft Corporation'}, {'code': '068270', 'name': '셀트리온'}]
+# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '035420', 'name': 'NAVER'}, {'code': '035720', 'name': '카카오'}, {'code': '051910', 'name': 'LG화학'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 
 # 종목 코드 리스트 생성
 KR_STOCKS = []
+
+# 시장 시간 관련 설정
+FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "").lower() == "true"  # 시장 시간 강제 오픈 여부
+
+# 웹 인터페이스 설정
+WEB_UI_ENABLED = True  # 웹 인터페이스 활성화 여부
+WEB_PORT = int(os.environ.get("WEB_PORT", "3000"))  # 웹 서버 포트
+WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")  # 웹 서버 호스트
+WEB_DEBUG = os.environ.get("WEB_DEBUG", "False").lower() == "true"  # 웹 디버그 모드
+
+# 웹 인터페이스 기능 설정
+WEB_AUTO_REFRESH = True  # 웹 페이지 자동 새로고침 활성화
+WEB_REFRESH_INTERVAL = 30  # 웹 페이지 새로고침 간격 (초)
+WEB_REALTIME_CHART = True  # 실시간 차트 표시 활성화
+WEB_SHOW_LOGS = True  # 로그 표시 활성화
+WEB_MAX_LOG_ENTRIES = 1000  # 최대 로그 항목 수
+
+# 웹 인터페이스 자동 매매 설정
+WEB_AUTO_TRADING_CONTROLS = True  # 웹에서 자동 매매 제어 활성화
+WEB_STRATEGY_SELECTION = True  # 웹에서 전략 선택 활성화
+WEB_POSITION_LIMITS = 10  # 웹에서 설정 가능한 최대 포지션 수
+WEB_MAX_INVESTMENT_AMOUNT = 10000000  # 웹에서 설정 가능한 최대 투자 금액 (원)
+
+# 웹 인터페이스 사용자 설정
+MAX_POSITIONS_PER_USER = int(os.environ.get("MAX_POSITIONS_PER_USER", "10"))
+MAX_INVESTMENT_PER_TRADE_USER = int(os.environ.get("MAX_INVESTMENT_PER_TRADE_USER", "5000000"))
+MAX_DAILY_TRADES_USER = int(os.environ.get("MAX_DAILY_TRADES_USER", "10"))
+DEFAULT_STRATEGY_USER = os.environ.get("DEFAULT_STRATEGY_USER", "balanced")
 
 # 실행 환경 확인
 IS_CI_ENV = os.environ.get('CI') == 'true'
@@ -290,6 +287,7 @@ logger.info(f"데이터베이스 사용: {USE_DATABASE} (타입: {DB_TYPE})")
 logger.info(f"증권사 API 모드: {'실전투자' if KIS_REAL_TRADING else '모의투자'}")
 logger.info(f"GPT 자동 매매 기능: {GPT_AUTO_TRADING} (완전자율모드: {GPT_FULLY_AUTONOMOUS_MODE})")
 logger.info(f"실시간 GPT 연동: {REALTIME_GPT_INTEGRATION} (모멘텀 감지: {REALTIME_MOMENTUM_DETECTION})")
+logger.info(f"웹 인터페이스: {WEB_UI_ENABLED} (포트: {WEB_PORT})")
 
 # 스윙매매 설정
 SWING_TRADING_MODE = os.environ.get("SWING_TRADING_MODE", "False").lower() == "true"  # 스윙 매매 모드 활성화 여부
@@ -301,24 +299,75 @@ SWING_TRADING_MAX_HOLDING_DAYS = int(os.environ.get("SWING_TRADING_MAX_HOLDING_D
 SWING_TRADING_MONITOR_INTERVAL = int(os.environ.get("SWING_TRADING_MONITOR_INTERVAL", "60"))  # 스윙 매매 모니터링 간격 (분)
 SWING_SCORE_THRESHOLD = int(os.environ.get("SWING_SCORE_THRESHOLD", "75"))  # 스윙 매매 점수 임계값 (0-100)
 
-# 초보자 실전투자 설정 (스윙매매 중심 전략)
-GPT_STRATEGY_TYPE = "swing"  # 스윙매매 중심 전략 설정
-GPT_AGGRESSIVE_MODE = False  # 보수적 전략 사용
-DAY_TRADING_MODE = False  # 단타 매매 모드 비활성화
-SWING_TRADING_MODE = True  # 스윙 매매 모드 활성화
-SWING_TRADING_ALLOCATION = 0.8  # 자본금의 80%를 스윙매매에 할당
-DAY_TRADING_ALLOCATION = 0.2  # 자본금의 20%를 단타매매에 할당
+# 초보자 실전투자 설정 (단타매매 중심 전략으로 변경)
+GPT_STRATEGY_TYPE = "day_trading"  # 단타매매 중심 전략으로 설정
+GPT_AGGRESSIVE_MODE = True  # 공격적 전략 사용
+DAY_TRADING_MODE = True  # 단타 매매 모드 활성화
+SWING_TRADING_MODE = False  # 스윙 매매 모드 비활성화
+SWING_TRADING_ALLOCATION = 0.2  # 자본금의 20%를 스윙매매에 할당
+DAY_TRADING_ALLOCATION = 0.8  # 자본금의 80%를 단타매매에 할당
 
-# 리스크 관리 설정 최적화
-SWING_TRADING_STOP_LOSS = 4.0  # 스윙 매매 손절 기준 (%)
-SWING_TRADING_PROFIT_THRESHOLD = 8.0  # 스윙 매매 익절 기준 (%)
-SWING_TRADING_MIN_HOLDING_DAYS = 3  # 스윙 매매 최소 보유 일수
-SWING_TRADING_MAX_HOLDING_DAYS = 10  # 스윙 매매 최대 보유 일수
-SWING_SCORE_THRESHOLD = 80  # 스윙 매매 점수 임계값 (0-100)
-BEGINNER_MODE = True  # 초보자 모드 활성화 (위험 관리 강화)
-MAX_OPEN_POSITIONS = 2  # 동시 오픈 포지션 제한 (초보자용)
-MAX_DAILY_TRADES = 3  # 일일 최대 거래 횟수 제한
+# 웹 인터페이스 전략 설정
+WEB_STRATEGY_BALANCED = {
+    "name": "균형 (Balanced)",
+    "day_trading_allocation": 0.5,
+    "swing_trading_allocation": 0.5,
+    "max_positions": 5,
+    "stop_loss_percent": 5.0,
+    "take_profit_percent": 10.0,
+    "risk_level": "moderate"
+}
+
+WEB_STRATEGY_AGGRESSIVE = {
+    "name": "공격적 (Aggressive)",
+    "day_trading_allocation": 0.8,
+    "swing_trading_allocation": 0.2,
+    "max_positions": 7,
+    "stop_loss_percent": 7.0,
+    "take_profit_percent": 15.0,
+    "risk_level": "high"
+}
+
+WEB_STRATEGY_CONSERVATIVE = {
+    "name": "보수적 (Conservative)",
+    "day_trading_allocation": 0.3,
+    "swing_trading_allocation": 0.7,
+    "max_positions": 3,
+    "stop_loss_percent": 3.0,
+    "take_profit_percent": 7.0,
+    "risk_level": "low"
+}
+
+WEB_STRATEGY_DAY_TRADING = {
+    "name": "단타매매 (Day Trading)",
+    "day_trading_allocation": 1.0,
+    "swing_trading_allocation": 0.0,
+    "max_positions": 5,
+    "stop_loss_percent": 2.0,
+    "take_profit_percent": 5.0,
+    "risk_level": "high",
+    "position_hold_max_minutes": 120
+}
+
+WEB_STRATEGY_SWING_TRADING = {
+    "name": "스윙매매 (Swing Trading)",
+    "day_trading_allocation": 0.0,
+    "swing_trading_allocation": 1.0,
+    "max_positions": 5,
+    "stop_loss_percent": 5.0,
+    "take_profit_percent": 10.0,
+    "risk_level": "moderate",
+    "min_holding_days": 2,
+    "max_holding_days": 14
+}
+
+# 현재 활성화된 웹 전략
+CURRENT_WEB_STRATEGY = WEB_STRATEGY_DAY_TRADING  # 기본값으로 단타매매 전략 사용
+
+
+# GPT에 의해 추천된 미국 종목 목록
+US_STOCKS = []
 
 
 # GPT에 의해 추천된 미국 종목 정보 (코드와 이름)
-US_STOCK_INFO = [{'code': 'TSLA', 'name': 'Tesla, Inc.'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'AAPL', 'name': 'Apple Inc.'}]
+US_STOCK_INFO = [{'code': 'NVDA', 'name': 'NVIDIA Corporation'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'TSLA', 'name': 'Tesla, Inc.'}]

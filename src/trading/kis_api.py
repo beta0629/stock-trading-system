@@ -294,25 +294,50 @@ class KISAPI(BrokerBase):
             
             # API 요청 전 로그
             logger.info(f"한국투자증권 API 토큰 발급 요청 - URL: {url}")
+
+            # 재시도 로직 추가
+            max_retries = 3
+            retry_count = 0
+            retry_delay = 5  # 초 단위 대기 시간
             
-            # 토큰 발급 요청
-            response = requests.post(url, headers=headers, data=json.dumps(body))
-            response_data = response.json()
+            while retry_count < max_retries:
+                try:
+                    # 토큰 발급 요청
+                    response = requests.post(url, headers=headers, data=json.dumps(body))
+                    response_data = response.json()
+                    
+                    if response.status_code == 200:
+                        self.access_token = response_data.get('access_token')
+                        expires_in = response_data.get('expires_in', 86400)  # 기본 유효기간: 1일
+                        
+                        # datetime 직접 사용 대신 time_utils 사용
+                        current_time = get_current_time()
+                        self.token_expired_at = current_time + timedelta(seconds=expires_in)
+                        
+                        self.connected = True
+                        logger.info(f"한국투자증권 API 연결 성공. 토큰 만료시간: {self.token_expired_at}")
+                        return True
+                    else:
+                        err_msg = response_data.get('error_description', '')
+                        # 1분에 1회 요청 제한 오류인 경우
+                        if "접근토큰 발급 잠시 후 다시 시도하세요" in err_msg:
+                            retry_count += 1
+                            wait_time = retry_delay * (2 ** retry_count)  # 지수 백오프
+                            logger.warning(f"API 요청 제한 오류. {wait_time}초 후 재시도 ({retry_count}/{max_retries})... 오류: {err_msg}")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"한국투자증권 API 연결 실패: {err_msg}")
+                            return False
+                except Exception as req_err:
+                    retry_count += 1
+                    wait_time = retry_delay * (2 ** retry_count)
+                    logger.error(f"API 요청 중 오류 발생: {req_err}. {wait_time}초 후 재시도 ({retry_count}/{max_retries})...")
+                    time.sleep(wait_time)
             
-            if response.status_code == 200:
-                self.access_token = response_data.get('access_token')
-                expires_in = response_data.get('expires_in', 86400)  # 기본 유효기간: 1일
-                
-                # datetime 직접 사용 대신 time_utils 사용
-                current_time = get_current_time()
-                self.token_expired_at = current_time + timedelta(seconds=expires_in)
-                
-                self.connected = True
-                logger.info(f"한국투자증권 API 연결 성공. 토큰 만료시간: {self.token_expired_at}")
-                return True
-            else:
-                logger.error(f"한국투자증권 API 연결 실패: {response_data.get('error_description', '')}")
-                return False
+            # 최대 재시도 횟수 초과
+            logger.error(f"최대 재시도 횟수({max_retries})를 초과하여 API 연결에 실패했습니다.")
+            return False
                 
         except Exception as e:
             logger.error(f"한국투자증권 API 연결 실패: {e}")
@@ -1571,21 +1596,6 @@ class KISAPI(BrokerBase):
                             if price > 0 and order_type_str == 'limit':
                                 message += f"• 지정가: {price:,}원\n"
                             message += f"• 주문번호: {order_number}\n"
-                            
-                            # 보유 정보 추가
-                            if new_quantity > 0:
-                                message += f"• 보유수량: {new_quantity}주\n"
-                                message += f"• 평단가: {new_avg_price:,}원\n"
-                                
-                                # 기존 보유량이 있었다면 증가량 표시
-                                if old_quantity > 0:
-                                    quantity_diff = new_quantity - old_quantity
-                                    message += f"• 증가: {quantity_diff}주 (+{(quantity_diff * 100 / old_quantity):.1f}%)\n"
-                            else:
-                                # API로 바로 업데이트 안된 경우 추정치 표시
-                                estimated_quantity = old_quantity + quantity
-                                message += f"• 예상 보유수량: {estimated_quantity}주\n"
-                            
                             message += f"• 시장: {'국내' if market == 'KR' else '미국'}\n"
                             message += f"• 모드: {'모의투자' if not self.real_trading else '실전투자'}\n"
                             # 계좌 잔고 정보 추가
@@ -2104,27 +2114,79 @@ class KISAPI(BrokerBase):
         start_time = time.time()
         while time.time() - start_time < timeout:
             # 주문 상태 확인
-            order_status = self.get_order_status(order_number)
-            
-            if not order_status:
-                # 일시적인 조회 실패인 경우 재시도
-                time.sleep(1)
-                continue
+            try:
+                order_status = self.get_order_status(order_number)
                 
-            # 주문 상태에 따라 처리
-            if order_status.get('미체결수량', 0) == 0:
-                # 전체 체결된 경우
-                self.logger.info(f"주문 전체 체결 완료: {order_number}")
-                return {'status': 'FILLED', 'detail': order_status}
-            
-            # 일부만 체결된 경우
-            if order_status.get('체결수량', 0) > 0:
-                self.logger.info(f"주문 일부 체결: {order_number}, 체결수량: {order_status.get('체결수량')}")
+                if not order_status:
+                    # 일시적인 조회 실패인 경우 재시도
+                    self.logger.warning(f"주문 상태 조회 실패, 재시도 중... (주문번호: {order_number})")
+                    time.sleep(1)
+                    continue
+                    
+                # 주문 상태에 따라 처리
+                if order_status.get('미체결수량', 0) == 0:
+                    # 전체 체결된 경우
+                    self.logger.info(f"주문 전체 체결 완료: {order_number}")
+                    return {'status': 'FILLED', 'detail': order_status}
+                
+                # 일부만 체결된 경우
+                if order_status.get('체결수량', 0) > 0:
+                    self.logger.info(f"주문 일부 체결: {order_number}, 체결수량: {order_status.get('체결수량')}")
+            except Exception as e:
+                self.logger.error(f"주문 상태 조회 중 예외 발생: {e}")
                 
             # 대기
             time.sleep(1)
             
         # 타임아웃 - 체결 완료되지 않음
         self.logger.warning(f"주문 체결 대기 타임아웃: {order_number}")
-        last_status = self.get_order_status(order_number)
-        return {'status': 'PARTIALLY_FILLED', 'detail': last_status}
+        try:
+            last_status = self.get_order_status(order_number)
+            return {'status': 'PARTIALLY_FILLED', 'detail': last_status}
+        except Exception as e:
+            self.logger.error(f"타임아웃 후 주문 상태 조회 실패: {e}")
+            return {'status': 'UNKNOWN', 'detail': {'error': str(e)}}
+
+    def get_account_balance(self):
+        """계좌 잔고 조회 메서드
+        
+        Returns:
+            dict: 계좌 잔고 정보를 담은 딕셔너리
+        """
+        try:
+            # 재시도 로직 추가
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    # 기존 get_balance 메서드 활용
+                    balance_info = self.get_balance(force_refresh=True)
+                    if balance_info and "error" not in balance_info:
+                        return balance_info
+                    
+                    self.logger.warning(f"계좌 잔고 조회 재시도 중... ({retry_count + 1}/{max_retries})")
+                    retry_count += 1
+                    time.sleep(2)
+                except Exception as e:
+                    self.logger.error(f"계좌 잔고 조회 시도 중 오류 발생: {e}")
+                    retry_count += 1
+                    time.sleep(2)
+            
+            self.logger.error("계좌 잔고 정보를 조회할 수 없습니다.")
+            return {
+                "총평가금액": 0,
+                "예수금": 0,
+                "D+2예수금": 0,
+                "손익금액": 0,
+                "손익률": 0.0
+            }
+        except Exception as e:
+            self.logger.error(f"계좌 잔고 조회 중 오류 발생: {e}")
+            return {
+                "총평가금액": 0,
+                "예수금": 0,
+                "D+2예수금": 0,
+                "손익금액": 0,
+                "손익률": 0.0
+            }

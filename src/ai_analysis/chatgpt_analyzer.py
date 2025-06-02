@@ -485,3 +485,239 @@ class ChatGPTAnalyzer:
                 },
                 "volatility_analysis": "분석 오류"
             }
+    
+    def analyze_momentum_stock(self, symbol, stock_data=None, current_price=None, use_cache=False):
+        """
+        급등주 분석 및 단타매매 적합성 평가
+        
+        Args:
+            symbol (str): 종목 코드
+            stock_data (DataFrame): 주가 데이터 (선택 사항)
+            current_price (float): 현재가 (선택 사항)
+            use_cache (bool): 캐시 사용 여부
+            
+        Returns:
+            dict: 분석 결과
+        """
+        logger.info(f"{symbol} 급등주 분석 및 단타매매 적합성 평가 시작")
+        
+        if not self.client:
+            logger.error("OpenAI API 키가 설정되지 않아 분석할 수 없습니다.")
+            return {
+                "symbol": symbol,
+                "momentum_score": 50,
+                "day_trading_score": 50,
+                "is_momentum": False,
+                "day_trading_suitable": False,
+                "analysis_error": "API 키 미설정"
+            }
+        
+        try:
+            # 주가 데이터 요약
+            data_summary = {}
+            
+            if stock_data is not None and not stock_data.empty:
+                # 기본 주가 정보
+                try:
+                    # RSI 재계산 - 0으로 나누기 오류 방지
+                    if 'Close' in stock_data.columns and len(stock_data) > 14:
+                        # RSI 계산 로직 개선
+                        delta = stock_data['Close'].diff()
+                        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+                        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+                        
+                        # 0으로 나누기 방지를 위한 안전장치 추가
+                        epsilon = 1e-10  # 아주 작은 값으로 대체
+                        rs = gain / (loss + epsilon)  # loss가 0이면 epsilon 값을 사용
+                        rsi = 100 - (100 / (1 + rs))
+                        stock_data['RSI'] = rsi
+                    
+                    recent_close = stock_data['Close'].iloc[-1]
+                    if current_price is None:
+                        current_price = recent_close
+                    
+                    # 최근 가격 변화 계산
+                    if len(stock_data) >= 5:
+                        day_change = (current_price / stock_data['Close'].iloc[-2] - 1) * 100
+                        week_change = (current_price / stock_data['Close'].iloc[-6] - 1) * 100
+                        
+                        data_summary['day_change'] = f"{day_change:.2f}%"
+                        data_summary['week_change'] = f"{week_change:.2f}%"
+                    
+                    # 거래량 변화 계산
+                    if 'Volume' in stock_data.columns and len(stock_data) >= 20:
+                        avg_volume = stock_data['Volume'].tail(20).mean()
+                        latest_volume = stock_data['Volume'].iloc[-1]
+                        volume_ratio = latest_volume / avg_volume if avg_volume > 0 else 1
+                        
+                        data_summary['volume_ratio'] = f"{volume_ratio:.2f}x"
+                    
+                    # 기술적 지표 추가
+                    if 'RSI' in stock_data.columns:
+                        data_summary['RSI'] = f"{stock_data['RSI'].iloc[-1]:.2f}"
+                        
+                    if 'MACD' in stock_data.columns and 'MACD_signal' in stock_data.columns:
+                        data_summary['MACD'] = f"{stock_data['MACD'].iloc[-1]:.4f}"
+                        data_summary['MACD_signal'] = f"{stock_data['MACD_signal'].iloc[-1]:.4f}"
+                
+                except Exception as e:
+                    logger.error(f"{symbol} 주가 데이터 요약 중 오류: {e}")
+            
+            # GPT 프롬프트 구성
+            prompt = f"""다음 종목에 대한 급등주 분석과 단타매매 적합성을 평가해주세요:
+
+종목: {symbol}
+현재가: {current_price:,.0f}원 (가용한 경우)
+
+주가 데이터 요약:
+{data_summary}
+
+다음 항목에 대한 분석을 JSON 형식으로 제공해주세요:
+1. 이 종목이 모멘텀/급등주인지 여부와 그 이유
+2. 단타매매에 적합한지 여부와 신뢰도
+3. 적절한 목표가 및 손절가
+4. 추천 매매 전략 (예: 돌파 매수, 조정 후 매수, 추세 추종 등)
+5. 모멘텀 점수 (0-100)와 단타매매 적합성 점수 (0-100)
+
+결과는 반드시 다음과 같은 JSON 형식으로 제공해주세요:
+{{
+  "is_momentum": true/false,
+  "momentum_reason": "모멘텀 판단 이유",
+  "day_trading_suitable": true/false,
+  "day_trading_reason": "단타매매 적합성 판단 이유",
+  "target_price": 목표가,
+  "stop_loss": 손절가,
+  "strategy": "추천 매매 전략",
+  "momentum_score": 모멘텀 점수 (0-100),
+  "day_trading_score": 단타매매 적합성 점수 (0-100),
+  "holding_period": "추천 보유 기간 (예: '당일', '1-2일')"
+}}
+
+반드시 올바른 JSON 형식으로 응답해주세요. 모든 문자열은 쌍따옴표로 감싸주세요."""
+
+            # API 호출 제한 관리
+            self._wait_for_rate_limit()
+            
+            # API 호출
+            logger.info(f"ChatGPT API 호출: {symbol} 급등주/단타매매 분석")
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "당신은 주식 모멘텀 분석 및 단타매매 전문가입니다. 응답은 항상 올바른 JSON 형식으로 제공해주세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=self.max_tokens,
+                temperature=0.7
+            )
+            
+            response_content = response.choices[0].message.content
+            
+            # JSON 추출 시도
+            import re
+            
+            # 응답에서 JSON 부분만 추출
+            json_match = re.search(r'```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})', response_content)
+            
+            if json_match:
+                # JSON 문자열 추출 및 전처리
+                json_str = json_match.group(1) or json_match.group(2)
+                
+                # JSON 문법 오류 수정을 위한 전처리
+                # 1. 작은따옴표를 큰따옴표로 변경
+                json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
+                json_str = re.sub(r':\s*\'([^\']*)\'', r': "\1"', json_str)
+                
+                # 2. 후행 쉼표 제거
+                json_str = re.sub(r',\s*}', '}', json_str)
+                json_str = re.sub(r',\s*]', ']', json_str)
+                
+                # 3. 키와 문자열 값이 큰따옴표로 감싸져 있는지 확인
+                json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
+                
+                try:
+                    # 전처리된 JSON 문자열 파싱
+                    result = json.loads(json_str)
+                    
+                    # 분석 결과에 추가 정보 포함
+                    result['symbol'] = symbol
+                    result['current_price'] = current_price
+                    result['analysis_time'] = get_current_time_str()
+                    
+                    logger.info(f"{symbol} 급등주/단타매매 분석 완료: 모멘텀 점수 {result.get('momentum_score')},"
+                               f" 단타 점수 {result.get('day_trading_score')}")
+                    
+                    return result
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON 파싱 오류 (전처리 후): {e}, JSON 문자열: {json_str[:100]}...")
+                    
+                    # 파싱 실패 시 더 강력한 정규식으로 재시도
+                    try:
+                        # 모든 키-값 쌍을 개별적으로 추출
+                        is_momentum_match = re.search(r'"is_momentum"\s*:\s*(true|false)', json_str)
+                        momentum_reason_match = re.search(r'"momentum_reason"\s*:\s*"([^"]*)"', json_str)
+                        day_trading_suitable_match = re.search(r'"day_trading_suitable"\s*:\s*(true|false)', json_str)
+                        day_trading_reason_match = re.search(r'"day_trading_reason"\s*:\s*"([^"]*)"', json_str)
+                        target_price_match = re.search(r'"target_price"\s*:\s*([\d\.]+)', json_str)
+                        stop_loss_match = re.search(r'"stop_loss"\s*:\s*([\d\.]+)', json_str)
+                        strategy_match = re.search(r'"strategy"\s*:\s*"([^"]*)"', json_str)
+                        momentum_score_match = re.search(r'"momentum_score"\s*:\s*([\d\.]+)', json_str)
+                        day_trading_score_match = re.search(r'"day_trading_score"\s*:\s*([\d\.]+)', json_str)
+                        holding_period_match = re.search(r'"holding_period"\s*:\s*"([^"]*)"', json_str)
+                        
+                        # 수동으로 결과 딕셔너리 구성
+                        manual_result = {
+                            'symbol': symbol,
+                            'current_price': current_price,
+                            'timestamp': get_current_time_str()
+                        }
+                        
+                        if is_momentum_match:
+                            manual_result['is_momentum'] = is_momentum_match.group(1) == 'true'
+                        if momentum_reason_match:
+                            manual_result['momentum_reason'] = momentum_reason_match.group(1)
+                        if day_trading_suitable_match:
+                            manual_result['day_trading_suitable'] = day_trading_suitable_match.group(1) == 'true'
+                        if day_trading_reason_match:
+                            manual_result['day_trading_reason'] = day_trading_reason_match.group(1)
+                        if target_price_match:
+                            manual_result['target_price'] = float(target_price_match.group(1))
+                        if stop_loss_match:
+                            manual_result['stop_loss'] = float(stop_loss_match.group(1))
+                        if strategy_match:
+                            manual_result['strategy'] = strategy_match.group(1)
+                        if momentum_score_match:
+                            manual_result['momentum_score'] = float(momentum_score_match.group(1))
+                        if day_trading_score_match:
+                            manual_result['day_trading_score'] = float(day_trading_score_match.group(1))
+                        if holding_period_match:
+                            manual_result['holding_period'] = holding_period_match.group(1)
+                            
+                        # 필수 필드 확인
+                        if 'momentum_score' in manual_result or 'day_trading_score' in manual_result:
+                            logger.info(f"{symbol} 수동 파싱 성공")
+                            return manual_result
+                            
+                    except Exception as e2:
+                        logger.error(f"수동 파싱 시도 중 오류: {e2}")
+            
+            # JSON 파싱 실패 시 기본 결과 반환
+            logger.error(f"{symbol} GPT 응답에서 유효한 JSON을 추출할 수 없습니다")
+            return {
+                'symbol': symbol,
+                'current_price': current_price,
+                'momentum_score': 50,
+                'day_trading_score': 50,
+                'is_momentum': False,
+                'day_trading_suitable': False,
+                'analysis_error': "분석 결과 파싱 실패"
+            }
+            
+        except Exception as e:
+            logger.error(f"{symbol} 급등주/단타매매 분석 중 오류: {e}")
+            return {
+                'symbol': symbol,
+                'analysis_error': str(e),
+                'momentum_score': 0,
+                'day_trading_score': 0
+            }

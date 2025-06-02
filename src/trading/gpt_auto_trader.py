@@ -81,6 +81,10 @@ class GPTAutoTrader:
         self.auto_restart_enabled = getattr(config, 'GPT_AUTO_RESTART_ENABLED', True)  # 자동 재시작 기능
         self.risk_management_enabled = getattr(config, 'GPT_RISK_MANAGEMENT_ENABLED', True)  # 위험 관리 기능
         
+        # 실시간 전용 모드 설정
+        self.realtime_only_mode = getattr(config, 'REALTIME_ONLY_MODE', True)  # 실시간 전용 모드
+        self.use_database = getattr(config, 'USE_DATABASE', False)  # 데이터베이스 사용 여부
+        
         # 상태 변수
         self.is_running = False
         self.last_selection_time = None
@@ -112,7 +116,12 @@ class GPTAutoTrader:
         
         logger.info(f"GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: {'활성화' if self.use_dynamic_selection else '비활성화'}, "
                   f"완전자율거래: {'활성화' if self.fully_autonomous_mode else '비활성화'}, "
-                  f"공격적모드: {'활성화' if self.aggressive_mode else '비활성화'})")
+                  f"공격적모드: {'활성화' if self.aggressive_mode else '비활성화'}, "
+                  f"실시간 전용 모드: {'활성화' if self.realtime_only_mode else '비활성화'}, "
+                  f"데이터베이스: {'사용' if self.use_database else '미사용'})")
+                  
+        # RealtimeTrader와 GPTAutoTrader 연결
+        self.realtime_trader.set_gpt_auto_trader(self)
         
     def is_trading_time(self, market="KR"):
         """
@@ -550,25 +559,45 @@ class GPTAutoTrader:
         try:
             logger.info("GPT 기반 실시간 단타매매 및 급등주 기회 스캔 시작")
             
-            # GPT에게 직접 단타 매매용 종목 추천 요청 (디비/캐시 사용 안함)
-            kr_symbols = self.gpt_strategy.get_day_trading_candidates('KR', max_count=10)
-            us_symbols = []
+            # 한국 시장과 미국 시장의 상태 확인
+            kr_market_open = is_market_open("KR")
+            us_market_open = is_market_open("US")
             
-            # 미국 주식 거래가 활성화된 경우에만 미국 종목도 요청
+            logger.info(f"시장 상태: 한국 시장 {('개장' if kr_market_open else '폐장')}, 미국 시장 {('개장' if us_market_open else '폐장')}")
+            
+            # 한국 시장이 열려있는 경우만 한국 종목 분석
+            kr_symbols = []
+            if kr_market_open:
+                kr_symbols = self.gpt_strategy.get_day_trading_candidates('KR', max_count=10)
+                logger.info(f"GPT 추천 한국 단타매매 종목: {len(kr_symbols)}개")
+            else:
+                logger.info("한국 시장이 폐장 중이므로 한국 종목 분석은 건너뜁니다.")
+            
+            # 미국 시장이 열려있는 경우만 미국 종목 분석
+            us_symbols = []
             us_stock_trading_enabled = getattr(self.config, 'US_STOCK_TRADING_ENABLED', False)
-            if us_stock_trading_enabled:
+            if us_market_open and us_stock_trading_enabled:
                 us_symbols = self.gpt_strategy.get_day_trading_candidates('US', max_count=5)
+                logger.info(f"GPT 추천 미국 단타매매 종목: {len(us_symbols)}개")
+            else:
+                if not us_market_open:
+                    logger.info("미국 시장이 폐장 중이므로 미국 종목 분석은 건너뜁니다.")
+                elif not us_stock_trading_enabled:
+                    logger.info("미국 주식 거래가 비활성화되어 있어 미국 종목 분석은 건너뜁니다.")
                 
             # 종목 목록 합치기
             all_symbols = [(symbol, 'KR') for symbol in kr_symbols] + [(symbol, 'US') for symbol in us_symbols]
-            
-            logger.info(f"GPT 추천 단타매매 종목: 한국 {len(kr_symbols)}개, 미국 {len(us_symbols)}개")
             
             # 모멘텀/급등주 분석 결과 저장용
             momentum_stocks = []
             
             # 종목별로 GPT 분석 요청 (디비/캐시 사용 안함)
             for symbol, market in all_symbols:
+                # 해당 시장이 열려있는지 다시 확인
+                if (market == 'KR' and not kr_market_open) or (market == 'US' and not us_market_open):
+                    logger.info(f"{symbol} ({market}) - 해당 시장이 폐장 중이므로 분석을 건너뜁니다.")
+                    continue
+                    
                 try:
                     # 데이터는 바로 데이터 제공자에게서 가져옴 (캐시/디비 사용 안함)
                     stock_data = self.data_provider.get_stock_data(symbol, days=5)
@@ -636,8 +665,9 @@ class GPTAutoTrader:
                 day_trading_score = analysis.get('day_trading_score', 0)
                 strategy = analysis.get('strategy', '분석 없음')
                 duration = analysis.get('momentum_duration', '확인 불가')
+                market_type = '🇰🇷 한국' if analysis.get('market') == 'KR' else '🇺🇸 미국'
                 
-                message += f"• {name} ({symbol})\n"
+                message += f"• [{market_type}] {name} ({symbol})\n"
                 message += f"  현재가: {price:,.0f}원 / 목표가: {target:,.0f}원\n"
                 message += f"  손절가: {stop_loss:,.0f}원\n"
                 message += f"  모멘텀 점수: {momentum_score}/100, 단타 적합도: {day_trading_score}/100\n"
@@ -1175,7 +1205,7 @@ class GPTAutoTrader:
         try:
             symbol = stock_data.get('symbol')
             risk_level = stock_data.get('risk_level', 5)
-            suggested_weight = stock_data.get('suggested_weight', 20)  # 기본값 20%로 변경
+            suggested_weight = stock_data.get('suggested_weight', 20)  # 기본값 20%로 설정
             target_price = stock_data.get('target_price', 0)
             
             # 기본 검증
@@ -1198,12 +1228,12 @@ class GPTAutoTrader:
                 logger.info(f"{market} 시장이 닫혀있어 매수하지 않습니다.")
                 return False
                 
-            # 추천 비중이 충분히 높은지 확인
-            if suggested_weight < 15:  # 15% 미만은 투자하지 않음
+            # 추천 비중이 충분히 높은지 확인 - 적정 수준 유지 (기존 15%에서 조정)
+            if suggested_weight < 10:  # 10% 미만은 투자하지 않음
                 logger.info(f"{symbol} 추천 비중({suggested_weight}%)이 낮아 매수하지 않습니다.")
                 return False
                 
-            # 위험도 체크
+            # 위험도 체크 - 안전 기준 유지
             if risk_level > 8:  # 위험도 8 초과는 투자하지 않음
                 logger.info(f"{symbol} 위험도({risk_level}/10)가 높아 매수하지 않습니다.")
                 return False
@@ -1214,8 +1244,8 @@ class GPTAutoTrader:
                 logger.warning(f"{symbol} 현재가를 가져올 수 없습니다.")
                 return False
                 
-            # 목표가 대비 현재가 확인 (목표가의 85% 이상이면 매수하지 않음)
-            if target_price and current_price >= target_price * 0.85:
+            # 목표가 대비 현재가 확인
+            if target_price and current_price >= target_price * 0.85:  # 85% 기준 유지
                 logger.info(f"{symbol} 현재가({current_price:,.0f})가 목표가({target_price:,.0f})의 85% 이상으로 매수하지 않습니다.")
                 return False
                 
@@ -1223,33 +1253,42 @@ class GPTAutoTrader:
             balance_info = self.broker.get_balance()
             available_cash = balance_info.get('주문가능금액', balance_info.get('예수금', 0))
             
-            if available_cash < 100000:  # 최소 10만원 이상 있어야 함
+            # 최소 현금 기준
+            if available_cash < 100000:  # 최소 10만원 유지
                 logger.warning(f"주문가능금액({available_cash:,.0f}원)이 부족하여 매수하지 않습니다.")
                 return False
                 
             # 투자 금액 결정 (계좌 잔고 또는 최대 투자 금액 중 작은 것)
             investment_amount = min(self.max_investment_per_stock, available_cash * (suggested_weight / 100))
             
-            # 최소 50만원 이상의 투자 금액이 있어야 함
-            if investment_amount < 500000:
-                logger.info(f"{symbol} 투자 금액({investment_amount:,.0f}원)이 50만원 미만으로 매수하지 않습니다.")
+            # 최소 투자 금액 기준 (기존 50만원에서 약간 낮춤)
+            if investment_amount < 300000:  # 30만원 미만은 투자하지 않음
+                logger.info(f"{symbol} 투자 금액({investment_amount:,.0f}원)이 30만원 미만으로 매수하지 않습니다.")
                 return False
                 
-            # 기술적 분석 지표 확인 (선택적)
+            # 기술적 분석 지표 확인
             df = self.data_provider.get_historical_data(symbol, market)
             if df is not None and len(df) > 30:
                 # RSI 확인 (과매수 상태면 매수하지 않음)
-                if 'RSI' in df.columns and df['RSI'].iloc[-1] > 70:
+                if 'RSI' in df.columns and df['RSI'].iloc[-1] > 75:  # 75로 안전하게 조정
                     logger.info(f"{symbol} RSI({df['RSI'].iloc[-1]:.1f})가 과매수 상태로 매수하지 않습니다.")
                     return False
-                    
-                # 이동평균선 확인 (단기선이 장기선 아래면 매수하지 않음)
-                if 'MA20' in df.columns and 'MA60' in df.columns and df['MA20'].iloc[-1] < df['MA60'].iloc[-1]:
-                    logger.info(f"{symbol} 단기 이동평균선이 장기선 아래로 약세 신호. 매수하지 않습니다.")
+                
+                # 이동평균선 확인 - 약한 조건으로 적용
+                if ('MA20' in df.columns and 'MA60' in df.columns and 
+                    df['MA20'].iloc[-1] < df['MA60'].iloc[-1] * 0.9):  # 단기선이 장기선의 90% 미만이면 약세
+                    logger.info(f"{symbol} 단기 이동평균선이 장기선보다 크게 낮아(10% 이상) 약세 신호. 매수하지 않습니다.")
                     return False
                     
             # 모든 조건 통과, 매수 시그널
             logger.info(f"{symbol} 매수 결정: 추천 비중 {suggested_weight}%, 위험도 {risk_level}/10")
+            
+            # 추천 비중이 0인 경우 기본값으로 설정하기 전에 한 번 더 확인
+            if suggested_weight == 0:
+                # 추천 비중이 0%인 경우 매수하지 않음 (안전 장치)
+                logger.info(f"{symbol} 추천 비중이 0%이므로 매수하지 않습니다.")
+                return False
+            
             return True
             
         except Exception as e:
@@ -1499,6 +1538,8 @@ class GPTAutoTrader:
     def _execute_sell(self, symbol):
         """
         보유 종목 매도 실행
+        
+       
         
         Args:
             symbol: 종목 코드

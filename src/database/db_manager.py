@@ -1207,3 +1207,78 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"한국 주식 종목 정보 초기화 오류: {e}")
             return False
+    
+    def check_connection(self):
+        """데이터베이스 연결 상태 확인
+        
+        Returns:
+            dict: 데이터베이스 연결 상태 정보
+        """
+        try:
+            if not self.use_db:
+                return {
+                    "status": "disabled",
+                    "message": "데이터베이스 사용이 비활성화되어 있습니다.",
+                    "type": "none"
+                }
+            
+            conn = self._get_connection()
+            if conn is None:
+                return {
+                    "status": "error",
+                    "message": "데이터베이스 연결에 실패했습니다.",
+                    "type": self.db_type
+                }
+            
+            # 간단한 쿼리 실행하여 연결 테스트
+            cursor = conn.cursor()
+            if self.db_type == 'sqlite':
+                cursor.execute("SELECT sqlite_version();")
+                version = cursor.fetchone()[0]
+            else:  # MySQL
+                cursor.execute("SELECT version();")
+                version = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            # 백업 디렉토리 확인
+            backup_dir = os.path.join(os.path.dirname(self.db_path), 'backup')
+            backup_available = os.path.exists(backup_dir)
+            
+            # 최근 백업 파일 확인
+            latest_backup = None
+            if backup_available:
+                backup_files = sorted([f for f in os.listdir(backup_dir) if f.endswith('.db')])
+                if backup_files:
+                    latest_backup = backup_files[-1]
+            
+            return {
+                "status": "connected",
+                "message": "데이터베이스 연결이 정상입니다.",
+                "type": self.db_type,
+                "version": version,
+                "path": self.db_path if self.db_type == 'sqlite' else self.mysql_host,
+                "auto_backup": self.auto_backup,
+                "backup_available": backup_available,
+                "latest_backup": latest_backup,
+                "last_backup_time": self.last_backup_time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        except Exception as e:
+            self.logger.error(f"데이터베이스 연결 확인 오류: {e}")
+            return {
+                "status": "error",
+                "message": f"데이터베이스 연결 확인 중 오류 발생: {str(e)}",
+                "type": self.db_type
+            }
+    
+    def get_db(self):
+        """
+        데이터베이스 연결 객체 반환
+        
+        Returns:
+            object: 데이터베이스 연결 객체
+        """
+        conn = self._get_connection()
+        if conn is None:
+            raise Exception("데이터베이스 연결에 실패했습니다.")
+        return conn

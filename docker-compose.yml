@@ -1,18 +1,55 @@
 version: '3'
 
 services:
-  stock-analysis:
-    build: .
-    container_name: stock-analysis
-    restart: always
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
     volumes:
+      - ./:/app
+      - ./data:/app/data
       - ./logs:/app/logs
-      - ./config.py:/app/config.py
-      - ./kakao_token.json:/app/kakao_token.json
+      - ./cache:/app/cache
     environment:
-      - TZ=Asia/Seoul
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - FORCE_MARKET_OPEN=true
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-password}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KIS_APP_KEY=${KIS_APP_KEY}
+      - KIS_APP_SECRET=${KIS_APP_SECRET}
+      - KIS_ACCOUNT_NO=${KIS_ACCOUNT_NO}
+      - KAKAO_API_KEY=${KAKAO_API_KEY}
+      - KAKAO_ACCESS_TOKEN=${KAKAO_ACCESS_TOKEN}
+      - KAKAO_REFRESH_TOKEN=${KAKAO_REFRESH_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    command: python api_server.py
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped

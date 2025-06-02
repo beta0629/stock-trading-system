@@ -5,3 +5,167 @@ Wed May 28 15:27:52 KST 2025: 프로그램 시작/재시작
 프로세스 시작 (PID: 25276)
 프로그램이 정상 종료되었습니다.
 ===== 자동 주식 매매 시스템 종료 - Wed May 28 15:27:53 KST 2025 =====
+nohup: python: No such file or directory
+INFO:Config:로컬 환경에서 실행 중입니다. .env 파일을 로드합니다.
+INFO:Config:카카오 토큰 파일을 로드했습니다.
+INFO:Config:실행 환경: 로컬
+INFO:Config:카카오톡 메시지 사용: True
+INFO:Config:텔레그램 메시지 사용: False
+INFO:Config:자동 매매 기능: True
+INFO:Config:강제 시장 열림: True
+INFO:Config:데이터베이스 사용: True (타입: sqlite)
+INFO:Config:증권사 API 모드: 모의투자
+INFO:Config:GPT 자동 매매 기능: True (완전자율모드: True)
+INFO:Config:실시간 GPT 연동: True (모멘텀 감지: True)
+/Users/mind/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:DatabaseManager:SQLITE 데이터베이스 초기화 완료
+INFO:StockData:StockData 클래스 초기화 완료
+INFO:ChatGPTAnalyzer:ChatGPT 분석기 초기화 완료 (모델: gpt-4o)
+INFO:GPTTradingStrategy:GPT 트레이딩 전략 초기화 완료 (완전자율모드: True, 공격적모드: False, 하락장매수: True)
+INFO:BrokerAPI:KISAPI 초기화
+INFO:KISAPI:모의투자 모드로 설정되었습니다. URL: https://openapivts.koreainvestment.com:29443
+INFO:KISAPI:계좌번호 설정 완료 - account_no: 50138225, cano: 50138225
+WARNING:KakaoSender:카카오톡 API 토큰이 유효하지 않습니다. 갱신을 시도합니다.
+INFO:KakaoSender:카카오톡 토큰 파일 저장 완료
+INFO:KakaoSender:카카오톡 인증 토큰 갱신 완료
+INFO:KakaoSender:카카오톡 API 토큰 갱신 성공
+INFO:ChatGPTAnalyzer:ChatGPT 분석기 초기화 완료 (모델: gpt-4o)
+INFO:GPTTradingStrategy:GPT 트레이딩 전략 초기화 완료 (완전자율모드: True, 공격적모드: False, 하락장매수: True)
+INFO:KISAPI:한국투자증권 API 토큰 발급 요청 - URL: https://openapivts.koreainvestment.com:29443/oauth2/tokenP
+INFO:KISAPI:한국투자증권 API 연결 성공. 토큰 만료시간: 2025-06-03 01:16:06.829396+09:00
+INFO:KISAPI:계좌 잔고 API 응답 전체: {
+  "ctx_area_fk100": "                                                                                                    ",
+  "ctx_area_nk100": "                                                                                                    ",
+  "output1": [
+    {
+      "pdno": "005930",
+      "prdt_name": "삼성전자",
+      "trad_dvsn_name": "현금",
+      "bfdy_buy_qty": "1190",
+      "bfdy_sll_qty": "0",
+      "thdt_buyqty": "0",
+      "thdt_sll_qty": "0",
+      "hldg_qty": "1190",
+      "ord_psbl_qty": "1190",
+      "pchs_avg_pric": "56734.2010",
+      "pchs_amt": "67513700",
+      "prpr": "56200",
+      "evlu_amt": "66878000",
+      "evlu_pfls_amt": "-635700",
+      "evlu_pfls_rt": "-0.94",
+      "evlu_erng_rt": "-0.94158667",
+      "loan_dt": "",
+      "loan_amt": "0",
+      "stln_slng_chgs": "0",
+      "expd_dt": "",
+      "fltt_rt": "0.18000000",
+      "bfdy_cprs_icdc": "100",
+      "item_mgna_rt_name": "20%",
+      "grta_rt_name": "",
+      "sbst_pric": "0",
+      "stck_loan_unpr": "0.0000"
+    },
+    {
+      "pdno": "051900",
+      "prdt_name": "LG생활건강",
+      "trad_dvsn_name": "현금",
+      "bfdy_buy_qty": "165",
+      "bfdy_sll_qty": "3",
+      "thdt_buyqty": "0",
+      "thdt_sll_qty": "0",
+      "hldg_qty": "162",
+      "ord_psbl_qty": "162",
+      "pchs_avg_pric": "327045.4540",
+      "pchs_amt": "52981363",
+      "prpr": "326000",
+      "evlu_amt": "52812000",
+      "evlu_pfls_amt": "-169363",
+      "evlu_pfls_rt": "-0.32",
+      "evlu_erng_rt": "-0.31966644",
+      "loan_dt": "",
+      "loan_amt": "0",
+      "stln_slng_chgs": "0",
+      "expd_dt": "",
+      "fltt_rt": "-0.46000000",
+      "bfdy_cprs_icdc": "-1500",
+      "item_mgna_rt_name": "40%",
+      "grta_rt_name": "",
+      "sbst_pric": "0",
+      "stck_loan_unpr": "0.0000"
+    }
+  ],
+  "output2": [
+    {
+      "dnca_tot_amt": "500000000",
+      "nxdy_excc_amt": "379481965",
+      "prvs_rcdl_excc_amt": "379481965",
+      "cma_evlu_amt": "0",
+      "bfdy_buy_amt": "121476200",
+      "thdt_buy_amt": "0",
+      "nxdy_auto_rdpt_amt": "0",
+      "bfdy_sll_amt": "977000",
+      "thdt_sll_amt": "0",
+      "d2_auto_rdpt_amt": "0",
+      "bfdy_tlex_amt": "18835",
+      "thdt_tlex_amt": "0",
+      "tot_loan_amt": "0",
+      "scts_evlu_amt": "119690000",
+      "tot_evlu_amt": "499171965",
+      "nass_amt": "499171965",
+      "fncg_gld_auto_rdpt_yn": "",
+      "pchs_amt_smtl_amt": "120495063",
+      "evlu_amt_smtl_amt": "119690000",
+      "evlu_pfls_smtl_amt": "-805063",
+      "tot_stln_slng_chgs": "0",
+      "bfdy_tot_asst_evlu_amt": "499295965",
+      "asst_icdc_amt": "-124000",
+      "asst_icdc_erng_rt": "-0.02483497"
+    }
+  ],
+  "rt_cd": "0",
+  "msg_cd": "20310000",
+  "msg1": "모의투자 조회가 완료되었습니다.                                                 "
+}
+INFO:KISAPI:output2 데이터: [
+  {
+    "dnca_tot_amt": "500000000",
+    "nxdy_excc_amt": "379481965",
+    "prvs_rcdl_excc_amt": "379481965",
+    "cma_evlu_amt": "0",
+    "bfdy_buy_amt": "121476200",
+    "thdt_buy_amt": "0",
+    "nxdy_auto_rdpt_amt": "0",
+    "bfdy_sll_amt": "977000",
+    "thdt_sll_amt": "0",
+    "d2_auto_rdpt_amt": "0",
+    "bfdy_tlex_amt": "18835",
+    "thdt_tlex_amt": "0",
+    "tot_loan_amt": "0",
+    "scts_evlu_amt": "119690000",
+    "tot_evlu_amt": "499171965",
+    "nass_amt": "499171965",
+    "fncg_gld_auto_rdpt_yn": "",
+    "pchs_amt_smtl_amt": "120495063",
+    "evlu_amt_smtl_amt": "119690000",
+    "evlu_pfls_smtl_amt": "-805063",
+    "tot_stln_slng_chgs": "0",
+    "bfdy_tot_asst_evlu_amt": "499295965",
+    "asst_icdc_amt": "-124000",
+    "asst_icdc_erng_rt": "-0.02483497"
+  }
+]
+INFO:KISAPI:계좌 잔고 조회 성공: 예수금 500,000,000원, 주문가능금액 379,481,965원, 총평가금액 499,171,965원
+INFO:AutoTrader:계좌 잔고 갱신 성공: 주문가능금액 379,481,965원
+INFO:AutoTrader:자동매매 시스템 초기화 완료
+INFO:AutoTrader:!! 실제 거래 모드로 실행 중. 실제 자금으로 거래가 발생합니다 !!
+INFO:src.trading.realtime_trader:RealtimeTrader 초기화 완료 (시뮬레이션 모드: 비활성화, GPT 분석: 사용)
+INFO:GPTAutoTrader:GPT 자동 매매 시스템 초기화 완료 (동적 종목 선별: 활성화, 완전자율거래: 활성화, 공격적모드: 비활성화)
+INFO:API_Server:GPT 자동 매매 시스템 초기화 완료
+INFO:API_Server:API 서버 시작 - http://0.0.0.0:8000
+INFO:     Started server process [47803]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 48] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
