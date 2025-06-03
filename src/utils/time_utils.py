@@ -296,20 +296,33 @@ def is_market_open(market="KR", config=None):
     Returns:
         bool: 시장 개장 여부
     """
+    # 시스템 로컬 시간 로깅 (디버깅용)
+    system_now = datetime.datetime.now()
+    logger.debug(f"시스템 로컬 시간: {system_now}")
+    
     # 강제 개장 설정 확인
     force_open = get_config_value('FORCE_MARKET_OPEN', False, config)
     if isinstance(force_open, str):
         force_open = force_open.lower() == "true"
     
     if force_open:
+        logger.info(f"FORCE_MARKET_OPEN이 활성화되어 있습니다. 시장({market})을 강제로 열린 상태로 간주합니다.")
         return True
         
-    now = get_current_time(KST if market == "KR" else EST)
+    # 시간대 설정
+    timezone = KST if market == "KR" else EST
+    
+    # 현재 시간을 해당 시장의 시간대로 가져옴
+    now = get_current_time(timezone)
     today = now.strftime("%Y-%m-%d")
     weekday = now.weekday()  # 0=월요일, 6=일요일
     
+    # 로깅 추가 - 시간대 정보 확인
+    logger.debug(f"{market} 시장 확인: 현재 시간({timezone}): {now}, 요일: {weekday}")
+    
     # 주말 확인
     if weekday >= 5:  # 토, 일
+        logger.debug(f"{market} 시장 확인: 주말({weekday})이므로 시장 닫힘")
         return False
     
     # 시장별 운영 시간 확인
@@ -324,11 +337,16 @@ def is_market_open(market="KR", config=None):
     start_dt = datetime.datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
     end_dt = datetime.datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
     
-    # 현재 시간에서 시간/분만 추출
-    current_time = now.replace(tzinfo=None)
+    # 시간대 정보 추가
+    start_dt = timezone.localize(start_dt)
+    end_dt = timezone.localize(end_dt)
     
-    # 시장 개장 시간인지 확인
-    return start_dt <= current_time <= end_dt
+    # 디버깅을 위한 추가 로깅
+    logger.debug(f"{market} 시장 시간: {start_dt} ~ {end_dt}")
+    logger.debug(f"{market} 시장 개장 여부 확인 결과: {start_dt <= now <= end_dt}")
+    
+    # 시장 개장 시간인지 확인 (시간대 정보를 유지한 채 비교)
+    return start_dt <= now <= end_dt
 
 def format_timestamp(timestamp, format_str='%Y-%m-%d %H:%M:%S', timezone=KST):
     """

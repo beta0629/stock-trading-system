@@ -22,7 +22,7 @@ def setup_env():
     
     if is_ci or is_github_actions:
         logger.info("CI/CD 또는 GitHub Actions 환경에서 실행 중입니다. 환경 변수를 사용합니다.")
-        # CI/GitHub Actions 환경에서는 시장을 강제로 열림 상태로 설정
+        # CI/GitHub Actions 환경에서는 시장을 강제로 열림 상태로 설정 (테스트 용도)
         os.environ["FORCE_MARKET_OPEN"] = "true"
         # GitHub Actions 환경에서는 시뮬레이션 모드를 비활성화하고 실제 거래 수행
         os.environ["SIMULATION_MODE"] = "false"
@@ -32,6 +32,10 @@ def setup_env():
         logger.info("로컬 환경에서 실행 중입니다. .env 파일을 로드합니다.")
         env_path = Path(__file__).parent / '.env'
         load_dotenv(dotenv_path=env_path)
+        
+        # 로컬 환경에서는 FORCE_MARKET_OPEN을 명시적으로 비활성화
+        os.environ["FORCE_MARKET_OPEN"] = "false"
+        logger.info("로컬 환경에서 FORCE_MARKET_OPEN을 비활성화합니다.")
         
         # 로컬에서 토큰 파일 확인
         token_path = Path(__file__).parent / 'kakao_token.json'
@@ -241,15 +245,15 @@ REALTIME_MAX_HOLDING_MINUTES = 60  # 실시간 트레이딩 최대 보유 시간
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '051910', 'name': 'LG화학'}, {'code': '035420', 'name': 'NAVER'}, {'code': '096770', 'name': 'SK이노베이션'}, {'code': '005380', 'name': '현대차'}]
+# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '035720', 'name': '카카오'}, {'code': '000660', 'name': 'SK하이닉스'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 
 # 종목 코드 리스트 생성
-KR_STOCKS = ['005930', '000660', '051910', '035420', '096770', '005380']
+KR_STOCKS = []
 
 # 시장 시간 관련 설정
-FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "").lower() == "false"  # 시장 시간 강제 오픈 여부
+FORCE_MARKET_OPEN = False  # 시장 시간 강제 오픈 여부 - 비활성화로 설정
 
 # 웹 인터페이스 설정
 WEB_UI_ENABLED = True  # 웹 인터페이스 활성화 여부
@@ -372,8 +376,64 @@ CURRENT_WEB_STRATEGY = WEB_STRATEGY_DAY_TRADING  # 기본값으로 단타매매 
 
 
 # GPT에 의해 추천된 미국 종목 목록
-US_STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
-
+US_STOCKS = []
 
 # GPT에 의해 추천된 미국 종목 정보 (코드와 이름)
-US_STOCK_INFO = [{'code': 'AAPL', 'name': 'Apple Inc.'}, {'code': 'MSFT', 'name': 'Microsoft Corporation'}, {'code': 'GOOGL', 'name': 'Alphabet Inc.'}, {'code': 'AMZN', 'name': 'Amazon.com Inc.'}, {'code': 'META', 'name': 'Meta Platforms Inc.'}]
+# 데이터베이스에서 동적으로 불러옴
+US_STOCK_INFO = []
+
+# 시스템 시작 시 데이터베이스에서 종목 정보 로드 함수
+def load_stock_info():
+    """
+    데이터베이스에서 종목 정보를 로드하는 함수
+    """
+    try:
+        from src.database.db_manager import DatabaseManager
+        
+        # 데이터베이스 매니저 인스턴스 가져오기
+        db_manager = DatabaseManager.get_instance()
+        
+        # 미국 주식 종목 정보 로드
+        global US_STOCK_INFO
+        us_stocks = db_manager.get_us_stock_info()
+        if us_stocks:
+            US_STOCK_INFO = us_stocks
+            logger.info(f"{len(us_stocks)}개의 미국 주식 종목 정보를 데이터베이스에서 로드했습니다.")
+        else:
+            # 기본 데이터로 초기화
+            logger.warning("데이터베이스에서 미국 주식 정보를 로드할 수 없습니다. 기본 데이터를 사용합니다.")
+            default_us_stocks = [
+                {'code': 'AAPL', 'name': 'Apple Inc.'},
+                {'code': 'MSFT', 'name': 'Microsoft Corporation'},
+                {'code': 'GOOGL', 'name': 'Alphabet Inc.'},
+                {'code': 'AMZN', 'name': 'Amazon.com Inc.'},
+                {'code': 'META', 'name': 'Meta Platforms Inc.'},
+                {'code': 'TSLA', 'name': 'Tesla Inc.'},
+                {'code': 'NVDA', 'name': 'NVIDIA Corporation'}
+            ]
+            US_STOCK_INFO = default_us_stocks
+            
+            # 기본 데이터를 데이터베이스에 저장
+            if db_manager.use_db:
+                db_manager.save_us_stock_info(default_us_stocks)
+        
+        # 한국 주식 종목 정보 로드
+        global KR_STOCK_INFO
+        kr_stocks = db_manager.get_kr_stock_info()
+        if kr_stocks:
+            KR_STOCK_INFO = kr_stocks
+            logger.info(f"{len(kr_stocks)}개의 한국 주식 종목 정보를 데이터베이스에서 로드했습니다.")
+            
+            # 코드 리스트 업데이트
+            global KR_STOCKS
+            KR_STOCKS = [stock['code'] for stock in KR_STOCK_INFO]
+    
+    except Exception as e:
+        logger.error(f"종목 정보 로드 중 오류 발생: {e}")
+        # 기본값 유지
+
+# 초기 로드 실행
+try:
+    load_stock_info()
+except Exception as e:
+    logger.error(f"초기 종목 정보 로드 실패: {e}")
