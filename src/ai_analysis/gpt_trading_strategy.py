@@ -1689,430 +1689,114 @@ class GPTTradingStrategy:
                 'timestamp': get_current_time().isoformat()
             }
     
-    def get_day_trading_candidates(self, market="KR", max_count=5, min_score=70, use_cache=False):
+    def send_momentum_stocks_to_kakao(self, min_score=70, max_count=10):
         """
-        단타매매에 적합한 종목을 GPT 분석을 통해 추천 (데이터베이스/캐시 사용 안함)
+        급등주 및 단타매매 적합 종목 리스트를 카카오톡으로 전송
         
         Args:
-            market (str): 시장 구분 ("KR" 또는 "US")
-            max_count (int): 최대 추천 종목 수
-            min_score (int): 최소 점수 (0-100)
-            use_cache (bool): 캐시 사용 여부 (항상 False로 설정하여 GPT에 직접 요청)
+            min_score (int): 최소 점수 기준 (0-100)
+            max_count (int): 최대 종목 수
             
         Returns:
-            list: 단타매매에 적합한 종목 코드 리스트
+            bool: 전송 성공 여부
         """
-        logger.info(f"GPT를 통한 {market} 시장 단타매매 종목 추천 요청 시작 (최대 {max_count}개)")
-        
         try:
-            # 시장 상황 요약 생성
-            market_summary = self._generate_market_summary(market)
+            # 모멘텀 기회 가져오기
+            opportunities = self.get_momentum_opportunities(min_score=min_score)
             
-            # GPT 프롬프트 구성
-            prompt = f"""오늘({get_current_time_str('%Y년 %m월 %d일')}) 단타매매에 적합한 {market} 주식 종목을 추천해주세요.
-
-현재 시장 상황:
-{market_summary}
-
-단타매매에 적합한 종목의 특성:
-1. 유동성이 충분하고 거래량이 많음
-2. 변동성이 적당하여 당일 수익 실현 가능성이 높음
-3. 뚜렷한 기술적 패턴이나 모멘텀이 형성됨
-4. 특정 이벤트나 뉴스에 반응하여 단기 가격 변동 가능성이 높음
-
-결과는 다음과 같은 JSON 형식으로 제공해주세요:
-{{
-  "candidates": [
-    {{
-      "symbol": "종목코드",
-      "name": "종목명",
-      "reason": "추천 이유 (간략히)",
-      "day_trading_score": 단타매매 적합도 점수 (0-100),
-      "expected_volatility": "예상 변동성 (백분율)"
-    }},
-    // 추가 종목...
-  ]
-}}
-
-{max_count}개 종목을 추천해주세요."""
-
-            # GPT에 직접 요청
-            response = self.analyzer.openai_client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0.7,
-                messages=[
-                    {"role": "system", "content": "당신은 주식 단타매매 전문가입니다. 특히 기술적 분석과 모멘텀 파악에 능숙합니다."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            if not opportunities:
+                logger.info(f"카카오톡 전송할 급등/단타 종목이 없습니다 (최소 점수: {min_score})")
+                return False
+                
+            # 최대 종목 수 제한
+            opportunities = opportunities[:max_count]
             
-            response_content = response.choices[0].message.content
+            # 메시지 생성
+            now = get_current_time_str(format_str="%Y-%m-%d %H:%M")
+            message = f"🔥 추천 급등/단타 종목 ({now})\n\n"
             
-            # JSON 추출
-            import re
-            import json
+            # 급등주 섹션 (모멘텀 점수 기준)
+            momentum_stocks = [opp for opp in opportunities if opp.get('momentum_score', 0) >= min_score]
+            if momentum_stocks:
+                message += "📈 급등주 TOP 리스트\n"
+                message += "┌────────────────────\n"
+                
+                for i, stock in enumerate(momentum_stocks[:5]):
+                    symbol = stock.get('symbol', '')
+                    name = stock.get('name', symbol)
+                    momentum_score = stock.get('momentum_score', 0)
+                    current_price = stock.get('current_price', 0)
+                    
+                    # 종목명 (코드)
+                    message += f"│ {i+1}. {name} ({symbol})\n"
+                    # 모멘텀 점수
+                    message += f"│   모멘텀 점수: {momentum_score:.1f}/100\n"
+                    # 현재가 (있는 경우만)
+                    if current_price > 0:
+                        message += f"│   현재가: {int(current_price):,}원\n"
+                    # 매매 전략 (있는 경우만)
+                    strategy = stock.get('strategy', '')
+                    if strategy:
+                        message += f"│   추천 전략: {strategy}\n"
+                    
+                    # 마지막 항목이 아니면 구분선 추가
+                    if i < len(momentum_stocks[:5]) - 1:
+                        message += "│ ----------------------\n"
+                        
+                message += "└────────────────────\n\n"
             
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})', response_content)
-            if json_match:
-                json_str = json_match.group(1) or json_match.group(2)
-                try:
-                    result = json.loads(json_str)
+            # 단타매매 섹션 (단타 점수 기준)
+            day_trading_stocks = [opp for opp in opportunities if opp.get('day_trading_score', 0) >= min_score]
+            if day_trading_stocks:
+                message += "💰 단타매매 추천 종목\n"
+                message += "┌────────────────────\n"
+                
+                for i, stock in enumerate(day_trading_stocks[:5]):
+                    symbol = stock.get('symbol', '')
+                    name = stock.get('name', symbol)
+                    day_score = stock.get('day_trading_score', 0)
+                    current_price = stock.get('current_price', 0)
                     
-                    # 결과 추출 및 검증
-                    candidates = result.get('candidates', [])
+                    # 종목명 (코드)
+                    message += f"│ {i+1}. {name} ({symbol})\n"
+                    # 단타 점수
+                    message += f"│   단타 점수: {day_score:.1f}/100\n"
+                    # 현재가 (있는 경우만)
+                    if current_price > 0:
+                        message += f"│   현재가: {int(current_price):,}원\n"
                     
-                    # 점수 기준 필터링 및 정렬
-                    valid_candidates = [c for c in candidates if c.get('day_trading_score', 0) >= min_score]
-                    sorted_candidates = sorted(valid_candidates, key=lambda x: x.get('day_trading_score', 0), reverse=True)
+                    # 매매 전략 (있는 경우만)
+                    strategy = stock.get('strategy', '')
+                    if strategy:
+                        message += f"│   추천 전략: {strategy}\n"
+                        
+                    # 목표가/손절가 (있는 경우만)
+                    target_price = stock.get('target_price', 0)
+                    stop_loss = stock.get('stop_loss', 0)
+                    if target_price > 0 and stop_loss > 0:
+                        message += f"│   목표가: {int(target_price):,}원 / 손절가: {int(stop_loss):,}원\n"
                     
-                    # 종목 코드만 추출
-                    symbols = [c.get('symbol') for c in sorted_candidates[:max_count]]
-                    
-                    # 모멘텀 기회에 추가
-                    for candidate in sorted_candidates[:max_count]:
-                        self.add_momentum_opportunity({
-                            'symbol': candidate.get('symbol'),
-                            'name': candidate.get('name', candidate.get('symbol')),
-                            'day_trading_score': candidate.get('day_trading_score', 75),
-                            'strategy': '단타매매',
-                            'market': market
-                        })
-                    
-                    logger.info(f"GPT 단타매매 종목 추천 완료: {', '.join(symbols)}")
-                    return symbols
-                    
-                except Exception as e:
-                    logger.error(f"GPT 응답 JSON 파싱 중 오류: {e}")
+                    # 마지막 항목이 아니면 구분선 추가
+                    if i < len(day_trading_stocks[:5]) - 1:
+                        message += "│ ----------------------\n"
+                        
+                message += "└────────────────────\n\n"
             
-            # JSON 파싱 실패 시 기본 종목 반환 (빈 리스트)
-            logger.error(f"{market} 시장에서 유효한 JSON을 추출할 수 없습니다")
-            return []
+            # 메시지 끝 마무리
+            message += f"⏱️ {now} 기준\n"
+            message += f"(최소 점수 기준: {min_score}점)"
             
+            # 메시지 전송을 위한 KakaoSender 인스턴스 생성
+            # (kakao_sender.py 모듈이 있다고 가정)
+            try:
+                from src.notification.kakao_sender import KakaoSender
+                kakao = KakaoSender(self.config)
+                logger.info(f"카카오톡으로 급등/단타 종목 리스트 ({len(opportunities)}개) 전송 시도")
+                return kakao.send_message(message)
+            except ImportError:
+                logger.error("KakaoSender 모듈을 가져올 수 없습니다.")
+                return False
+                
         except Exception as e:
-            logger.error(f"GPT 단타매매 종목 추천 중 오류: {e}")
-            return []
-    
-    def analyze_momentum_stock(self, symbol, stock_data=None, current_price=None, use_cache=False):
-        """
-        급등주 분석 및 단타매매 적합성 평가 (데이터베이스/캐시 사용 안함)
-        
-        Args:
-            symbol (str): 종목 코드
-            stock_data (DataFrame): 주가 데이터 (선택 사항)
-            current_price (float): 현재가 (선택 사항)
-            use_cache (bool): 캐시 사용 여부 (항상 False로 설정하여 GPT에 직접 요청)
-            
-        Returns:
-            dict: 분석 결과
-        """
-        logger.info(f"{symbol} 급등주 분석 및 단타매매 적합성 평가 시작")
-        
-        try:
-            # 주가 데이터 요약
-            data_summary = {}
-            
-            if stock_data is not None and not stock_data.empty:
-                # 기본 주가 정보
-                try:
-                    # RSI 재계산 추가 - 0으로 나누기 오류 방지 (개선된 버전)
-                    if 'Close' in stock_data.columns and len(stock_data) > 14 and 'RSI' not in stock_data.columns:
-                        delta = stock_data['Close'].diff()
-                        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-                        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-                        
-                        # 더 강화된 0으로 나누기 방지를 위한 안전장치
-                        epsilon = 1e-10  # 아주 작은 값으로 대체
-                        
-                        # loss가 0이면 RSI = 100 (모든 변화가 긍정적인 경우)
-                        # loss가 0이 아니면 일반적인 RSI 공식 적용
-                        rs = gain / (loss + epsilon)
-                        stock_data['RSI'] = 100 - (100 / (1 + rs))
-                    
-                    recent_close = stock_data['Close'].iloc[-1]
-                    if current_price is None:
-                        current_price = recent_close
-                    
-                    # 최근 가격 변화 계산
-                    if len(stock_data) >= 5:
-                        day_change = (current_price / stock_data['Close'].iloc[-2] - 1) * 100
-                        week_change = (current_price / stock_data['Close'].iloc[-6] - 1) * 100
-                        
-                        data_summary['day_change'] = f"{day_change:.2f}%"
-                        data_summary['week_change'] = f"{week_change:.2f}%"
-                    
-                    # 거래량 변화 계산
-                    if 'Volume' in stock_data.columns and len(stock_data) >= 20:
-                        avg_volume = stock_data['Volume'].tail(20).mean()
-                        latest_volume = stock_data['Volume'].iloc[-1]
-                        volume_ratio = latest_volume / (avg_volume + epsilon) if avg_volume > 0 else 1
-                        
-                        data_summary['volume_ratio'] = f"{volume_ratio:.2f}x"
-                    
-                    # 기술적 지표 추가 - None 체크 추가
-                    if 'RSI' in stock_data.columns and not pd.isna(stock_data['RSI'].iloc[-1]):
-                        data_summary['RSI'] = f"{stock_data['RSI'].iloc[-1]:.2f}"
-                        
-                    if ('MACD' in stock_data.columns and 'MACD_signal' in stock_data.columns and 
-                        not pd.isna(stock_data['MACD'].iloc[-1]) and not pd.isna(stock_data['MACD_signal'].iloc[-1])):
-                        data_summary['MACD'] = f"{stock_data['MACD'].iloc[-1]:.4f}"
-                        data_summary['MACD_signal'] = f"{stock_data['MACD_signal'].iloc[-1]:.4f}"
-                
-                except Exception as e:
-                    logger.error(f"{symbol} 주가 데이터 요약 중 오류: {e}")
-            
-            # 현재가 값이 None인 경우 기본값 설정
-            if current_price is None:
-                current_price = 0
-                logger.warning(f"{symbol} 현재가 정보가 없어 기본값 0으로 설정합니다.")
-            
-            # GPT 프롬프트 구성
-            prompt = f"""다음 종목에 대한 급등주 분석과 단타매매 적합성을 평가해주세요:
-
-종목: {symbol}
-현재가: {current_price:,.0f}원 (가용한 경우)
-
-주가 데이터 요약:
-{data_summary}
-
-다음 항목에 대한 분석을 JSON 형식으로 제공해주세요:
-1. 이 종목이 모멘텀/급등주인지 여부와 그 이유
-2. 단타매매에 적합한지 여부와 신뢰도
-3. 적절한 목표가 및 손절가
-4. 추천 매매 전략 (예: 돌파 매수, 조정 후 매수, 추세 추종 등)
-5. 모멘텀 점수 (0-100)와 단타매매 적합성 점수 (0-100)
-
-결과는 반드시 다음과 같은 JSON 형식으로 제공해주세요:
-{{
-  "is_momentum": true/false,
-  "momentum_reason": "모멘텀 판단 이유",
-  "day_trading_suitable": true/false,
-  "day_trading_reason": "단타매매 적합성 판단 이유",
-  "target_price": 목표가,
-  "stop_loss": 손절가,
-  "strategy": "추천 매매 전략",
-  "momentum_score": 모멘텀 점수 (0-100),
-  "day_trading_score": 단타매매 적합성 점수 (0-100),
-  "holding_period": "추천 보유 기간 (예: '당일', '1-2일')"
-}}
-
-반드시 올바른 JSON 형식으로 응답해주세요. 모든 문자열은 쌍따옴표로 감싸주세요."""
-
-            # GPT에 직접 요청
-            response = self.analyzer.openai_client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0.7,
-                messages=[
-                    {"role": "system", "content": "당신은 주식 모멘텀 분석 및 단타매매 전문가입니다. 응답은 항상 올바른 JSON 형식으로 제공해주세요."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            response_content = response.choices[0].message.content
-            
-            # JSON 추출 시도
-            import re
-            import json
-            
-            # 응답에서 JSON 부분만 추출
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})', response_content)
-            
-            if json_match:
-                # JSON 문자열 추출 및 전처리
-                json_str = json_match.group(1) or json_match.group(2)
-                
-                # JSON 문법 오류 수정을 위한 전처리
-                # 1. 작은따옴표를 큰따옴표로 변경
-                json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
-                json_str = re.sub(r':\s*\'([^\']*)\'', r': "\1"', json_str)
-                
-                # 2. 후행 쉼표 제거
-                json_str = re.sub(r',\s*}', '}', json_str)
-                json_str = re.sub(r',\s*]', ']', json_str)
-                
-                # 3. 키와 문자열 값이 큰따옴표로 감싸져 있는지 확인
-                json_str = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', json_str)
-                
-                try:
-                    result = json.loads(json_str)
-                    
-                    # 분석 결과에 추가 정보 포함
-                    result['symbol'] = symbol
-                    result['current_price'] = current_price
-                    result['analysis_time'] = get_current_time_str()
-                    
-                    # 메모리 기반 모멘텀 기회 저장소에 추가
-                    if result.get('momentum_score', 0) >= 70 or result.get('day_trading_score', 0) >= 70:
-                        self.add_momentum_opportunity({
-                            'symbol': symbol,
-                            'name': symbol,
-                            'momentum_score': result.get('momentum_score', 0),
-                            'day_trading_score': result.get('day_trading_score', 0),
-                            'current_price': current_price,
-                            'target_price': result.get('target_price'),
-                            'stop_loss': result.get('stop_loss'),
-                            'strategy': result.get('strategy', '모멘텀 트레이딩')
-                        })
-                    
-                    logger.info(f"{symbol} 급등주/단타매매 분석 완료: 모멘텀 점수 {result.get('momentum_score')},"
-                               f" 단타 점수 {result.get('day_trading_score')}")
-                    
-                    return result
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON 파싱 오류 (전처리 후): {e}, JSON 문자열: {json_str[:100]}...")
-                    
-                    # 파싱 실패 시 더 강력한 정규식으로 재시도
-                    try:
-                        # 모든 키-값 쌍을 개별적으로 추출
-                        is_momentum_match = re.search(r'"is_momentum"\s*:\s*(true|false)', json_str)
-                        momentum_reason_match = re.search(r'"momentum_reason"\s*:\s*"([^"]*)"', json_str)
-                        day_trading_suitable_match = re.search(r'"day_trading_suitable"\s*:\s*(true|false)', json_str)
-                        day_trading_reason_match = re.search(r'"day_trading_reason"\s*:\s*"([^"]*)"', json_str)
-                        target_price_match = re.search(r'"target_price"\s*:\s*([\d\.]+)', json_str)
-                        stop_loss_match = re.search(r'"stop_loss"\s*:\s*([\d\.]+)', json_str)
-                        strategy_match = re.search(r'"strategy"\s*:\s*"([^"]*)"', json_str)
-                        momentum_score_match = re.search(r'"momentum_score"\s*:\s*([\d\.]+)', json_str)
-                        day_trading_score_match = re.search(r'"day_trading_score"\s*:\s*([\d\.]+)', json_str)
-                        holding_period_match = re.search(r'"holding_period"\s*:\s*"([^"]*)"', json_str)
-                        
-                        # 수동으로 결과 딕셔너리 구성
-                        manual_result = {
-                            'symbol': symbol,
-                            'current_price': current_price,
-                            'timestamp': datetime.datetime.now().isoformat()
-                        }
-                        
-                        if is_momentum_match:
-                            manual_result['is_momentum'] = is_momentum_match.group(1) == 'true'
-                        if momentum_reason_match:
-                            manual_result['momentum_reason'] = momentum_reason_match.group(1)
-                        if day_trading_suitable_match:
-                            manual_result['day_trading_suitable'] = day_trading_suitable_match.group(1) == 'true'
-                        if day_trading_reason_match:
-                            manual_result['day_trading_reason'] = day_trading_reason_match.group(1)
-                        if target_price_match:
-                            manual_result['target_price'] = float(target_price_match.group(1))
-                        if stop_loss_match:
-                            manual_result['stop_loss'] = float(stop_loss_match.group(1))
-                        if strategy_match:
-                            manual_result['strategy'] = strategy_match.group(1)
-                        if momentum_score_match:
-                            manual_result['momentum_score'] = float(momentum_score_match.group(1))
-                        if day_trading_score_match:
-                            manual_result['day_trading_score'] = float(day_trading_score_match.group(1))
-                        if holding_period_match:
-                            manual_result['holding_period'] = holding_period_match.group(1)
-                            
-                        # 필수 필드 확인
-                        if 'momentum_score' in manual_result or 'day_trading_score' in manual_result:
-                            logger.info(f"{symbol} 수동 파싱 성공")
-                            return manual_result
-                            
-                    except Exception as e2:
-                        logger.error(f"수동 파싱 시도 중 오류: {e2}")
-            
-            # JSON 파싱 실패 시 기본 결과 반환
-            logger.error(f"{symbol} GPT 응답에서 유효한 JSON을 추출할 수 없습니다")
-            return {
-                'symbol': symbol,
-                'current_price': current_price,
-                'momentum_score': 50,
-                'day_trading_score': 50,
-                'is_momentum': False,
-                'day_trading_suitable': False,
-                'analysis_error': "분석 결과 파싱 실패"
-            }
-            
-        except Exception as e:
-            logger.error(f"{symbol} 급등주/단타매매 분석 중 오류: {e}")
-            return {
-                'symbol': symbol,
-                'analysis_error': str(e),
-                'momentum_score': 0,
-                'day_trading_score': 0
-            }
-    
-    def add_momentum_opportunity(self, opportunity):
-        """
-        모멘텀 거래 기회를 메모리 기반 저장소에 추가 (디비/캐시 대신)
-        
-        Args:
-            opportunity (dict): 모멘텀 거래 기회 정보
-        """
-        # 기존에 같은 종목이 있으면 업데이트
-        symbol = opportunity.get('symbol')
-        for i, existing in enumerate(self.momentum_opportunities):
-            if existing.get('symbol') == symbol:
-                self.momentum_opportunities[i] = opportunity
-                logger.debug(f"{symbol} 모멘텀 기회 정보 업데이트")
-                return
-        
-        # 새 기회 추가
-        opportunity['timestamp'] = get_current_time_str()
-        self.momentum_opportunities.append(opportunity)
-        logger.debug(f"{symbol} 새 모멘텀 기회 추가: 모멘텀 점수 {opportunity.get('momentum_score', 'N/A')}, "
-                    f"단타 점수 {opportunity.get('day_trading_score', 'N/A')}")
-        
-        # 최대 20개 기회만 저장
-        if len(self.momentum_opportunities) > 20:
-            self.momentum_opportunities = sorted(
-                self.momentum_opportunities,
-                key=lambda x: max(x.get('momentum_score', 0), x.get('day_trading_score', 0)),
-                reverse=True
-            )[:20]
-    
-    def get_momentum_opportunities(self, min_score=60):
-        """
-        저장된 모멘텀 거래 기회 조회 (디비/캐시 대신)
-        
-        Args:
-            min_score (int): 최소 점수 (0-100)
-            
-        Returns:
-            list: 모멘텀 거래 기회 리스트
-        """
-        # 점수 기준 필터링
-        filtered = [
-            opp for opp in self.momentum_opportunities 
-            if max(opp.get('momentum_score', 0), opp.get('day_trading_score', 0)) >= min_score
-        ]
-        
-        # 점수 순 정렬
-        sorted_opportunities = sorted(
-            filtered,
-            key=lambda x: max(x.get('momentum_score', 0), x.get('day_trading_score', 0)),
-            reverse=True
-        )
-        
-        return sorted_opportunities
-    
-    def _generate_market_summary(self, market="KR"):
-        """
-        시장 상황 요약 생성
-        
-        Args:
-            market (str): 시장 구분 ("KR" 또는 "US")
-            
-        Returns:
-            str: 시장 상황 요약
-        """
-        # GPT에 시장 상황 요약 요청
-        prompt = f"""오늘({get_current_time_str('%Y년 %m월 %d일')}) {market} 주식 시장의 전반적인 상황을 간략히 요약해주세요.
-주요 지수 동향, 업종별 흐름, 투자자 동향, 시장 주요 이슈 등을 포함하세요.
-3-4문장으로 간결하게 작성해주세요."""
-
-        try:
-            response = self.analyzer.openai_client.chat.completions.create(
-                model="gpt-4o",
-                temperature=0.7,
-                max_tokens=200,
-                messages=[
-                    {"role": "system", "content": "당신은 주식 시장 분석 전문가입니다."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"시장 요약 생성 중 오류: {e}")
-            return f"{market} 시장에 대한 요약 정보를 생성할 수 없습니다."
+            logger.error(f"급등/단타 종목 카카오톡 전송 중 오류: {e}")
+            return False

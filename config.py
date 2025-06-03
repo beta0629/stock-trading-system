@@ -241,15 +241,15 @@ REALTIME_MAX_HOLDING_MINUTES = 60  # 실시간 트레이딩 최대 보유 시간
 
 # GPT에 의해 추천된 한국 종목 정보 (코드와 이름)
 # GPT_USE_DYNAMIC_SELECTION = True 설정 시 아래 목록은 GPT가 자동 업데이트합니다
-# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '035420', 'name': 'NAVER'}, {'code': '035720', 'name': '카카오'}, {'code': '051910', 'name': 'LG화학'}]
+# 주의: KR_STOCK_INFO = [{'code': '005930', 'name': '삼성전자'}, {'code': '000660', 'name': 'SK하이닉스'}, {'code': '051910', 'name': 'LG화학'}, {'code': '035420', 'name': 'NAVER'}, {'code': '096770', 'name': 'SK이노베이션'}, {'code': '005380', 'name': '현대차'}]
 # 종목 데이터는 src/database/db_manager.py의 get_kr_stock_info() 함수를 통해 불러옵니다
 KR_STOCK_INFO = []  # 빈 리스트로 시작, 실행 시 데이터베이스에서 자동으로 채워짐
 
 # 종목 코드 리스트 생성
-KR_STOCKS = []
+KR_STOCKS = ['005930', '000660', '051910', '035420', '096770', '005380']
 
 # 시장 시간 관련 설정
-FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "").lower() == "true"  # 시장 시간 강제 오픈 여부
+FORCE_MARKET_OPEN = os.environ.get("FORCE_MARKET_OPEN", "").lower() == "false"  # 시장 시간 강제 오픈 여부
 
 # 웹 인터페이스 설정
 WEB_UI_ENABLED = True  # 웹 인터페이스 활성화 여부
@@ -298,6 +298,12 @@ SWING_TRADING_MIN_HOLDING_DAYS = int(os.environ.get("SWING_TRADING_MIN_HOLDING_D
 SWING_TRADING_MAX_HOLDING_DAYS = int(os.environ.get("SWING_TRADING_MAX_HOLDING_DAYS", "15"))  # 스윙 매매 최대 보유 일수
 SWING_TRADING_MONITOR_INTERVAL = int(os.environ.get("SWING_TRADING_MONITOR_INTERVAL", "60"))  # 스윙 매매 모니터링 간격 (분)
 SWING_SCORE_THRESHOLD = int(os.environ.get("SWING_SCORE_THRESHOLD", "75"))  # 스윙 매매 점수 임계값 (0-100)
+
+# 시장 우선순위 설정 (추가)
+US_MARKET_PRIORITY = True  # 미국 시장 우선 설정 (양쪽 시장이 열려있을 경우 미국 시장 우선)
+MARKET_PRIORITY_TIME_CHECK_INTERVAL = 10  # 시장 우선순위 체크 간격 (분)
+US_MARKET_ALLOCATION = 0.7  # 미국 시장 자본 배분 비율 (70%)
+KR_MARKET_ALLOCATION = 0.3  # 한국 시장 자본 배분 비율 (30%)
 
 # 초보자 실전투자 설정 (단타매매 중심 전략으로 변경)
 GPT_STRATEGY_TYPE = "day_trading"  # 단타매매 중심 전략으로 설정
@@ -366,8 +372,8 @@ CURRENT_WEB_STRATEGY = WEB_STRATEGY_DAY_TRADING  # 기본값으로 단타매매 
 
 
 # GPT에 의해 추천된 미국 종목 목록
-US_STOCKS = []
+US_STOCKS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META']
 
 
 # GPT에 의해 추천된 미국 종목 정보 (코드와 이름)
-US_STOCK_INFO = [{'code': 'NVDA', 'name': 'NVIDIA Corporation'}, {'code': 'AMD', 'name': 'Advanced Micro Devices, Inc.'}, {'code': 'TSLA', 'name': 'Tesla, Inc.'}]
+US_STOCK_INFO = [{'code': 'AAPL', 'name': 'Apple Inc.'}, {'code': 'MSFT', 'name': 'Microsoft Corporation'}, {'code': 'GOOGL', 'name': 'Alphabet Inc.'}, {'code': 'AMZN', 'name': 'Amazon.com Inc.'}, {'code': 'META', 'name': 'Meta Platforms Inc.'}]

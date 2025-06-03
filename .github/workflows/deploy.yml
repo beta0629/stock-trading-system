@@ -1,0 +1,43 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [ main, master ]  # main 또는 master 브랜치에 푸시될 때 실행
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 전체 히스토리 가져오기
+      
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      
+      - name: Add known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 45.76.16.239 >> ~/.ssh/known_hosts
+      
+      - name: Create deployment package
+        run: |
+          zip -r stock_sale_deploy.zip . -x "*.git*" "*.DS_Store" "node_modules/*" "*/node_modules/*" "venv/*" "*/__pycache__/*" "*.pyc" "*.log" "logs/*" "cache/*" "data/backup/*"
+      
+      - name: Deploy to server
+        run: |
+          scp stock_sale_deploy.zip linuxuser@45.76.16.239:/home/linuxuser/stock_trading/
+          ssh linuxuser@45.76.16.239 "cd /home/linuxuser/stock_trading && \
+            unzip -o stock_sale_deploy.zip && \
+            rm stock_sale_deploy.zip && \
+            chmod +x run_stock_trader.sh && \
+            pip3 install -r requirements.txt && \
+            sudo systemctl restart stock-api.service && \
+            sudo systemctl restart stock-trader.service"
+      
+      - name: Check service status
+        run: |
+          ssh linuxuser@45.76.16.239 "sudo systemctl status stock-api.service --no-pager && \
+            sudo systemctl status stock-trader.service --no-pager"

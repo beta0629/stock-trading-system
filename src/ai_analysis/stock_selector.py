@@ -5,6 +5,7 @@ GPT 기반 종목 선정 모듈
 다양한 전략(성장형, 배당형, 밸류, 모멘텀 등)을 기반으로 종목을 추천할 수 있습니다.
 """
 import os
+import re
 import json
 import logging
 import requests
@@ -103,33 +104,22 @@ class StockSelector:
             if os.path.exists(cache_file):
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     cached_data = json.load(f)
-                    logger.info(f"캐시된 {market} 시장 종목 목록을 로드했습니다.")
-                    return cached_data
+                    # 유효한 추천 종목이 있는지 확인
+                    if "recommended_stocks" in cached_data and cached_data["recommended_stocks"]:
+                        logger.info(f"캐시된 {market} 시장 종목 목록을 로드했습니다.")
+                        # 캐시 생성 시간 추가
+                        if "cache_timestamp" not in cached_data:
+                            cached_data["cache_timestamp"] = get_current_time_str()
+                        return cached_data
+                    else:
+                        logger.warning(f"캐시된 {market} 시장 종목 목록이 유효하지 않습니다.")
         except Exception as e:
             logger.error(f"캐시된 종목 목록 로드 중 오류 발생: {e}")
             
-        # 캐시 파일이 없을 경우 기본 종목 목록 반환
-        if market == "KR":
-            return {
-                "recommended_stocks": [
-                    {"symbol": "005930", "name": "삼성전자", "sector": "반도체"},
-                    {"symbol": "000660", "name": "SK하이닉스", "sector": "반도체"},
-                    {"symbol": "051910", "name": "LG화학", "sector": "화학"},
-                    {"symbol": "035420", "name": "NAVER", "sector": "인터넷 서비스"},
-                    {"symbol": "096770", "name": "SK이노베이션", "sector": "에너지"},
-                    {"symbol": "005380", "name": "현대차", "sector": "자동차"}
-                ]
-            }
-        else:  # US
-            return {
-                "recommended_stocks": [
-                    {"symbol": "AAPL", "name": "Apple Inc.", "sector": "Technology"},
-                    {"symbol": "MSFT", "name": "Microsoft Corporation", "sector": "Technology"},
-                    {"symbol": "GOOGL", "name": "Alphabet Inc.", "sector": "Technology"},
-                    {"symbol": "AMZN", "name": "Amazon.com Inc.", "sector": "E-commerce"},
-                    {"symbol": "META", "name": "Meta Platforms Inc.", "sector": "Social Media"}
-                ]
-            }
+        # 캐시 파일이 없거나, 유효하지 않은 경우 기본 종목 목록 반환
+        default_data = self._get_default_recommendations(market)
+        logger.info(f"{market} 시장에 대한 기본 종목 목록을 반환합니다.")
+        return default_data
             
     def _cache_recommendations(self, market, recommendations):
         """
@@ -144,14 +134,58 @@ class StockSelector:
         """
         cache_file = self.kr_cache_file if market == "KR" else self.us_cache_file
         
+        # 추천 종목 데이터가 유효한지 확인
+        if not recommendations or "recommended_stocks" not in recommendations or not recommendations["recommended_stocks"]:
+            logger.warning(f"{market} 시장 추천 종목 데이터가 유효하지 않아 캐시하지 않습니다.")
+            return False
+            
+        # 캐시 생성 시간 추가
+        recommendations["cache_timestamp"] = get_current_time_str()
+        
         try:
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(recommendations, f, ensure_ascii=False, indent=2)
-            logger.info(f"{market} 시장 종목 추천 목록을 캐시 파일에 저장했습니다.")
+            logger.info(f"{market} 시장 종목 추천 목록을 캐시 파일({cache_file})에 저장했습니다.")
             return True
         except Exception as e:
             logger.error(f"종목 추천 목록 캐싱 중 오류 발생: {e}")
             return False
+    
+    def _get_default_recommendations(self, market):
+        """
+        기본 종목 추천 목록을 반환합니다.
+        
+        Args:
+            market: 시장 코드 ("KR" 또는 "US")
+            
+        Returns:
+            dict: 기본 추천 종목 목록
+        """
+        if market == "KR":
+            return {
+                "recommended_stocks": [
+                    {"symbol": "005930", "name": "삼성전자", "sector": "반도체", "reason": "시가총액 1위 기업으로 안정적인 성장세 유지"},
+                    {"symbol": "000660", "name": "SK하이닉스", "sector": "반도체", "reason": "메모리 반도체 시장의 주요 플레이어"},
+                    {"symbol": "051910", "name": "LG화학", "sector": "화학", "reason": "배터리 사업 성장이 기대됨"},
+                    {"symbol": "035420", "name": "NAVER", "sector": "인터넷 서비스", "reason": "국내 인터넷 플랫폼 1위 기업"},
+                    {"symbol": "096770", "name": "SK이노베이션", "sector": "에너지", "reason": "친환경 에너지 사업 확대 중"},
+                    {"symbol": "005380", "name": "현대차", "sector": "자동차", "reason": "전기차 전환에 따른 성장 기대"}
+                ],
+                "analysis": "API 연결 오류로 인해 기본 종목 목록을 반환합니다. 실시간 분석이 필요하면 API 연결 상태를 확인하세요.",
+                "cache_timestamp": get_current_time_str()
+            }
+        else:  # US
+            return {
+                "recommended_stocks": [
+                    {"symbol": "AAPL", "name": "Apple Inc.", "sector": "Technology", "reason": "안정적인 수익성과 브랜드 파워"},
+                    {"symbol": "MSFT", "name": "Microsoft Corporation", "sector": "Technology", "reason": "클라우드 사업과 AI 성장이 기대됨"},
+                    {"symbol": "GOOGL", "name": "Alphabet Inc.", "sector": "Technology", "reason": "광고 시장 독점적 지위"},
+                    {"symbol": "AMZN", "name": "Amazon.com Inc.", "sector": "E-commerce", "reason": "전자상거래 및 클라우드 선두 기업"},
+                    {"symbol": "META", "name": "Meta Platforms Inc.", "sector": "Social Media", "reason": "소셜 미디어 시장 지배력"}
+                ],
+                "analysis": "API 연결 오류로 인해 기본 종목 목록을 반환합니다. 실시간 분석이 필요하면 API 연결 상태를 확인하세요.",
+                "cache_timestamp": get_current_time_str()
+            }
             
     def recommend_stocks(self, market: str = "KR", count: int = 5, strategy: str = "balanced") -> Dict[str, Any]:
         """
@@ -196,104 +230,119 @@ class StockSelector:
         if not market_info:
             logger.error(f"지원하지 않는 시장 코드: {market}")
             return {"error": "지원하지 않는 시장 코드입니다."}
-            
-        # 전략별 프롬프트 수정
-        strategy_description = {
-            "balanced": "균형 잡힌 위험과 수익률의 안정적인 성장형 포트폴리오",
-            "growth": "높은 성장성과 혁신성을 갖춘 성장주 중심 포트폴리오",
-            "value": "저평가된 내재가치가 높은 가치주 중심 포트폴리오",
-            "dividend": "안정적인 배당수익을 제공하는 배당주 중심 포트폴리오",
-            "momentum": "최근 상승 추세가 강한 모멘텀 중심 포트폴리오"
-        }.get(strategy, "균형 잡힌 포트폴리오")
         
-        # GPT 프롬프트 구성
-        prompt = f"""당신은 최고의 투자 전문가입니다. 오늘 날짜는 {current_date}입니다.
-현재 {market_info['name']} 주식 시장 상황과 글로벌 경제 환경을 종합적으로 고려하여,
-{strategy_description}에 적합한 {market_info['name']} 주식 {count}개를 추천해주세요.
+        # 전략별 프롬프트 설정
+        strategy_info = {
+            "balanced": {
+                "description": "균형 잡힌 포트폴리오",
+                "focus": "안정성과 성장성을 동시에 고려한 종목",
+                "criteria": "밸류에이션이 적정하고, 재무상태가 튼튼하며, 적절한 성장성을 갖춘 기업"
+            },
+            "growth": {
+                "description": "고성장 중심 포트폴리오",
+                "focus": "높은 매출/이익 성장률을 보이는 종목",
+                "criteria": "신기술, 신산업 분야에서 빠르게 성장하며 시장 점유율을 확대하는 기업"
+            },
+            "value": {
+                "description": "가치투자 포트폴리오",
+                "focus": "저평가된 우량 가치주",
+                "criteria": "PER, PBR이 낮고 배당수익률이 높으며 안정적인 현금흐름을 가진 기업"
+            },
+            "dividend": {
+                "description": "배당 중심 포트폴리오",
+                "focus": "높은 배당수익률을 제공하는 종목",
+                "criteria": "안정적인 현금흐름으로 지속적인 배당을 지급하는 기업"
+            },
+            "momentum": {
+                "description": "모멘텀 중심 포트폴리오",
+                "focus": "상승 추세가 강한 종목",
+                "criteria": "상대적 강도가 높고 실적 모멘텀이 강한 기업"
+            }
+        }
+        
+        selected_strategy = strategy_info.get(strategy, strategy_info["balanced"])
+        
+        # 프롬프트 작성 - 중첩 f-string 문제 해결을 위한 템플릿 사용
+        template = """오늘은 {current_date}입니다. 
+당신은 {market_name} 주식 시장의 전문 투자 분석가입니다.
+현재 {market_name} 시장 상황과 최신 트렌드를 고려하여 투자자에게 추천할 가장 유망한 종목 {count}개를 선정해주세요.
 
-각 종목에 대해 다음 정보를 포함하여 JSON 형식으로 응답해주세요:
-1. 종목코드(symbol)
-2. 종목명(name)
-3. 주요 업종/섹터(sector)
-4. 추천 이유(reason) - 간결하게 2-3문장
-5. 주요 재무지표(key_metrics) - 예상 PER, ROE, 부채비율 등 중요 지표
-6. 향후 12개월 목표가(target_price)
-7. 투자 위험도(risk_level) - 1(매우 낮음)부터 10(매우 높음)
-8. 포트폴리오 내 권장 비중(suggested_weight) - 퍼센트(%)
+## 투자 전략: {strategy_description}
+- 주요 초점: {strategy_focus}
+- 선정 기준: {strategy_criteria}
 
-{market_info['name']} 시장의 종목코드는 {market_info['symbols_example']} 형식으로 정확히 표기해주세요.
+## 요청사항:
+1. {market_name} 시장에서 현재 {strategy_description}에 적합한 최고의 주식 {count}개 추천
+2. 각 종목별로 다음 정보 포함:
+   - 종목코드 (심볼)
+   - 회사명
+   - 업종/섹터
+   - 추천 이유 (간결하게 2-3문장으로)
+   - 포트폴리오 비중 제안 (백분율)
+   - 주요 재무지표 (간략하게)
 
-마지막으로 전체 시장에 대한 간략한 전망과 선택한 종목들이 현재 경제 상황에서 왜 유망한지 설명해주세요.
+종목코드는 {market_name} 시장의 실제 종목코드를 정확히 사용해주세요 (예: {symbols_example}).
 
-응답은 다음과 같은 JSON 형식으로 제공해주세요:
+## 출력 형식:
+추천 종목 목록은 JSON 형식으로 다음과 같이 작성해주세요:
+```json
 {{
-  "market_analysis": "현재 시장 상황 분석...",
-  "investment_strategy": "{strategy} 전략 설명...",
   "recommended_stocks": [
     {{
       "symbol": "종목코드",
-      "name": "종목명",
-      "sector": "섹터",
+      "name": "회사명",
+      "sector": "업종",
       "reason": "추천 이유",
+      "suggested_weight": 백분율(숫자만),
       "key_metrics": {{
-        "per": 15.2,
-        "roe": 12.5,
-        "debt_ratio": 45.3
-      }},
-      "target_price": 50000,
-      "risk_level": 7,
-      "suggested_weight": 25
+        "per": 숫자,
+        "pbr": 숫자,
+        "dividend_yield": 숫자
+      }}
     }},
     ...
   ],
-  "outlook": "향후 시장 전망 및 투자 제안"
-}}"""
+  "analysis": "종목 선정에 대한 종합적인 설명"
+}}
+```
 
+현재 {market_name} 시장 상황과 {strategy} 전략에 맞는 가장 좋은 투자 기회를 분석해주세요.
+오직 JSON 형식으로만 응답해주세요.
+"""
+        
+        # format 메서드로 값 채우기
+        prompt = template.format(
+            current_date=current_date,
+            market_name=market_info['name'],
+            count=count,
+            strategy_description=selected_strategy['description'],
+            strategy_focus=selected_strategy['focus'],
+            strategy_criteria=selected_strategy['criteria'],
+            symbols_example=market_info['symbols_example'],
+            strategy=strategy
+        )
+        
         try:
-            # OpenAI API 호출
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            }
+            # GPT 요청
+            response = self._request_gpt(prompt)
             
-            data = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "당신은 최고의 투자 전문가입니다. 항상 JSON 형식으로 응답하세요."},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": self.max_tokens,
-                "temperature": 0.7,
-                "response_format": {"type": "json_object"}
-            }
+            # 응답에서 JSON 추출
+            result = self._extract_json(response)
             
-            response = requests.post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=30  # 타임아웃 설정 증가
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"OpenAI API 호출 실패: {response.status_code} {response.text}")
-                # API 호출 실패 시 캐시된 추천 목록 반환
+            # 결과 캐싱
+            if "recommended_stocks" in result and result["recommended_stocks"]:
+                self._cache_recommendations(market, result)
+                logger.info(f"{market} 시장 {strategy} 전략 종목 추천 완료 및 캐싱")
+            else:
+                logger.warning(f"{market} 시장 {strategy} 전략 종목 추천 실패: 유효한 추천 목록이 없습니다")
+                # 캐시된 데이터로 대체
                 return self._load_cached_recommendations(market)
                 
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-            
-            # JSON 파싱
-            recommendations = json.loads(content)
-            logger.info(f"{market} 시장 종목 추천 완료: {len(recommendations.get('recommended_stocks', []))}개")
-            
-            # 추천 결과 캐싱
-            self._cache_recommendations(market, recommendations)
-            
-            return recommendations
+            return result
             
         except Exception as e:
-            logger.error(f"종목 추천 중 오류 발생: {e}")
-            # 오류 발생 시 캐시된 추천 목록 반환
+            logger.error(f"{market} 시장 {strategy} 전략 종목 추천 중 오류 발생: {e}")
+            # 오류 발생 시 캐시된 데이터 사용
             return self._load_cached_recommendations(market)
             
     def advanced_sector_selection(self, market: str = "KR", sectors_count: int = 3) -> Dict[str, Any]:
@@ -329,26 +378,26 @@ class StockSelector:
             logger.error(f"지원하지 않는 시장 코드: {market}")
             return {"error": "지원하지 않는 시장 코드입니다."}
         
-        # GPT 프롬프트 구성
-        prompt = f"""당신은 최고의 투자 전문가입니다. 오늘 날짜는 {current_date}입니다.
-현재 {market_info['name']} 경제 상황과 글로벌 트렌드를 종합적으로 분석하여,
-향후 1-2년간 성장 가능성이 가장 높은 {market_info['name']} 산업 섹터 {sectors_count}개를 선정해주세요.
+        # GPT 프롬프트 구성 - 중첩된 f-string 제거
+        template = """당신은 최고의 투자 전문가입니다. 오늘 날짜는 {date}입니다.
+현재 {market_name} 경제 상황과 글로벌 트렌드를 종합적으로 분석하여,
+향후 1-2년간 성장 가능성이 가장 높은 {market_name} 산업 섹터 {count}개를 선정해주세요.
 
-예시로 {market_info['sectors_example']} 등의 섹터가 있습니다.
+예시로 {sectors_example} 등의 섹터가 있습니다.
 
 각 섹터에 대해 다음 정보를 포함하여 JSON 형식으로 응답해주세요:
 1. 섹터 이름(name)
 2. 성장 잠재력 점수(growth_potential) - 1(낮음)부터 10(매우 높음)
 3. 핵심 성장 동력(key_drivers) - 이 섹터가 성장하는 주요 원인들 (최소 3개)
 4. 주요 위험 요소(risk_factors) - 이 섹터 성장을 저해할 수 있는 요소들 (최소 2개)
-5. 대표 기업들(leading_companies) - 이 섹터의 대표적인 {market_info['name']} 기업들 (최소 3개)
+5. 대표 기업들(leading_companies) - 이 섹터의 대표적인 {market_name} 기업들 (최소 3개)
 6. 중장기 전망(outlook) - 향후 1-2년 전망을 간결하게 2-3문장으로
 
-마지막으로 전체 {market_info['name']} 경제에 대한 간략한 전망과 선정된 섹터들이 향후 경제에서 어떤 역할을 할지 설명해주세요.
+마지막으로 전체 {market_name} 경제에 대한 간략한 전망과 선정된 섹터들이 향후 경제에서 어떤 역할을 할지 설명해주세요.
 
 응답은 다음과 같은 JSON 형식으로 제공해주세요:
 {{
-  "economic_analysis": "현재 {market_info['name']} 경제 상황 분석...",
+  "economic_analysis": "현재 {market_name} 경제 상황 분석...",
   "promising_sectors": [
     {{
       "name": "섹터명",
@@ -362,6 +411,14 @@ class StockSelector:
   ],
   "overall_outlook": "전체 경제 전망 및 선정된 섹터들의 중요성"
 }}"""
+
+        # format 메서드를 사용하여 템플릿에 값 채우기
+        prompt = template.format(
+            date=current_date,
+            market_name=market_info['name'],
+            count=sectors_count,
+            sectors_example=market_info['sectors_example']
+        )
 
         try:
             # OpenAI API 호출
@@ -439,9 +496,9 @@ class StockSelector:
             logger.error(f"지원하지 않는 시장 코드: {market}")
             return {"error": "지원하지 않는 시장 코드입니다."}
         
-        # GPT 프롬프트 구성
-        prompt = f"""당신은 최고의 투자 전문가입니다. 오늘 날짜는 {current_date}입니다.
-{market_info['name']}의 {sector_name} 산업 섹터에서 향후 성장 가능성이 높은 주식 {count}개를 추천해주세요.
+        # GPT 프롬프트 구성 - 중첩된 f-string 제거
+        template = """당신은 최고의 투자 전문가입니다. 오늘 날짜는 {date}입니다.
+{market_name}의 {sector} 산업 섹터에서 향후 성장 가능성이 높은 주식 {count}개를 추천해주세요.
 
 각 종목에 대해 다음 정보를 포함하여 JSON 형식으로 응답해주세요:
 1. 종목코드(symbol)
@@ -452,11 +509,11 @@ class StockSelector:
 6. 향후 12개월 목표가(target_price)
 7. 투자 위험도(risk_level) - 1(매우 낮음)부터 10(매우 높음)까지의 점수
 
-{market_info['name']} 시장의 종목코드는 {market_info['symbols_example']} 형식으로 정확히 표기해주세요.
+{market_name} 시장의 종목코드는 {symbols_example} 형식으로 정확히 표기해주세요.
 
 응답은 다음과 같은 JSON 형식으로 제공해주세요:
 {{
-  "sector_analysis": "{sector_name} 섹터 현황 및 전망...",
+  "sector_analysis": "{sector} 섹터 현황 및 전망...",
   "recommended_stocks": [
     {{
       "symbol": "종목코드",
@@ -470,6 +527,15 @@ class StockSelector:
     ...
   ]
 }}"""
+
+        # format 메서드로 템플릿에 값 채우기
+        prompt = template.format(
+            date=current_date,
+            market_name=market_info['name'],
+            sector=sector_name,
+            count=count,
+            symbols_example=market_info['symbols_example']
+        )
 
         try:
             # OpenAI API 호출
@@ -765,29 +831,29 @@ class StockSelector:
             "MA_LONG": getattr(self.config, 'MA_LONG', 60)
         }
         
-        # GPT 프롬프트 구성
-        prompt = f"""당신은 주식 기술적 분석 전문가입니다. 오늘 날짜는 {current_date}입니다.
-현재 {market_info['name']} 주식 시장 상황과 글로벌 경제 환경을 고려하여, {sensitivity_description}에 최적화된 기술적 지표 설정값을 제안해주세요.
+        # GPT 프롬프트 구성 - 템플릿 형식으로 변경
+        template = """당신은 주식 기술적 분석 전문가입니다. 오늘 날짜는 {date}입니다.
+현재 {market_name} 주식 시장 상황과 글로벌 경제 환경을 고려하여, {strategy}에 최적화된 기술적 지표 설정값을 제안해주세요.
 
 현재 사용 중인 기술적 지표 설정은 다음과 같습니다:
-- RSI 기간: {current_settings['RSI_PERIOD']} (일반적으로 9-25 사이)
-- RSI 과매도 기준: {current_settings['RSI_OVERSOLD']} (일반적으로 20-40 사이)
-- RSI 과매수 기준: {current_settings['RSI_OVERBOUGHT']} (일반적으로 60-80 사이)
-- MACD 빠른 이동평균: {current_settings['MACD_FAST']} (일반적으로 8-13 사이)
-- MACD 느린 이동평균: {current_settings['MACD_SLOW']} (일반적으로 21-30 사이)
-- MACD 시그널: {current_settings['MACD_SIGNAL']} (일반적으로 5-12 사이)
-- 볼린저밴드 기간: {current_settings['BOLLINGER_PERIOD']} (일반적으로 10-30 사이)
-- 볼린저밴드 표준편차: {current_settings['BOLLINGER_STD']} (일반적으로 1.5-3.0 사이)
-- 단기 이동평균: {current_settings['MA_SHORT']} (일반적으로 3-10 사이)
-- 중기 이동평균: {current_settings['MA_MEDIUM']} (일반적으로 15-30 사이)
-- 장기 이동평균: {current_settings['MA_LONG']} (일반적으로 50-200 사이)
+- RSI 기간: {rsi_period} (일반적으로 9-25 사이)
+- RSI 과매도 기준: {rsi_oversold} (일반적으로 20-40 사이)
+- RSI 과매수 기준: {rsi_overbought} (일반적으로 60-80 사이)
+- MACD 빠른 이동평균: {macd_fast} (일반적으로 8-13 사이)
+- MACD 느린 이동평균: {macd_slow} (일반적으로 21-30 사이)
+- MACD 시그널: {macd_signal} (일반적으로 5-12 사이)
+- 볼린저밴드 기간: {bollinger_period} (일반적으로 10-30 사이)
+- 볼린저밴드 표준편차: {bollinger_std} (일반적으로 1.5-3.0 사이)
+- 단기 이동평균: {ma_short} (일반적으로 3-10 사이)
+- 중기 이동평균: {ma_medium} (일반적으로 15-30 사이)
+- 장기 이동평균: {ma_long} (일반적으로 50-200 사이)
 
-현재 {market_info['name']} 시장의 특성과 경제 환경을 고려하여, 각 기술적 지표의 최적 설정값을 제안해주세요.
+현재 {market_name} 시장의 특성과 경제 환경을 고려하여, 각 기술적 지표의 최적 설정값을 제안해주세요.
 또한 각 설정값을 변경한 이유와 그에 따른 매매 전략에 대한 조언도 제공해주세요.
 
 응답은 다음과 같은 JSON 형식으로 제공해주세요:
 {{
-  "market_analysis": "현재 {market_info['name']} 시장 상황 분석...",
+  "market_analysis": "현재 {market_name} 시장 상황 분석...",
   "recommended_settings": {{
     "RSI_PERIOD": 14,
     "RSI_OVERSOLD": 30,
@@ -809,6 +875,24 @@ class StockSelector:
   }},
   "trading_strategy": "제안된 설정값을 사용할 때의 매매 전략 조언..."
 }}"""
+
+        # format 메서드를 사용하여 템플릿에 값 채우기
+        prompt = template.format(
+            date=current_date,
+            market_name=market_info['name'],
+            strategy=sensitivity_description,
+            rsi_period=current_settings['RSI_PERIOD'],
+            rsi_oversold=current_settings['RSI_OVERSOLD'],
+            rsi_overbought=current_settings['RSI_OVERBOUGHT'],
+            macd_fast=current_settings['MACD_FAST'],
+            macd_slow=current_settings['MACD_SLOW'],
+            macd_signal=current_settings['MACD_SIGNAL'],
+            bollinger_period=current_settings['BOLLINGER_PERIOD'],
+            bollinger_std=current_settings['BOLLINGER_STD'],
+            ma_short=current_settings['MA_SHORT'],
+            ma_medium=current_settings['MA_MEDIUM'],
+            ma_long=current_settings['MA_LONG']
+        )
 
         try:
             # OpenAI API 호출
@@ -1114,7 +1198,7 @@ class StockSelector:
 }
 '''
         
-        # 급등주 감지 기준 및 설명 (f-string 없이)
+        # 급등주 감지 기준 및 설명 (f-string 최소화)
         criteria_text = """급등주 감지 기준:
 1. 전일 대비 5% 이상 상승하는 종목
 2. 거래량이 평소보다 2배 이상 급증한 종목
@@ -1296,3 +1380,124 @@ class StockSelector:
         except Exception as e:
             logger.error(f"매매 시그널 생성 중 오류 발생: {e}")
             return {"error": f"시그널 생성 오류: {str(e)}"}
+    
+    def _request_gpt(self, prompt: str) -> str:
+        """
+        OpenAI GPT API에 요청을 보내 응답을 받아옵니다.
+        
+        Args:
+            prompt: GPT에게 전달할 프롬프트
+            
+        Returns:
+            str: GPT의 응답 텍스트
+        """
+        logger.debug(f"GPT API 요청 시작: {prompt[:50]}...")
+        
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "당신은 투자 전문가입니다. 항상 JSON 형식으로 응답하세요."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": self.max_tokens,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"}
+            }
+            
+            response = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"API 호출 오류: {response.status_code} {response.text}")
+                raise Exception(f"API 호출 실패: {response.status_code}")
+                
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+            
+        except Exception as e:
+            logger.error(f"GPT API 호출 중 오류 발생: {e}")
+            raise
+            
+    def _extract_json(self, text: str) -> Dict[str, Any]:
+        """
+        텍스트에서 JSON 데이터를 추출합니다.
+        
+        Args:
+            text: JSON을 포함한 텍스트
+            
+        Returns:
+            Dict[str, Any]: 추출된 JSON 데이터
+        """
+        try:
+            # 이미 JSON 형식인 경우 바로 파싱
+            if text.strip().startswith('{') and text.strip().endswith('}'):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning("JSON 형식이지만 파싱에 실패했습니다.")
+                
+            # 코드 블록에서 JSON 추출 시도 (```json ... ``` 형식)
+            json_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+            matches = re.findall(json_pattern, text)
+            
+            if matches:
+                for match in matches:
+                    try:
+                        return json.loads(match)
+                    except json.JSONDecodeError:
+                        continue
+            
+            # 중괄호로 둘러싸인 부분 찾기 (더 포괄적인 패턴)
+            brace_pattern = r'\{(?:[^{}]|(?R))*\}'
+            matches = re.findall(brace_pattern, text, re.DOTALL)
+            
+            if matches:
+                for match in matches:
+                    try:
+                        return json.loads(match)
+                    except (json.JSONDecodeError, RecursionError):
+                        continue
+                        
+            # 마지막 시도: 텍스트 정리 후 파싱
+            cleaned_text = re.sub(r'[^\{\}\[\]"\':\d,\.\w\s-]', '', text)
+            cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+            
+            # 중괄호로 시작하고 끝나는 부분 추출
+            if '{' in cleaned_text and '}' in cleaned_text:
+                start = cleaned_text.find('{')
+                end = cleaned_text.rfind('}') + 1
+                json_text = cleaned_text[start:end]
+                try:
+                    return json.loads(json_text)
+                except json.JSONDecodeError:
+                    pass
+                            
+            # 모든 시도 실패 시 오류 발생
+            logger.error("텍스트에서 유효한 JSON을 찾을 수 없습니다.")
+            return {
+                "error": "유효한 JSON을 찾을 수 없습니다.",
+                "recommended_stocks": [
+                    {"symbol": "005930", "name": "삼성전자", "sector": "반도체"}
+                ],
+                "analysis": "JSON 파싱 실패로 기본 데이터를 반환합니다."
+            }
+            
+        except Exception as e:
+            logger.error(f"JSON 추출 중 오류 발생: {e}")
+            return {
+                "error": f"JSON 추출 오류: {str(e)}",
+                "recommended_stocks": [
+                    {"symbol": "005930", "name": "삼성전자", "sector": "반도체"}
+                ],
+                "analysis": "오류 발생으로 기본 데이터를 반환합니다."
+            }

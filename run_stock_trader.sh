@@ -54,10 +54,10 @@ grep "GPT_AUTO_TRADING" config.py | tee -a $LOG_FILE
 echo "USE_DATABASE 설정:" | tee -a $LOG_FILE
 grep "USE_DATABASE" config.py | tee -a $LOG_FILE
 
-# 강제 시장 열림 설정
-# 이 부분이 추가됨: 시장 시간에 상관없이 거래 실행
-export FORCE_MARKET_OPEN=true
-echo "강제 시장 열림 모드 활성화 (FORCE_MARKET_OPEN=true)" | tee -a $LOG_FILE
+# 강제 시장 열림 설정 - 비활성화
+# export FORCE_MARKET_OPEN=true
+export FORCE_MARKET_OPEN=false
+echo "강제 시장 열림 모드 비활성화 (FORCE_MARKET_OPEN=false)" | tee -a $LOG_FILE
 
 # 데이터베이스 사용 설정
 export USE_DATABASE=true
@@ -111,11 +111,11 @@ function cleanup {
 trap cleanup SIGTERM SIGINT
 
 # 주식 매매 프로그램 실행
-echo "main.py 실행 중 (강제 시장 열림 모드)..." | tee -a $LOG_FILE
+echo "main.py 실행 중..." | tee -a $LOG_FILE
 
 # 디버깅을 위해 main.py가 직접 출력하도록 변경
 echo "$(date): 프로그램 시작" | tee -a $LOG_FILE
-$PYTHON_CMD -u main.py --force-market-open | tee -a $LOG_FILE
+$PYTHON_CMD -u main.py | tee -a $LOG_FILE
 
 # 프로그램 종료 코드 확인
 EXIT_CODE=$?

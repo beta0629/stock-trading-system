@@ -133,7 +133,28 @@ class GPTAutoTrader:
         Returns:
             bool: 거래 시간이면 True, 아니면 False
         """
-        return is_market_open(market)
+        # 미국 시장 우선순위 설정 확인
+        us_market_priority = getattr(self.config, 'US_MARKET_PRIORITY', True)
+        
+        # 양쪽 시장 상태 확인
+        kr_market_open = is_market_open("KR")
+        us_market_open = is_market_open("US")
+        
+        # 시장 우선순위에 따른 처리
+        if us_market_priority:
+            # 미국 시장이 열려있는 경우 미국 시장만 활성화
+            if us_market_open:
+                # 미국 시장이 요청된 경우 참, 한국 시장이 요청된 경우 거짓 반환
+                return market == "US"
+            else:
+                # 미국 시장이 닫혀있는 경우에만 한국 시장 상태 반환
+                if market == "KR":
+                    return kr_market_open
+                else:
+                    return False
+        else:
+            # 미국 시장 우선순위가 아닌 경우 각 시장 상태 그대로 반환
+            return is_market_open(market)
     
     def start(self):
         """GPT 기반 자동 매매 시작"""
@@ -1021,12 +1042,17 @@ class GPTAutoTrader:
                 else:
                     logger.info("미국 주식 거래가 비활성화되어 있습니다. 미국 주식 추천을 건너뜁니다.")
             
-            logger.info(f"GPT 종목 선정 완료: 한국 {len(kr_recommendations.get('recommended_stocks', []))}개, "
-                      f"미국 {len(us_recommendations.get('recommended_stocks', []))}개")
+            # None 체크 추가 (kr_recommendations가 None일 수 있음)
+            kr_count = len(kr_recommendations.get('recommended_stocks', [])) if kr_recommendations else 0
+            us_count = len(us_recommendations.get('recommended_stocks', [])) if us_recommendations else 0
+            
+            logger.info(f"GPT 종목 선정 완료: 한국 {kr_count}개, 미국 {us_count}개")
                       
-            # 선정된 종목 저장
-            self.gpt_selections['KR'] = kr_recommendations.get('recommended_stocks', [])
-            self.gpt_selections['US'] = us_recommendations.get('recommended_stocks', [])
+            # None 체크 추가
+            if kr_recommendations:
+                self.gpt_selections['KR'] = kr_recommendations.get('recommended_stocks', [])
+            if us_recommendations:
+                self.gpt_selections['US'] = us_recommendations.get('recommended_stocks', [])
             
             # 동적 종목 선정이 활성화된 경우에만 config.py 업데이트
             if self.use_dynamic_selection:
@@ -1039,7 +1065,7 @@ class GPTAutoTrader:
             # 마지막 선정 시간 업데이트
             self.last_selection_time = now
             
-            # 선정 내용 요약
+            # 선정 내용 요약 - 안전한 포맷팅 추가
             kr_summary = "🇰🇷 국내 추천 종목:\n"
             for stock in self.gpt_selections['KR']:
                 symbol = stock.get('symbol', '')
@@ -1049,8 +1075,11 @@ class GPTAutoTrader:
                 weight = stock.get('suggested_weight', 0)
                 stock_type = stock.get('type', '일반')
                 
+                # None 값 안전 처리 추가
+                target_str = f"{target:,.0f}원" if target is not None else "가격 정보 없음"
+                
                 type_emoji = "🔄" if stock_type == 'day_trading' else "📈" if stock_type == 'momentum' else "📊"
-                kr_summary += f"{type_emoji} {name} ({symbol}): 목표가 {target:,.0f}원, 비중 {weight}%, 위험도 {risk}/10\n"
+                kr_summary += f"{type_emoji} {name} ({symbol}): 목표가 {target_str}, 비중 {weight}%, 위험도 {risk}/10\n"
                 
             us_summary = "\n🇺🇸 미국 추천 종목:\n"
             for stock in self.gpt_selections['US']:
@@ -1061,13 +1090,16 @@ class GPTAutoTrader:
                 weight = stock.get('suggested_weight', 0)
                 stock_type = stock.get('type', '일반')
                 
+                # None 값 안전 처리 추가
+                target_str = f"${target:,.0f}" if target is not None else "가격 정보 없음"
+                
                 type_emoji = "🔄" if 'day_trading' in stock_type else "📈" if 'momentum' in stock_type else "📊"
-                us_summary += f"{type_emoji} {name} ({symbol}): 목표가 ${target:,.0f}, 비중 {weight}%, 위험도 {risk}/10\n"
+                us_summary += f"{type_emoji} {name} ({symbol}): 목표가 {target_str}, 비중 {weight}%, 위험도 {risk}/10\n"
             
             # 분석 내용 포함
-            kr_analysis = kr_recommendations.get('market_analysis', '')
-            us_analysis = us_recommendations.get('market_analysis', '')
-            investment_strategy = kr_recommendations.get('investment_strategy', '')
+            kr_analysis = kr_recommendations.get('market_analysis', '') if kr_recommendations else ''
+            us_analysis = us_recommendations.get('market_analysis', '') if us_recommendations else ''
+            investment_strategy = kr_recommendations.get('investment_strategy', '') if kr_recommendations else ''
             
             # 모드 정보 추가
             mode_info = ""
@@ -1538,8 +1570,6 @@ class GPTAutoTrader:
     def _execute_sell(self, symbol):
         """
         보유 종목 매도 실행
-        
-       
         
         Args:
             symbol: 종목 코드

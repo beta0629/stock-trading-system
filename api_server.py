@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import sys
+sys.path.append(".")  # 현재 디렉토리를 모듈 검색 경로에 추가
+
 """
 주식 트레이딩 시스템 API 서버
 
@@ -23,16 +26,42 @@ import asyncio
 import psutil  # 시스템 자원 사용량 모니터링을 위한 모듈 임포트
 from jwt.exceptions import InvalidTokenError
 import random  # 랜덤 모듈 추가
+from datetime import timedelta
+import socket  # 포트 사용 여부 확인용
 
-# 기존 모듈 임포트
-from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
-from src.trading.gpt_auto_trader import GPTAutoTrader
-from src.data.stock_data import StockData
-from src.notification.telegram_sender import TelegramSender
-from src.notification.kakao_sender import KakaoSender
-from src.database.db_manager import DatabaseManager
-from src.utils.time_utils import now, format_time, is_market_open, get_current_time
-import config
+# 기존 모듈 임포트 - 모듈이 없을 경우 예외 처리 추가
+try:
+    from src.ai_analysis.gpt_trading_strategy import GPTTradingStrategy
+    from src.trading.gpt_auto_trader import GPTAutoTrader
+    from src.data.stock_data import StockData
+    from src.notification.telegram_sender import TelegramSender
+    from src.notification.kakao_sender import KakaoSender
+    from src.database.db_manager import DatabaseManager
+    from src.utils.time_utils import now, format_time, is_market_open, get_current_time
+    import config
+except ImportError as e:
+    print(f"경고: 일부 모듈을 임포트할 수 없습니다: {e}")
+    # 기본 대체 함수 정의
+    def format_time():
+        return int(time.time() * 1000)
+    
+    def is_market_open(market_type):
+        return False
+    
+    def get_current_time():
+        return datetime.datetime.now()
+    
+    # 기본 설정 객체
+    class DefaultConfig:
+        def __init__(self):
+            self.AUTO_TRADING_ENABLED = False
+            self.GPT_AUTO_TRADING = False
+            self.GPT_FULLY_AUTONOMOUS_MODE = False
+            self.DAY_TRADING_MODE = False
+            self.SWING_TRADING_MODE = False
+            self.SIMULATION_MODE = True
+    
+    config = DefaultConfig()
 
 # 로깅 설정
 logging.basicConfig(
@@ -44,6 +73,54 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('API_Server')
+
+# 사용자 인증 및 토큰 관련 설정
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24시간
+
+# 로그인 모델 정의
+class LoginForm(BaseModel):
+    username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    username: str
+    role: str
+
+# 사용자 인증 함수
+def verify_user(username: str, password: str) -> Dict[str, Any]:
+    """사용자 인증 함수"""
+    # 환경 변수에서 설정된 사용자 정보 불러오기
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "password")
+    
+    if username == admin_username and password == admin_password:
+        return {"username": username, "role": "admin"}
+    return None
+
+# 액세스 토큰 생성 함수    
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """액세스 토큰 생성 함수"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.datetime.utcnow() + timedelta(minutes=15)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+# 포트 사용 가능 여부 확인 함수
+def is_port_available(port):
+    """지정된 포트가 사용 가능한지 확인"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('0.0.0.0', port))
+            return True
+        except socket.error:
+            return False
 
 # 웹소켓 연결 관리자 클래스
 class ConnectionManager:
@@ -704,21 +781,22 @@ async def send_trading_update(update_type: str, data: Any):
         logger.error(f"트레이딩 업데이트 전송 중 오류: {e}")
         return False
 
-# API 라우트 정의
-@app.get("/api/health")
-def health_check():
-    """시스템 상태 확인 API"""
-    try:
-        return {
-            "status": "ok",
-            "timestamp": format_time(),
-            "database_connected": db.is_connected() if 'db' in globals() else False,
-            "trading_system_active": config.AUTO_TRADING_ENABLED,
-            "version": "1.0.0"
+# API 라우트 정의 - 루트 경로 핸들러 추가
+@app.get("/")
+def root():
+    """API 서버 루트 경로"""
+    return {
+        "status": "ok",
+        "message": "주식 트레이딩 시스템 API 서버가 정상적으로 작동 중입니다.",
+        "version": "1.0.0",
+        "timestamp": int(time.time() * 1000),
+        "endpoints": {
+            "system_status": "/api/system/status",
+            "login": "/api/login",
+            "portfolio": "/api/portfolio",
+            "stocks": "/api/stocks/list"
         }
-    except Exception as e:
-        logger.error(f"상태 확인 API 오류: {e}")
-        return {"status": "error", "message": str(e)}
+    }
 
 @app.get("/api/system/status")
 def system_status():
@@ -1074,35 +1152,171 @@ def get_performance_report(days: int = 30):
             "daily_performance": []
         }
 
-# 서버 시작 코드
-if __name__ == "__main__":
-    # 인스턴스 생성
+# 로그인 API 엔드포인트 추가
+@app.post("/api/login", response_model=Token)
+@app.post("/login", response_model=Token)  # /login 경로도 추가 (프론트엔드 호환성)
+@app.get("/api/login", response_model=Token)  # GET 메서드도 허용
+@app.get("/login", response_model=Token)  # GET 메서드도 허용
+def login(form_data: LoginForm = None, username: str = None, password: str = None):
+    """사용자 로그인 API - POST와 GET 모두 지원"""
     try:
-        # 필요한 서비스 인스턴스 초기화
-        db = DatabaseManager(config)
-        logger.info("데이터베이스 관리자 초기화 완료")
+        # GET 요청 처리
+        if form_data is None and username is not None and password is not None:
+            form_data = LoginForm(username=username, password=password)
         
-        # 주식 데이터 제공자 초기화
-        stock_data = StockData(config)
-        logger.info("주식 데이터 제공자 초기화 완료")
+        # form_data가 여전히 None이면 오류 발생
+        if form_data is None:
+            logger.warning(f"로그인 실패: 유효하지 않은 요청 형식")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="유효하지 않은 요청 형식입니다. username과 password 필드가 필요합니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        # 사용자 인증
+        user = verify_user(form_data.username, form_data.password)
+        if not user:
+            logger.warning(f"로그인 실패: 사용자 '{form_data.username}' - 비밀번호 불일치")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="사용자 이름 또는 비밀번호가 잘못되었습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         
-        # 브로커(증권사 API) 초기화
-        from src.trading.kis_api import KISAPI
-        broker = KISAPI(config)
-        logger.info("증권사 API 초기화 완료")
+        # 액세스 토큰 생성
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user["username"], "role": user["role"]},
+            expires_delta=access_token_expires
+        )
         
-        # 자동 트레이딩 관련 설정
-        if config.AUTO_TRADING_ENABLED:
-            if config.GPT_AUTO_TRADING:
-                # GPT 자동 트레이딩 시스템 초기화
-                gpt_strategy = GPTTradingStrategy(config)
-                auto_trader = GPTAutoTrader(config, broker, stock_data)
-                logger.info("GPT 자동 매매 시스템 초기화 완료")
+        logger.info(f"로그인 성공: 사용자 '{form_data.username}'")
         
-        # 웹 서버 시작
-        logger.info(f"API 서버 시작 - http://0.0.0.0:8000")
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "username": user["username"],
+            "role": user["role"]
+        }
+    except HTTPException:
+        # 이미 처리된 인증 오류는 그대로 전달
+        raise
     except Exception as e:
-        logger.error(f"서버 시작 중 오류 발생: {e}")
+        logger.error(f"로그인 처리 중 오류 발생: {e}")
+        raise HTTPException(status_code=500, detail="내부 서버 오류")
+
+# 서버 시작 코드 수정 - 포트 충돌 방지 및 예외 처리 강화
+if __name__ == "__main__":
+    try:
+        # 8000번 포트가 사용 중인지 확인
+        port = 8000
+        if not is_port_available(port):
+            # 포트가 사용 중이면 다른 포트 시도 (8001, 8002, ...)
+            for new_port in range(8001, 8020):
+                if is_port_available(new_port):
+                    logger.warning(f"기본 포트 {port}가 사용 중입니다. 대체 포트 {new_port}를 사용합니다.")
+                    port = new_port
+                    break
+            else:
+                logger.error("사용 가능한 포트를 찾을 수 없습니다. 서버를 종료합니다.")
+                exit(1)
+        
+        # 필요한 서비스 인스턴스 초기화 - 각 단계별 예외 처리 강화
+        try:
+            db = None
+            if 'DatabaseManager' in globals():
+                try:
+                    db = DatabaseManager(config)
+                    logger.info("데이터베이스 관리자 초기화 완료")
+                except Exception as e:
+                    logger.error(f"데이터베이스 초기화 오류: {e}")
+            
+            # 주식 데이터 제공자 초기화
+            stock_data = None
+            if 'StockData' in globals():
+                try:
+                    stock_data = StockData(config)
+                    logger.info("주식 데이터 제공자 초기화 완료")
+                except Exception as e:
+                    logger.error(f"주식 데이터 제공자 초기화 오류: {e}")
+            
+            # 브로커(증권사 API) 초기화
+            broker = None
+            try:
+                from src.trading.kis_api import KISAPI
+                broker = KISAPI(config)
+                logger.info("증권사 API 초기화 완료")
+            except Exception as e:
+                logger.error(f"증권사 API 초기화 오류: {e}")
+            
+            # 자동 트레이딩 관련 설정
+            gpt_strategy = None
+            auto_trader = None
+            try:
+                if getattr(config, 'AUTO_TRADING_ENABLED', False):
+                    if getattr(config, 'GPT_AUTO_TRADING', False):
+                        # GPT 자동 트레이딩 시스템 초기화
+                        if 'GPTTradingStrategy' in globals() and 'GPTAutoTrader' in globals():
+                            gpt_strategy = GPTTradingStrategy(config)
+                            auto_trader = GPTAutoTrader(config, broker, stock_data)
+                            logger.info("GPT 자동 매매 시스템 초기화 완료")
+            except Exception as e:
+                logger.error(f"자동 트레이딩 시스템 초기화 오류: {e}")
+        except Exception as e:
+            logger.error(f"서비스 인스턴스 초기화 중 오류: {e}")
+        
+        # PID 파일 생성
+        with open("api_server.pid", "w") as f:
+            f.write(str(os.getpid()))
+        
+        # 시그널 핸들러 설정
+        import signal
+        
+        def signal_handler(sig, frame):
+            logger.info(f"시그널 {sig} 수신, 서버 안전하게 종료 중...")
+            try:
+                # PID 파일 삭제
+                if os.path.exists("api_server.pid"):
+                    os.remove("api_server.pid")
+                logger.info("서버 종료 완료.")
+            except Exception as e:
+                logger.error(f"서버 종료 중 오류 발생: {e}")
+            sys.exit(0)
+        
+        # 시그널 핸들러 등록
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        # 웹 서버 시작 (재시도 로직 추가)
+        max_retry = 3
+        retry_count = 0
+        
+        while retry_count < max_retry:
+            try:
+                logger.info(f"API 서버 시작 - http://0.0.0.0:{port} (시도 {retry_count + 1}/{max_retry})")
+                # host_header 설정은 Nginx가 프록시 설정에서 Host 헤더를 전달할 수 있게 함
+                uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", workers=1, proxy_headers=True, forwarded_allow_ips="*")
+                break  # 성공적으로 실행되었으면 루프 종료
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"서버 시작 중 오류 발생: {e}, 재시도 {retry_count}/{max_retry}")
+                import traceback
+                logger.error(traceback.format_exc())
+                
+                if retry_count < max_retry:
+                    logger.info(f"{5 * retry_count}초 후 재시도...")
+                    time.sleep(5 * retry_count)  # 점점 긴 대기 시간
+                else:
+                    logger.critical("최대 재시도 횟수를 초과했습니다. 서버를 종료합니다.")
+                    # PID 파일 삭제
+                    if os.path.exists("api_server.pid"):
+                        os.remove("api_server.pid")
+                    sys.exit(1)
+    except Exception as e:
+        logger.error(f"서버 시작 중 예상치 못한 오류 발생: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        # PID 파일 삭제
+        if os.path.exists("api_server.pid"):
+            os.remove("api_server.pid")
+        sys.exit(1)

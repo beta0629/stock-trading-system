@@ -1,8 +1,13 @@
 // API 클라이언트 모듈
 import axios from 'axios';
 
-// API 기본 URL 설정
-export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// API 기본 URL 및 포트 설정
+const API_HOST = process.env.REACT_APP_API_URL || 'http://localhost';
+const API_PORT = process.env.REACT_APP_API_PORT || '8000';
+export const API_URL = API_PORT === '80' ? API_HOST : `${API_HOST}:${API_PORT}`;
+
+// 콘솔에 현재 API URL 표시 (디버깅용)
+console.log(`API 서버 URL: ${API_URL}`);
 
 // JWT 토큰 저장 키
 export const TOKEN_KEY = 'auth_token';

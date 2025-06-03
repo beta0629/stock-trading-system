@@ -44,17 +44,8 @@ const Header = ({ toggleDrawer }) => {
   };
 
   return (
-    <AppBar 
-      position="fixed" 
-      sx={{ 
-        zIndex: theme.zIndex.drawer + 1,
-        width: '100%',
-        left: 0,
-        right: 0,
-        ml: 0
-      }}
-    >
-      <Toolbar sx={{ width: '100%', padding: { xs: 1, md: 2 } }}>
+    <AppBar position="fixed" sx={{ zIndex: theme.zIndex.drawer + 1 }}>
+      <Toolbar>
         {isAuthenticated && (
           <IconButton
             color="inherit"

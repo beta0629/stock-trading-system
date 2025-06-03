@@ -4,8 +4,13 @@
  */
 
 // WebSocket URL 설정
-// 기본 URL을 백엔드 FastAPI 서버의 실제 URL과 일치하도록 변경
-const WS_BASE_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000';
+// 기본 URL과 포트 설정 - localhost로 변경
+const WS_HOST = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace('http', 'ws') : 'ws://localhost';
+const WS_PORT = process.env.REACT_APP_WS_PORT || '8000';
+const WS_BASE_URL = WS_PORT === '80' ? WS_HOST : `${WS_HOST}:${WS_PORT}`;
+
+// 헬스 체크 활성화 여부
+const ENABLE_HEALTH_CHECK = process.env.REACT_APP_ENABLE_HEALTH_CHECK === 'true';
 
 // 로깅을 위해 설정된 URL 출력
 console.log(`WebSocket 서버 URL: ${WS_BASE_URL}`);
@@ -103,6 +108,13 @@ class WebSocketService {
    * @returns {Promise<boolean>} 서버 접속 가능 여부
    */
   async checkServerAvailability() {
+    // 헬스 체크가 비활성화된 경우 항상 서버가 가용한 것으로 간주
+    if (ENABLE_HEALTH_CHECK === false) {
+      console.log('헬스 체크 비활성화: 서버가 가용한 것으로 간주합니다.');
+      this.webSocketEnabled = true;
+      return true;
+    }
+    
     try {
       // 먼저 /api/health 엔드포인트로 서버 상태 확인
       console.log('API 서버 상태 확인 시도...');
@@ -110,7 +122,7 @@ class WebSocketService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000); // 3초 타임아웃 설정
       
-      const response = await fetch('http://localhost:8000/api/health', {
+      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/health`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',

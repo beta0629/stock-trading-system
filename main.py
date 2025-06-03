@@ -274,23 +274,42 @@ class StockAnalysisSystem:
                     
                     kr_analysis += "\n"
             
-            # 미국 시장 종목 추천
-            us_result = self.stock_selector.recommend_stocks(
-                market="US", 
-                count=5, 
-                strategy="balanced"
-            )
+            # 미국 시장 종목 추천 (다양한 전략 적용)
+            us_recommendations = {}
             
-            # 미국 종목 분석 추가
+            # 미국 시장도 한국 시장과 동일하게 균형, 성장, 배당 전략 모두 적용
+            for strategy in strategies:
+                us_result = self.stock_selector.recommend_stocks(
+                    market="US", 
+                    count=3, 
+                    strategy=strategy
+                )
+                us_recommendations[strategy] = us_result
+                logger.info(f"US {strategy} 전략 종목 추천 완료: {len(us_result.get('recommended_stocks', []))}개")
+            
+            # 미국 추천 종목 통합
+            combined_us_stocks = []
             us_analysis = "📊 <b>GPT 추천 미국 종목 분석</b>\n\n"
-            if "recommended_stocks" in us_result and us_result["recommended_stocks"]:
-                for stock in us_result["recommended_stocks"]:
-                    symbol = stock.get("symbol")
-                    name = stock.get("name", symbol)
-                    reason = stock.get("reason", "")
-                    weight = stock.get("suggested_weight", 0)
+            
+            for strategy, result in us_recommendations.items():
+                if "recommended_stocks" in result and result["recommended_stocks"]:
+                    us_analysis += f"<b>· {strategy.capitalize()} 전략:</b>\n"
                     
-                    us_analysis += f"- {name} ({symbol}): {reason} (추천 비중: {weight}%)\n"
+                    for stock in result["recommended_stocks"]:
+                        symbol = stock.get("symbol")
+                        name = stock.get("name", symbol)
+                        reason = stock.get("reason", "")
+                        weight = stock.get("suggested_weight", 0)
+                        
+                        combined_us_stocks.append({
+                            "symbol": symbol,
+                            "name": name,
+                            "strategy": strategy
+                        })
+                        
+                        us_analysis += f"- {name} ({symbol}): {reason} (추천 비중: {weight}%)\n"
+                    
+                    us_analysis += "\n"
             
             # 섹터 분석 추가
             sector_analysis = self.stock_selector.advanced_sector_selection(market="KR", sectors_count=3)
@@ -324,10 +343,42 @@ class StockAnalysisSystem:
                         
                         sector_summary += "\n"
             
+            # 미국 섹터 분석 추가
+            us_sector_analysis = self.stock_selector.advanced_sector_selection(market="US", sectors_count=3)
+            
+            # 미국 섹터 분석 요약
+            us_sector_summary = "📊 <b>GPT 추천 유망 미국 산업 분석</b>\n\n"
+            if "promising_sectors" in us_sector_analysis and us_sector_analysis["promising_sectors"]:
+                for sector in us_sector_analysis["promising_sectors"]:
+                    sector_name = sector.get("name")
+                    growth = sector.get("growth_potential", 0)
+                    key_drivers = sector.get("key_drivers", [])
+                    
+                    us_sector_summary += f"<b>· {sector_name} (성장 잠재력: {growth}/10)</b>\n"
+                    us_sector_summary += f"  주요 성장 동력: {', '.join(key_drivers[:3])}\n\n"
+                    
+                    # 유망 섹터 내 종목 추천
+                    sector_stocks = self.stock_selector.recommend_sector_stocks(
+                        sector_name=sector_name,
+                        market="US",
+                        count=2
+                    )
+                    
+                    if "recommended_stocks" in sector_stocks and sector_stocks["recommended_stocks"]:
+                        us_sector_summary += "  추천 종목:\n"
+                        for stock in sector_stocks["recommended_stocks"]:
+                            stock_symbol = stock.get("symbol")
+                            stock_name = stock.get("name", stock_symbol)
+                            reason = stock.get("reason", "")
+                            
+                            us_sector_summary += f"  - {stock_name} ({stock_symbol}): {reason[:50]}...\n"
+                        
+                        us_sector_summary += "\n"
+            
             # 유망 종목 config에 업데이트
             self.stock_selector.update_config_stocks(
-                kr_recommendations={"recommended_stocks": [stock for stock in combined_kr_stocks]},
-                us_recommendations=us_result
+                kr_recommendations={"recommended_stocks": combined_kr_stocks},
+                us_recommendations={"recommended_stocks": combined_us_stocks}
             )
             
             # GPT 자동 매매 시스템이 있으면 종목 선정 이벤트 알림
@@ -351,6 +402,7 @@ class StockAnalysisSystem:
             self.send_notification('status', kr_analysis)
             self.send_notification('status', us_analysis)
             self.send_notification('status', sector_summary)
+            self.send_notification('status', us_sector_summary)
             
             logger.info("GPT 종목 선정 및 업데이트 완료")
             
@@ -1694,6 +1746,51 @@ class StockAnalysisSystem:
             logger.error(f"종목 강제 재선정 중 오류 발생: {e}")
             self.send_notification('status', f"⚠️ 종목 재선정 중 오류 발생: {str(e)}")
             return False
+    
+    def send_momentum_stocks_kakao(self):
+        """단타매매와 급등 종목 리스트를 카카오톡으로 전송"""
+        logger.info("단타매매 및 급등 종목 리스트 카카오톡 전송 시작")
+        
+        try:
+            # GPT 트레이딩 전략 객체가 초기화되었는지 확인
+            if not self.gpt_trading_strategy:
+                logger.warning("GPT 트레이딩 전략이 초기화되지 않았습니다.")
+                return False
+                
+            # 카카오톡 발송 모듈이 활성화되어 있는지 확인
+            if not self.use_kakao or not self.kakao_sender:
+                logger.warning("카카오톡 알림 서비스가 비활성화되어 있습니다.")
+                return False
+                
+            # 카카오톡이 초기화되지 않았다면 강제 재초기화 시도
+            if not self.kakao_sender.initialized:
+                logger.info("카카오톡 알림 서비스 재초기화 시도")
+                try:
+                    reinit_success = self.kakao_sender.initialize()
+                    if not reinit_success:
+                        logger.warning("카카오톡 재초기화 실패")
+                        return False
+                except Exception as e:
+                    logger.error(f"카카오톡 재초기화 중 오류: {e}")
+                    return False
+            
+            # 기본 설정: 최소 점수 70점, 최대 10개 표시
+            min_score = getattr(self.config, 'MOMENTUM_MIN_SCORE', 70)
+            max_count = getattr(self.config, 'MOMENTUM_MAX_COUNT', 10)
+            
+            # 단타/급등 종목 전송 실행
+            result = self.gpt_trading_strategy.send_momentum_stocks_to_kakao(min_score, max_count)
+            
+            if result:
+                logger.info("단타매매 및 급등 종목 리스트 카카오톡 전송 성공")
+                return True
+            else:
+                logger.warning("단타매매 및 급등 종목 리스트 카카오톡 전송 실패")
+                return False
+                
+        except Exception as e:
+            logger.error(f"단타매매 및 급등 종목 리스트 카카오톡 전송 중 오류 발생: {e}")
+            return False
 
 
 # 명령줄 인자 처리
@@ -1703,6 +1800,7 @@ def parse_args():
     parser.add_argument('--skip-stock-select', action='store_true', help='종목 선정 과정 건너뛰기')
     parser.add_argument('--force-market-open', action='store_true', help='시장 시간 제한을 무시하고 강제로 열림 상태로 간주')
     parser.add_argument('--simulation-mode', action='store_true', help='자동 매매 시스템을 시뮬레이션 모드로 실행')
+    parser.add_argument('--send-momentum-stocks', action='store_true', help='단타매매 및 급등 종목 목록을 카카오톡으로 전송')
     return parser.parse_args()
 
 
@@ -1726,8 +1824,18 @@ if __name__ == "__main__":
         config.KIS_REAL_TRADING = False
         logger.info("한국투자증권 모의투자 계좌를 사용합니다.")
     
-    # 시스템 인스턴스 생성 및 시작
+    # 시스템 인스턴스 생성
     system = StockAnalysisSystem()
+    
+    # 단타매매 및 급등 종목 목록 카카오톡 전송 명령 처리
+    if args.send_momentum_stocks:
+        logger.info("단타매매 및 급등 종목 목록 카카오톡 전송 명령 실행")
+        result = system.send_momentum_stocks_kakao()
+        if result:
+            print("✅ 단타매매 및 급등 종목 목록 카카오톡 전송 완료")
+        else:
+            print("❌ 단타매매 및 급등 종목 목록 카카오톡 전송 실패")
+        sys.exit(0)  # 전송 후 프로그램 종료
     
     try:
         # 시스템 시작 (이 메서드는 내부에서 무한 루프를 실행)
